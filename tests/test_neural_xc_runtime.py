@@ -7,47 +7,47 @@ import optax
 import pytest
 from flax import linen as nn
 
-from td_graddft.xc_backend.jax_libxc import (
+from gradscf.xc_backend.jax_libxc import (
     RestrictedFeatureBundle,
     b3lyp_component_basis,
 )
-from td_graddft.xc_backend import jax_xc_adapter
-from td_graddft.neural_xc import (
+from gradscf.xc_backend import jax_xc_adapter
+from gradscf.neural_xc import (
     ResidualMixingMLP,
     available_semilocal_components,
     make_custom_semilocal_module,
     make_libxc_semilocal_module,
     make_neural_xc_functional,
 )
-from td_graddft.neural_xc.factory import NeuralXCFunctional
-from td_graddft.neural_xc.inputs import (
+from gradscf.neural_xc.factory import NeuralXCFunctional
+from gradscf.neural_xc.inputs import (
     ChunkedHFXNu,
     canonical_input_features,
 )
-import td_graddft.neural_xc.model as neural_xc_model
-import td_graddft.neural_xc.binding as neural_xc_binding
-import td_graddft.neural_xc.components as neural_xc_components
-import td_graddft.neural_xc.projection as neural_xc_projection
-from td_graddft.features import has_explicit_spin_axis, restricted_grid_features
-import td_graddft.scf.differentiable as scf_differentiable
-from td_graddft.scf.xc_energy import xc_energy_and_potential_from_density
+import gradscf.neural_xc.model as neural_xc_model
+import gradscf.neural_xc.binding as neural_xc_binding
+import gradscf.neural_xc.components as neural_xc_components
+import gradscf.neural_xc.projection as neural_xc_projection
+from gradscf.features import has_explicit_spin_axis, restricted_grid_features
+import gradscf.scf.differentiable as scf_differentiable
+from gradscf.scf.xc_energy import xc_energy_and_potential_from_density
 from pyscf_reference import restricted_reference_from_pyscf
-from td_graddft.spectra import HARTREE_TO_EV, oscillator_strengths
-from td_graddft.tddft import (
+from gradscf.spectra import HARTREE_TO_EV, oscillator_strengths
+from gradscf.tddft import (
     RestrictedCasidaTDDFT,
     UnrestrictedCasidaTDDFT,
     UnrestrictedTDA,
 )
-from td_graddft.tddft.cisd import (
+from gradscf.tddft.cisd import (
     restricted_cisd_second_order_correction,
     unrestricted_cisd_second_order_correction,
 )
-from td_graddft.tddft.response import (
+from gradscf.tddft.response import (
     build_restricted_tda_operator,
 )
-import td_graddft.tddft.response as response_module
-from td_graddft.tddft.unrestricted import build_unrestricted_tda_operator
-from td_graddft.training import (
+import gradscf.tddft.response as response_module
+from gradscf.tddft.unrestricted import build_unrestricted_tda_operator
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,
@@ -987,7 +987,7 @@ def test_semilocal_xc_alias_expands_to_component_channels_for_neural_basis():
 
 
 def test_neural_xc_rejects_experimental_jax_xc_semilocal_by_default(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -1011,7 +1011,7 @@ def test_neural_xc_rejects_experimental_jax_xc_semilocal_by_default(monkeypatch)
 
 
 def test_neural_xc_accepts_experimental_jax_xc_with_explicit_opt_in(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -1038,7 +1038,7 @@ def test_neural_xc_accepts_experimental_jax_xc_with_explicit_opt_in(monkeypatch)
 
 
 def test_neural_xc_accepts_dynamic_mgga_with_explicit_opt_in(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -1665,7 +1665,7 @@ def test_custom_non_hf_module_is_pluggable_into_neural_xc_functional():
 
 
 def test_unrestricted_neural_xc_energy_path_is_spin_resolved():
-    from td_graddft.features import unrestricted_grid_features
+    from gradscf.features import unrestricted_grid_features
 
     molecule = _make_open_shell_toy_molecule()
     features = unrestricted_grid_features(molecule)
@@ -1873,7 +1873,7 @@ def test_reference_can_cache_local_pt2_feature_and_functional_reuses_it():
 
 
 def test_local_pt2_feature_supports_packed_eri_pair_matrix():
-    from td_graddft.neural_xc.inputs import _local_pt2_feature_from_restricted_orbitals
+    from gradscf.neural_xc.inputs import _local_pt2_feature_from_restricted_orbitals
 
     ao = jnp.asarray(
         [

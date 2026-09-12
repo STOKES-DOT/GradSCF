@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 from pyscf import dft, gto
 
-from td_graddft import tdscf
-from td_graddft.scf import RKSConfig, UKSConfig
-from td_graddft.scf.builders import (
+from gradscf import tdscf
+from gradscf.scf import RKSConfig, UKSConfig
+from gradscf.scf.builders import (
     restricted_molecule_from_spec_with_jax_rks,
     unrestricted_molecule_from_spec_with_jax_uks,
 )

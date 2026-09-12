@@ -2,9 +2,9 @@ import numpy as np
 import pytest
 
 from pyscf_reference import restricted_reference_from_pyscf_with_jax_rhf
-from td_graddft.scf import RHFConfig
-from td_graddft.workflows.core import run_reference
-from td_graddft.workflows.types import SimulationConfig
+from gradscf.scf import RHFConfig
+from gradscf.workflows.core import run_reference
+from gradscf.workflows.types import SimulationConfig
 
 
 def _pyscf_or_skip():

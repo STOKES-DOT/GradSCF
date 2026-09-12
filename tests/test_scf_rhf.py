@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from td_graddft.data.basis import basis_from_pyscf_mol_cart
-from td_graddft.scf import RHFConfig, run_rhf
+from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+from gradscf.scf import RHFConfig, run_rhf
 
 
 def _pyscf_or_skip():

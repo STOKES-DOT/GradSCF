@@ -2,15 +2,15 @@ import pytest
 
 import jax.numpy as jnp
 
-from td_graddft import neural_xc, training
-from td_graddft.neural_xc.defaults import (
+from gradscf import neural_xc, training
+from gradscf.neural_xc.defaults import (
     DEFAULT_NEURAL_XC_HF_INPUT_MODE,
     DEFAULT_NEURAL_XC_RESPONSE_HF_MODE,
     DEFAULT_NEURAL_XC_RESPONSE_PT2_MODE,
     DEFAULT_NEURAL_XC_SEMILOCAL_XC,
 )
-from td_graddft.data.integrals.jax.packed_eri import build_j_from_eri_pair_matrix
-import td_graddft.training.neural_xc_trainer as neural_xc_trainer_module
+from gradscf.integrals.backends.jax_reference.packed_eri import build_j_from_eri_pair_matrix
+import gradscf.training.neural_xc_trainer as neural_xc_trainer_module
 
 
 def test_neural_xc_config_drives_generic_functional_constructor():
@@ -164,15 +164,15 @@ def test_legacy_neural_xc_subpackage_exports_are_removed():
     import importlib
 
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("td_graddft.neural_xc.base")
+        importlib.import_module("gradscf.neural_xc.base")
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("td_graddft.neural_xc.dm21")
+        importlib.import_module("gradscf.neural_xc.dm21")
 
 
 def test_neural_xc_factory_stays_as_assembly_layer():
     from pathlib import Path
 
-    factory_text = Path("src/td_graddft/neural_xc/factory.py").read_text()
+    factory_text = Path("src/gradscf/neural_xc/factory.py").read_text()
     forbidden = (
         "class BoundNeuralXCFunctional",
         "class NeuralXCCore",
@@ -323,7 +323,7 @@ def test_neural_xc_trainer_accepts_explicit_training_config(monkeypatch):
 
 
 def test_training_coulomb_energy_accepts_packed_eri_pair_matrix():
-    from td_graddft.training.targets import _coulomb_energy
+    from gradscf.training.targets import _coulomb_energy
 
     rep_tensor = jnp.asarray(
         [

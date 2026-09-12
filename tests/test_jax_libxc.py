@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 
-import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
-from td_graddft.xc_backend.jax_libxc import (
+import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
+from gradscf.xc_backend.jax_libxc import (
     LocalXCTermSpec,
     RestrictedFeatureBundle,
     b3lyp_component_basis,

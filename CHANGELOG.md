@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — GradSCF API migration
+
+- Rename the distribution and Python namespace from `td-graddft` / `td_graddft`
+  to `gradscf`; rename `td_graddft_tools` to `gradscf_tools`.
+- Update active imports, dynamic module paths, package-data declarations,
+  examples, command-line tools, and contributor documentation.
+- Retain scientific method names, upstream GradDFT names, historical
+  reproducibility artifacts, and the existing NPZ target-bundle format marker.
+- Retire the old import namespaces without a compatibility alias.
+
 ## 1.0.0 - 2026-08-24
 
 ### Features

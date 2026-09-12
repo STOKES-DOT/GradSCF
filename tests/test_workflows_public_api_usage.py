@@ -3,15 +3,15 @@ from pathlib import Path
 
 
 def test_top_level_exposes_spec_workflow_entrypoint():
-    import td_graddft
-    from td_graddft.workflows.core import run_pipeline_core_from_spec
+    import gradscf
+    from gradscf.workflows.core import run_pipeline_core_from_spec
 
-    assert "run_pipeline_core_from_spec" in td_graddft.__all__
-    assert td_graddft.run_pipeline_core_from_spec is run_pipeline_core_from_spec
+    assert "run_pipeline_core_from_spec" in gradscf.__all__
+    assert gradscf.run_pipeline_core_from_spec is run_pipeline_core_from_spec
 
 
 def test_workflow_reporting_defers_pyplot_import_until_plotting():
-    source = Path("src/td_graddft/workflows/reporting.py").read_text()
+    source = Path("src/gradscf/workflows/reporting.py").read_text()
     tree = ast.parse(source)
     top_level_imports = [
         node
@@ -27,7 +27,7 @@ def test_workflow_reporting_defers_pyplot_import_until_plotting():
 
 
 def test_workflow_core_uses_public_facades_for_xc_and_tdscf():
-    text = Path("src/td_graddft/workflows/core.py").read_text()
+    text = Path("src/gradscf/workflows/core.py").read_text()
 
     assert "make_neural_xc_functional" not in text
     assert "RestrictedCasidaTDDFT" not in text

@@ -3,7 +3,7 @@ from pathlib import Path
 
 TOOLS = tuple(Path("tools").glob("*.py"))
 EXAMPLES = tuple(Path("examples").glob("*.py"))
-REMOVED_PYSCF_BRIDGE_MODULE = "td_graddft." + "pyscf_bridge"
+REMOVED_PYSCF_BRIDGE_MODULE = "gradscf." + "pyscf_bridge"
 
 
 def test_tools_use_tdscf_facade_for_restricted_response():
@@ -11,7 +11,7 @@ def test_tools_use_tdscf_facade_for_restricted_response():
     for path in TOOLS:
         text = path.read_text()
         if (
-            "from td_graddft.tddft import RestrictedCasidaTDDFT" in text
+            "from gradscf.tddft import RestrictedCasidaTDDFT" in text
             or "RestrictedCasidaTDDFT(" in text
         ):
             offenders.append(str(path))
@@ -24,7 +24,7 @@ def test_tools_use_neural_xc_facade_constructor():
     for path in TOOLS:
         text = path.read_text()
         if (
-            "from td_graddft.neural_xc import make_neural_xc_functional" in text
+            "from gradscf.neural_xc import make_neural_xc_functional" in text
             or "make_neural_xc_functional(" in text
         ):
             offenders.append(str(path))
@@ -50,7 +50,7 @@ def test_pyscf_bridge_module_is_removed_from_public_api():
     except ModuleNotFoundError:
         return
     except ImportError as exc:
-        assert "td_graddft.reference_legacy" in str(exc)
+        assert "gradscf.reference_legacy" in str(exc)
         return
 
     raise AssertionError(f"{REMOVED_PYSCF_BRIDGE_MODULE} should no longer import successfully")

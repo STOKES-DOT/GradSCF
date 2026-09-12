@@ -1,14 +1,26 @@
-# GradTDDFT
+# GradSCF
 
-GradTDDFT is a JAX toolkit for differentiable Kohn-Sham DFT, TDA/full-TDDFT,
-and Neural XC training. The Python package is `td-graddft`; the import namespace
-is `td_graddft`.
+GradSCF is a JAX toolkit for Hartree-Fock and Kohn-Sham self-consistent-field
+calculations, differentiable SCF, response theory, and Neural XC training.
+The Python package is `gradscf`; the import namespace
+is `gradscf`.
 
 ```python
-from td_graddft import dft, gto, neural_xc, tdscf, training
+from gradscf import dft, gto, scf, neural_xc, tdscf, training
 ```
 
-## v1.0.0 Scope
+GradSCF was previously named GradTDDFT. The canonical imports are now
+`gradscf` and `gradscf_tools`; the old import namespaces are no longer shipped.
+See [MIGRATION.md](MIGRATION.md) for the name mapping and installation checks.
+
+## Code Origins
+
+The foundational DFT and TDDFT code in GradSCF originates from
+[GradTDDFT](https://github.com/STOKES-DOT/GradTDDFT). GradSCF builds on that
+codebase with expanded SCF methods, reorganized integral backends, and a
+dedicated `gradscf` API. Original copyright notices and licenses are retained.
+
+## Inherited v1.0.0 Scope
 
 The first release contains:
 
@@ -49,7 +61,7 @@ to the CUDA environment. Confirm the active backend before a long run:
 ```bash
 python - <<'PY'
 import jax
-from td_graddft.xc_backend import jax_xc_backend_info
+from gradscf.xc_backend import jax_xc_backend_info
 
 print(jax.devices())
 print(jax_xc_backend_info())
@@ -64,16 +76,191 @@ import jax
 jax.config.update("jax_enable_x64", True)
 ```
 
-## Conventional DFT, TDA, and full TDDFT
+## Integral backends and trainable basis parameters
 
-The public facade follows the PySCF workflow. This example runs a conventional
-B3LYP calculation entirely through the GradTDDFT API:
+`gradscf.integrals` is the canonical integral namespace. Existing matrix APIs
+such as `overlap_matrix`, `build_hcore`, and `eri_tensor` retain their numerical
+behavior through the JAX reference backend. Integral-input assembly now lives
+under `gradscf.integrals.assembly`; `scf.inputs` and `data.integrals` are temporary
+compatibility imports pointing to the same implementations.
+
+The private CPU backend vendors pinned libcint/PySCF C sources and builds
+offline without importing PySCF at runtime:
+
+```sh
+PYTHONPATH=src python -m gradscf.integrals._native.build
+```
+
+Enable JAX float64 before constructing parameters:
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+from gradscf import integrals
+
+topology, parameters = integrals.prepare_basis(
+    atom="H 0 0 0; H 0 0 .74", basis="sto-3g",
+)
+plan = integrals.make_plan(topology, backend="native")
+overlap = plan.evaluate("overlap", parameters)
+eri = plan.evaluate("eri", parameters)
+```
+
+`BasisTopology` holds static shell structure. `BasisParameters` is a JAX pytree
+containing raw exponents, raw contraction coefficients, basis centers, and
+nuclear coordinates. `IntegralPlan` caches only topology and index layouts;
+normalization and all parameter values are rebound on every call. Basis centers
+and nuclei may move independently. Dipole plans default to the nuclear-charge
+center, matching the reference backend; pass `origin=` to choose another origin.
+
+Native evaluation supports CPU float64, Cartesian/spherical S/T/V/dipole/full
+ERI, and `jax.jit`. **Native JVP/VJP is not yet implemented and explicitly
+raises**, without a hidden fallback. Use `backend="jax_reference"` for the
+current Cartesian basis-parameter derivative path. First derivatives of small
+systems are tested; higher derivatives are not advertised. Inspect
+`integrals.backend_capabilities(...)` for backend-specific contracts.
+
+This new native plan is opt-in. Existing SCF `integral_backend="cpu"` retains
+its previous PySCF/libcint path during migration. See the
+[native backend guide](src/gradscf/integrals/_native/README.md)
+for pinned sources, build requirements, ABI, and supported operators.
+
+Integral implementations and build resources are grouped under
+`src/gradscf/integrals/`: public APIs and assembly at the package root,
+backend adapters in `backends/`, and the private loader, C/C++ sources,
+vendored dependencies, and CMake files in `_native/`. The old
+`python -m gradscf._native.build` command remains a compatibility entry point.
+
+## Unrestricted Hartree-Fock
+
+Use `scf.UHF` for independent alpha/beta orbitals with full exact exchange:
 
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
 
-from td_graddft import dft, gto
+from gradscf import gto, scf
+
+mol = gto.M(
+    atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", unit="Angstrom",
+    charge=1, spin=1,  # spin = N_alpha - N_beta
+)
+mf = scf.UHF(mol, integral_backend="cpu", execution_device="cpu").run()
+if not mf.converged:
+    raise RuntimeError("UHF did not converge")
+print("UHF energy / Ha:", mf.e_tot)
+dm_alpha, dm_beta = mf.make_rdm1()
+```
+
+The facade exposes `.kernel()`, `.run()`, `.e_tot`, `.converged`, and spin-stacked
+`.mo_coeff`, `.mo_energy`, and `.mo_occ`. Its XC is fixed to HF; use `dft.UKS`
+for DFT. It reuses the existing UKS molecular-input/reference pipeline, including
+grid preparation; its density-fitting, direct-SCF, and explicit nuclear-gradient
+methods are currently unsupported.
+
+For grid-free ground-state calculations from real AO integrals, use
+`scf.run_uhf_from_integrals(overlap=..., hcore=..., eri=..., nalpha=...,
+nbeta=..., nuclear_repulsion=..., config=scf.UHFConfig(...))`.
+`scf.run_uhf(basis=..., nalpha=..., nbeta=...)` constructs Cartesian integrals
+with JAX. Both return `scf.UHFResult` with separate alpha/beta fields and accept
+`init_density_alpha`/`init_density_beta` for a spin-broken initial guess.
+
+## Restricted Open-Shell HF and KS
+
+`scf.ROHF` and `dft.ROKS` optimize one common set of spatial orbitals with
+double, single, and zero occupations. They use a Roothaan effective Fock
+constructed from separate alpha/beta potentials. ROKS here means the high-spin,
+restricted open-shell KS convention used by PySCF, not multiplet-sum ROKS for
+excited singlets.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+
+from gradscf import dft, gto, scf
+
+mol = gto.M(
+    atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", unit="Angstrom",
+    charge=1, spin=1,
+)
+hf = scf.ROHF(mol, execution_device="cpu").run()
+ks = dft.ROKS(mol, xc="pbe", grids_level=0, execution_device="cpu").run()
+assert hf.converged and ks.converged
+print(hf.e_tot, ks.e_tot)  # Hartree
+print(hf.mo_occ)          # 0/1/2 occupations; mo_coeff has shape (nao, nao)
+dm_alpha, dm_beta = hf.make_rdm1()
+```
+
+ROKS supports the existing LDA/GGA and global-hybrid XC paths, including PBE
+and B3LYP, through `jax-xc`. `scf.run_roks_from_integrals` accepts AO values,
+first derivatives, and grid weights alongside the integrals. For grid-free
+ROHF, use `scf.run_rohf_from_integrals` or `scf.run_rohf` with a Cartesian basis.
+The low-level solvers accept explicit `nalpha`/`nbeta` counts and return common
+orbitals plus separate spin densities and Fock matrices. Convergence requires
+energy, density-change, and orbital-gradient tolerances simultaneously.
+
+This implementation covers real-orbital, full-integral ground states, including
+the closed-shell limit and either sign of spin polarization. Density fitting,
+direct SCF, meta-GGA, explicit nuclear gradients, and RO-reference TDA/TDDFT
+are not implemented. The molecular facades reuse UKS integral/grid preparation;
+they do not run an unrestricted ground-state solver.
+
+## Generalized HF and KS
+
+`scf.GHF` and `dft.GKS` use complex spinor orbitals in alpha-then-beta AO order.
+The coefficient and density matrices have shape `(2*nao, 2*nao)`, and each
+occupied spinor holds one electron. Only the total electron number is fixed;
+`mol.spin` guides the initial guess, rather than constraining the final spin.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+
+from gradscf import dft, gto, scf
+
+mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", charge=1, spin=1)
+hf = scf.GHF(mol, execution_device="cpu").run()
+ks = dft.GKS(mol, xc="pbe", collinear="col", execution_device="cpu").run()
+assert hf.converged and ks.converged
+dm_spinor = hf.make_rdm1()
+```
+
+Pass a full complex Hermitian initial density to `.kernel(dm0=...)` or
+`.run(dm0=...)` to start from mixed alpha/beta spinors. Off-diagonal exchange
+blocks and the imaginary parts of orbitals and DIIS errors are retained.
+
+GKS exposes two XC schemes matching the corresponding PySCF conventions:
+
+- `collinear="col"` (default): fixed-axis spin densities with LDA/GGA and
+  supported global hybrids such as PBE and B3LYP. Semilocal XC uses the alpha
+  and beta diagonal density blocks; this approximation is not generally
+  invariant under global spin rotations.
+- `collinear="ncol"`: noncollinear LDA using the local total density and
+  magnetization magnitude. For example, use `xc="lda_x"`; the XC potential
+  includes all three magnetization components and the zero-magnetization limit.
+
+`scf.run_ghf_from_integrals` is grid-free; `scf.run_ghf` builds Cartesian JAX
+integrals. `scf.run_gks_from_integrals` additionally accepts real spatial AO
+values, their first derivatives, and grid weights. Both integral interfaces
+take a spatial overlap matrix and full real spatial ERIs; `hcore` may be either
+a spatial matrix or a complex Hermitian spinor matrix with explicit spin-mixing
+terms. The molecular facade does not construct SOC or relativistic integrals.
+
+Multi-collinear (`mcol`) XC, noncollinear GGA, meta-GGA, density fitting, direct
+SCF, generalized TDA/TDDFT, and explicit nuclear gradients are not implemented.
+Validation uses CPU float64/complex128; GPU execution and differentiation at
+degenerate spinor eigenvalues have not been validated.
+
+## Conventional DFT, TDA, and full TDDFT
+
+The public facade follows the PySCF workflow. This example runs a conventional
+B3LYP calculation entirely through the GradSCF API:
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+
+from gradscf import dft, gto
 
 mol = gto.M(
     atom="""
@@ -115,7 +302,7 @@ Use `integral_backend="gpu"` and `execution_device="gpu"` in a configured
 GPU4PySCF environment. `integral_backend="cpu"` uses the CPU integral path;
 the resulting fixed molecular integrals are reused by SCF and response calls.
 
-A complete PySCF-versus-GradTDDFT B3LYP comparison is provided in
+A complete PySCF-versus-GradSCF B3LYP comparison is provided in
 `examples/compare_pyscf_vs_jax_tddft_no_neural.py`.
 
 ## Build a Neural XC Functional
@@ -132,8 +319,8 @@ e_xc^NN(r) = sum_k c_k(r) e_k^semilocal(r)
 Construct the model through the public `neural_xc` namespace:
 
 ```python
-from td_graddft import neural_xc
-from td_graddft.xc_backend import b3lyp_component_basis
+from gradscf import neural_xc
+from gradscf.xc_backend import b3lyp_component_basis
 
 functional = neural_xc.Functional(
     architecture="graddft_residual",
@@ -168,7 +355,7 @@ recomputed after each parameter update:
 
 ```python
 from pyscf import dft as pyscf_dft, gto as pyscf_gto
-from td_graddft.data.reference import restricted_reference_from_pyscf
+from gradscf.data.reference import restricted_reference_from_pyscf
 
 pyscf_mol = pyscf_gto.M(
     atom="H 0 0 0; H 0 0 0.74",
@@ -205,7 +392,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from td_graddft import training
+from gradscf import training
 
 datum = training.MolecularTrainingDatum(
     molecule=reference,
@@ -300,7 +487,7 @@ converged_molecule = training.predict_ground_state_molecule(
 Run TDA or full-TDDFT from the converged molecule:
 
 ```python
-from td_graddft.spectra import HARTREE_TO_EV
+from gradscf.spectra import HARTREE_TO_EV
 
 gaps_h = training.predict_excitation_energies(
     params,
@@ -370,7 +557,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## Traditional XC Support
 
-Conventional XC labels are parsed by `td_graddft.xc_backend.jax_libxc` and
+Conventional XC labels are parsed by `gradscf.xc_backend.jax_libxc` and
 evaluated with `jax-xc`. Strict default components include:
 
 ```text
@@ -393,8 +580,8 @@ Installed functionals outside the validated set require
 ## Repository Layout
 
 ```text
-src/td_graddft/       DFT, SCF, TDDFT, Neural XC, training, and data APIs
-src/td_graddft_tools/ Small supporting analysis utilities
+src/gradscf/       DFT, SCF, TDDFT, Neural XC, training, and data APIs
+src/gradscf_tools/ Small supporting analysis utilities
 examples/             Two runnable manuscript-oriented examples
 tools/                Manuscript training, validation, and plotting drivers
 tests/                Focused unit and regression tests
@@ -433,6 +620,6 @@ end-to-end evidence.
 
 ## License and Upstreams
 
-GradTDDFT is released under the MIT License. It interoperates with JAX, Flax,
+GradSCF is released under the MIT License. It interoperates with JAX, Flax,
 Optax, `jax-xc`, PySCF, and GPU4PySCF. Third-party data or source snapshots keep
 their original licenses and notices.

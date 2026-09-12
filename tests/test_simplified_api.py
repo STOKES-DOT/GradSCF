@@ -1,10 +1,10 @@
-from td_graddft import (
+from gradscf import (
     MoleculeConfig,
     build_molecule,
     run_pipeline,
     run_spectrum_pipeline,
 )
-from td_graddft.api import (
+from gradscf.api import (
     MoleculeConfig as ApiMoleculeConfig,
     build_molecule as api_build_molecule,
     run_pipeline as api_run_pipeline,

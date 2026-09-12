@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from td_graddft.data.integrals.gpu4pyscf import (
+from gradscf.integrals.backends.gpu4pyscf import (
     _gpu4pyscf_raw_int2e_to_full,
     _gpu4pyscf_raw_int2e_to_s4,
 )

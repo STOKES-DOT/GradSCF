@@ -1,4 +1,4 @@
-from td_graddft import jax_runtime
+from gradscf import jax_runtime
 
 
 def test_configure_jax_persistent_cache_ignores_missing_xla_cache_option(

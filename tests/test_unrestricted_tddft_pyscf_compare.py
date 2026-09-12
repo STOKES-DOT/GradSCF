@@ -5,12 +5,12 @@ import numpy as np
 import pytest
 
 from pyscf_reference import unrestricted_reference_from_pyscf
-from td_graddft.spectra import oscillator_strengths
-from td_graddft.tddft import UnrestrictedCasidaTDDFT, UnrestrictedTDA
-from td_graddft.tddft._unrestricted_semilocal_response import (
+from gradscf.spectra import oscillator_strengths
+from gradscf.tddft import UnrestrictedCasidaTDDFT, UnrestrictedTDA
+from gradscf.tddft._unrestricted_semilocal_response import (
     UnrestrictedSemilocalResponseFunctional,
 )
-from td_graddft.tddft.unrestricted import (
+from gradscf.tddft.unrestricted import (
     build_unrestricted_tda_operator,
     build_unrestricted_tdhf_operator,
 )

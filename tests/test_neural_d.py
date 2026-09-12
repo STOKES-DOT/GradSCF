@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from td_graddft.neural_d import (
+from gradscf.neural_d import (
     DispersionCorrectedFunctional,
     DispersionFunctional,
     GradDFTDispersionNetwork,
@@ -13,8 +13,8 @@ from td_graddft.neural_d import (
     calculate_distances,
     make_neural_d_functional,
 )
-from td_graddft.scf.molecules import QuadratureGrid
-from td_graddft.training import predict_ground_state_total_energy
+from gradscf.scf.molecules import QuadratureGrid
+from gradscf.training import predict_ground_state_total_energy
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from td_graddft.data.grid import (
+from gradscf.data.grid import (
     BRAGG_RADII,
     BUNDLED_LEBEDEV_POINTS,
     TREUTLER_XI,
@@ -17,7 +17,7 @@ from td_graddft.data.grid import (
     _load_lebedev_table_np,
     build_molecular_grid,
 )
-from td_graddft.data.molecule import parse_molecule_spec
+from gradscf.data.molecule import parse_molecule_spec
 
 
 def _pyscf_grid(atom: str, *, level: int):

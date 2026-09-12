@@ -1,6 +1,6 @@
 import pytest
 
-from td_graddft.tddft.response_options import (
+from gradscf.tddft.response_options import (
     ResponseKernelOptions,
     normalize_response_kernel_options,
 )

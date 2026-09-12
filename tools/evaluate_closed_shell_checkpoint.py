@@ -18,15 +18,15 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
-from td_graddft import neural_xc
-from td_graddft.xc_backend.jax_libxc import b3lyp_component_basis
-from td_graddft.neural_xc import (
+from gradscf import neural_xc
+from gradscf.xc_backend.jax_libxc import b3lyp_component_basis
+from gradscf.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
     DEFAULT_NEURAL_XC_RESPONSE_HF_MODE,
 )
-from td_graddft.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     load_params_checkpoint,
     predict_ground_state_total_energy,

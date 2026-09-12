@@ -23,12 +23,12 @@ from pyscf import dft, gto, lib
 from pyscf.lib import logger
 from pyscf.tdscf.rhf import lr_eigh, real_eig
 
-from td_graddft.data.reference import restricted_reference_from_pyscf
-from td_graddft.features import restricted_grid_features_with_gradients
-from td_graddft.tddft.casida import _restricted_delta_eps
-from td_graddft.tddft.response import gen_tdhf_vind
-from td_graddft.tddft.types import TDDFTResult
-from td_graddft.xc_backend.jax_libxc import eval_xc_response_tensor, hybrid_coeff, xc_type
+from gradscf.data.reference import restricted_reference_from_pyscf
+from gradscf.features import restricted_grid_features_with_gradients
+from gradscf.tddft.casida import _restricted_delta_eps
+from gradscf.tddft.response import gen_tdhf_vind
+from gradscf.tddft.types import TDDFTResult
+from gradscf.xc_backend.jax_libxc import eval_xc_response_tensor, hybrid_coeff, xc_type
 
 
 HARTREE_TO_EV = 27.211386245988
@@ -69,7 +69,7 @@ class SemilocalResponseFunctional:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Trace PySCF and TD-GradDFT Davidson histories for benzene PBE TDDFT."
+        description="Trace PySCF and GradSCF Davidson histories for benzene PBE TDDFT."
     )
     p.add_argument("--basis", default="def2-tzvp")
     p.add_argument("--xc", default="pbe")
@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
         "--tdgraddft-response-mode",
         choices=("direct", "df", "auto"),
         default="direct",
-        help="Two-electron backend for the TD-GradDFT TDDFT response operator.",
+        help="Two-electron backend for the GradSCF TDDFT response operator.",
     )
     p.add_argument("--outdir", default="benchmark/benzene_pbe_def2tzvp_tddft_davidson_trace_20260715")
     return p.parse_args()
@@ -526,7 +526,7 @@ def trace_tdgraddft_tdhf(
             u2_basis.append(u2_new[:, idx].copy())
 
     if best is None:
-        raise RuntimeError("TD-GradDFT Davidson trace did not run any iteration.")
+        raise RuntimeError("GradSCF Davidson trace did not run any iteration.")
     return {
         "solver": "tdgraddft_tdhf_davidson",
         "equation": "full TDHF/TDDFT [A B; -B -A] [X,Y] = omega [X,Y]",
@@ -572,7 +572,7 @@ def run_tdgraddft_trace(
     traced["elapsed_s"] = time.perf_counter() - t0
 
     # Run the production path once to confirm the traced forward energies.
-    from td_graddft import tdscf
+    from gradscf import tdscf
 
     prod = tdscf.TDDFT(
         reference,

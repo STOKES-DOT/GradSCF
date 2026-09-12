@@ -4,20 +4,53 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from td_graddft.data.molecule import parse_molecule_spec
-from td_graddft.data.integrals.libcint.mol import build_libcint_mol
-from td_graddft.scf import RKSConfig, UKSConfig
-from td_graddft.scf.init_guess import (
+from gradscf.data.molecule import parse_molecule_spec
+from gradscf.data.integrals.libcint.mol import build_libcint_mol
+from gradscf.scf import RKSConfig, UKSConfig
+from gradscf.scf.init_guess import (
     RestrictedInitGuess,
     restricted_init_guess_from_pyscf,
     unrestricted_init_guess_from_pyscf,
 )
-from td_graddft.scf.inputs import (
+from gradscf.integrals.assembly import (
     RKSIntegralInputs,
     UKSIntegralInputs,
     build_rks_integral_inputs,
     build_uks_integral_inputs,
 )
+
+
+def test_scf_inputs_compatibility_alias_shares_assembly_module(monkeypatch):
+    import gradscf.scf.inputs as legacy
+    import gradscf.integrals.assembly as assembly
+
+    assert legacy is assembly
+    assert legacy.RKSIntegralInputs is RKSIntegralInputs
+    assert legacy.UKSIntegralInputs is UKSIntegralInputs
+    sentinel = object()
+    monkeypatch.setattr(legacy, "_gpu4pyscf_eri", sentinel)
+    assert assembly._gpu4pyscf_eri is sentinel
+
+
+def test_assembly_import_does_not_initialize_scf_package():
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+    import gradscf
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(gradscf.__file__).resolve().parent.parent)
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys; import gradscf.integrals.assembly; "
+            "assert 'gradscf.scf' not in sys.modules"
+        )],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def _h2_spec():
@@ -130,6 +163,37 @@ def test_build_rks_integral_inputs_direct_backend_keeps_basis_not_eri():
     assert jnp.asarray(inputs.nuclear_repulsion).shape == ()
 
 
+@pytest.mark.parametrize("module_name", ["gradscf.integrals.assembly", "gradscf.scf.inputs"])
+def test_response_eri_pair_matrix_honors_assembly_patch_points(monkeypatch, module_name):
+    from dataclasses import replace
+    from importlib import import_module
+
+    inputs = build_rks_integral_inputs(
+        atom=_h2_spec(),
+        basis="sto-3g",
+        config=RKSConfig(jk_backend="direct"),
+        integral_backend="jax",
+        grids_level=0,
+        max_l=1,
+        init_guess="1e",
+    )
+    expected = jnp.full((3, 3), 42.0)
+    calls = []
+
+    def fake_packed_eri(basis):
+        calls.append(basis)
+        return expected
+
+    monkeypatch.setattr(import_module(module_name), "eri_pair_matrix_packed", fake_packed_eri)
+    assert inputs.response_eri_pair_matrix() is expected
+    assert len(calls) == 1
+    assert calls[0] is inputs.direct_basis
+
+    cached_pair = jnp.eye(3)
+    assert replace(inputs, eri_pair_matrix=cached_pair).response_eri_pair_matrix() is cached_pair
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("jk_backend", ["full", "df"])
 def test_build_rks_integral_inputs_cpu_nondirect_skips_eri_group_precompute(jk_backend):
     pytest.importorskip("pyscf")
@@ -151,7 +215,7 @@ def test_build_rks_integral_inputs_cpu_nondirect_skips_eri_group_precompute(jk_b
 
 
 def test_build_rks_integral_inputs_cpu_default_uses_minao_initial_density(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     captured = {}
 
@@ -195,7 +259,7 @@ def test_build_rks_integral_inputs_1e_initial_guess_keeps_density_unset():
 
 
 def test_build_rks_integral_inputs_jax_uses_fused_core_matrices(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     def fake_overlap_hcore_matrices(basis, *, backend="auto", **kwargs):
         shape = (basis.nao, basis.nao)
@@ -221,7 +285,7 @@ def test_build_rks_integral_inputs_jax_uses_fused_core_matrices(monkeypatch):
 
 
 def test_build_rks_integral_inputs_gpu_uses_integral_backbone(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     calls = {"core": 0}
 
@@ -249,7 +313,7 @@ def test_build_rks_integral_inputs_gpu_uses_integral_backbone(monkeypatch):
 
 
 def test_build_rks_integral_inputs_gpu_full_uses_gpu4pyscf_eri(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     pytest.importorskip("pyscf")
     fake_pair = jnp.arange(9, dtype=jnp.float64).reshape(3, 3)
@@ -279,7 +343,7 @@ def test_build_rks_integral_inputs_gpu_full_uses_gpu4pyscf_eri(monkeypatch):
 
 
 def test_build_uks_integral_inputs_gpu_full_skips_jax_backbone(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     fake_cpu_eri = jnp.zeros((1, 1, 1, 1), dtype=jnp.float64)
     fake_gpu_eri = jnp.ones((1, 1, 1, 1), dtype=jnp.float64)
@@ -334,7 +398,7 @@ def test_build_uks_integral_inputs_gpu_full_skips_jax_backbone(monkeypatch):
 
 
 def test_build_uks_integral_inputs_gpu_full_skips_cpu_eri(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     fake_gpu_eri = jnp.ones((1, 1, 1, 1), dtype=jnp.float64)
     original_cached_integral = inputs_mod._cached_libcint_host_integral
@@ -390,7 +454,7 @@ def test_restricted_chk_init_guess_uses_bound_pyscf_chkfile_api(monkeypatch):
     fake_mf = FakeMF()
 
     monkeypatch.setattr(
-        "td_graddft.scf.init_guess._build_pyscf_ks_object",
+        "gradscf.scf.init_guess._build_pyscf_ks_object",
         lambda **kwargs: (object(), fake_mf),
     )
 
@@ -433,7 +497,7 @@ def test_unrestricted_chk_init_guess_uses_bound_pyscf_chkfile_api(monkeypatch):
     fake_mf = FakeMF()
 
     monkeypatch.setattr(
-        "td_graddft.scf.init_guess._build_pyscf_ks_object",
+        "gradscf.scf.init_guess._build_pyscf_ks_object",
         lambda **kwargs: (object(), fake_mf),
     )
 
@@ -469,7 +533,7 @@ def test_restricted_init_guess_reuses_prebuilt_libcint_mol(monkeypatch):
     fake_mol = object()
 
     monkeypatch.setattr(
-        "td_graddft.scf.init_guess.build_libcint_mol",
+        "gradscf.scf.init_guess.build_libcint_mol",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("build_libcint_mol should not be called")),
     )
     monkeypatch.setattr("pyscf.dft.RKS", lambda mol, xc=None: FakeMF())
@@ -496,7 +560,7 @@ def test_restricted_init_guess_reuses_prebuilt_libcint_mol(monkeypatch):
 
 
 def test_build_libcint_mol_caches_identical_host_handles(monkeypatch):
-    import td_graddft.data.integrals.libcint.mol as mol_mod
+    import gradscf.data.integrals.libcint.mol as mol_mod
 
     class FakeGTO:
         def __init__(self):
@@ -535,7 +599,7 @@ def test_build_libcint_mol_caches_identical_host_handles(monkeypatch):
 
 
 def test_libcint_one_electron_from_mol_caches_host_integrals():
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     class FakeMol:
         cart = False
@@ -575,7 +639,7 @@ def test_libcint_one_electron_from_mol_caches_host_integrals():
 
 
 def test_cached_libcint_host_integral_reuses_s4_eri_binding():
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     fake_mol = object()
     calls = {"n": 0}
@@ -605,7 +669,7 @@ def test_cached_libcint_host_integral_reuses_s4_eri_binding():
 
 
 def test_build_rks_integral_inputs_cpu_reuses_cached_grid_ao_bundle(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     pytest.importorskip("pyscf")
     inputs_mod._GRID_AO_INPUT_CACHE.clear()
@@ -650,7 +714,7 @@ def test_build_rks_integral_inputs_cpu_reuses_cached_grid_ao_bundle(monkeypatch)
 
 
 def test_build_rks_integral_inputs_cpu_grid_ao_cache_misses_on_geometry_change(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     pytest.importorskip("pyscf")
     inputs_mod._GRID_AO_INPUT_CACHE.clear()
@@ -697,7 +761,7 @@ def test_build_rks_integral_inputs_cpu_grid_ao_cache_misses_on_geometry_change(m
 
 
 def test_build_rks_integral_inputs_jax_skips_laplacian_for_gga(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     original_eval_ao = inputs_mod.evaluate_cartesian_ao
 
@@ -723,7 +787,7 @@ def test_build_rks_integral_inputs_jax_skips_laplacian_for_gga(monkeypatch):
 
 
 def test_build_rks_integral_inputs_can_skip_dipole_integrals(monkeypatch):
-    import td_graddft.scf.inputs as inputs_mod
+    import gradscf.scf.inputs as inputs_mod
 
     def _fail_dipole(*args, **kwargs):
         raise AssertionError("Ground-state-only input construction should be able to skip dipoles.")

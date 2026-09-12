@@ -12,10 +12,10 @@ import numpy as np
 import optax
 from pyscf import ao2mo, dft, fci, gto, scf
 
-from td_graddft import neural_xc, training
-from td_graddft.data.reference import restricted_reference_from_pyscf
-from td_graddft.spectra import HARTREE_TO_EV
-from td_graddft.xc_backend import b3lyp_component_basis
+from gradscf import neural_xc, training
+from gradscf.data.reference import restricted_reference_from_pyscf
+from gradscf.spectra import HARTREE_TO_EV
+from gradscf.xc_backend import b3lyp_component_basis
 
 
 jax.config.update("jax_enable_x64", True)

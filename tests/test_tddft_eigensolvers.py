@@ -3,15 +3,15 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from td_graddft.tddft.casida import solve_casida_from_tdhf_operator
-from td_graddft.tddft.eigensolvers import _davidson_search_nroots
-from td_graddft.tddft.eigensolvers import implicit_differential_davidson_lowest_symmetric
-from td_graddft.tddft.eigenvector_differentiation import (
+from gradscf.tddft.casida import solve_casida_from_tdhf_operator
+from gradscf.tddft.eigensolvers import _davidson_search_nroots
+from gradscf.tddft.eigensolvers import implicit_differential_davidson_lowest_symmetric
+from gradscf.tddft.eigenvector_differentiation import (
     implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
-from td_graddft.tddft.tda import solve_tda_from_operator
-from td_graddft.tddft.types import TDAResult, TDDFTResult
-from td_graddft.tddft.unrestricted import (
+from gradscf.tddft.tda import solve_tda_from_operator
+from gradscf.tddft.types import TDAResult, TDDFTResult
+from gradscf.tddft.unrestricted import (
     UnrestrictedTDAResult,
     UnrestrictedTDDFTResult,
     solve_unrestricted_casida_from_tdhf_operator,

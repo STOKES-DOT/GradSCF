@@ -11,9 +11,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pyscf import dft, gto
 
-from td_graddft import tdscf
-from td_graddft.data.reference import restricted_reference_from_pyscf
-from td_graddft.spectra import HARTREE_TO_EV, lorentzian_spectrum
+from gradscf import tdscf
+from gradscf.data.reference import restricted_reference_from_pyscf
+from gradscf.spectra import HARTREE_TO_EV, lorentzian_spectrum
 
 
 jax.config.update("jax_enable_x64", True)

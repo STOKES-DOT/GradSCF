@@ -13,7 +13,7 @@ EXAMPLES_USING_NEURAL_XC_FACADE = (
 def test_main_examples_use_tdscf_facade_for_restricted_response():
     for path in EXAMPLES_USING_PUBLIC_TDSCF:
         text = path.read_text()
-        assert "from td_graddft.tddft import RestrictedCasidaTDDFT" not in text
+        assert "from gradscf.tddft import RestrictedCasidaTDDFT" not in text
         assert "RestrictedCasidaTDDFT(" not in text
         assert "tdscf." in text
 

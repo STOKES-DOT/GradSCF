@@ -3,9 +3,9 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-from td_graddft.scf import UKSConfig, run_uks_from_integrals
-from td_graddft.scf.inputs import build_uks_integral_inputs
-from td_graddft.scf.uks import (
+from gradscf.scf import UKSConfig, run_uks_from_integrals
+from gradscf.scf.inputs import build_uks_integral_inputs
+from gradscf.scf.uks import (
     _point_unrestricted_xc_value_and_grad_kernel,
     run_unrestricted_scf_scan,
 )

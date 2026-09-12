@@ -1,6 +1,6 @@
 import pytest
 
-from td_graddft.data.ris_auxbasis import minimal_ris_auxbasis_for_mol
+from gradscf.data.ris_auxbasis import minimal_ris_auxbasis_for_mol
 
 
 class _FakeMol:

@@ -5,9 +5,9 @@ import jax
 import numpy as np
 import pytest
 
-from td_graddft.neural_xc import make_neural_xc_functional
-from td_graddft.workflows.core import run_neural_tddft, run_reference
-from td_graddft.workflows.types import SimulationConfig
+from gradscf.neural_xc import make_neural_xc_functional
+from gradscf.workflows.core import run_neural_tddft, run_reference
+from gradscf.workflows.types import SimulationConfig
 
 
 pytestmark = pytest.mark.skipif(

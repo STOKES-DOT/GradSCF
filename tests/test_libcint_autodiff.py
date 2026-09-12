@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from td_graddft.data.integrals.libcint.autodiff import (
+from gradscf.integrals.autodiff import (
     bind_libcint_integral_constant,
     libcint_int1e_with_coords,
 )

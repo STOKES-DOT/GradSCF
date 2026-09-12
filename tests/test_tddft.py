@@ -6,20 +6,20 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-import td_graddft.features as features_module
-import td_graddft.tddft.casida as casida_module
-import td_graddft.tddft._semilocal_response as semilocal_response_module
-import td_graddft.tddft.response as response_module
-from td_graddft.tddft import (
+import gradscf.features as features_module
+import gradscf.tddft.casida as casida_module
+import gradscf.tddft._semilocal_response as semilocal_response_module
+import gradscf.tddft.response as response_module
+from gradscf.tddft import (
     RestrictedCasidaTDDFT,
     UnrestrictedCasidaTDDFT,
 )
-from td_graddft.tddft.cisd import (
+from gradscf.tddft.cisd import (
     restricted_cisd_second_order_correction,
     unrestricted_cisd_second_order_correction,
 )
-from td_graddft.tddft.response import build_restricted_tda_operator
-from td_graddft.tddft.types import TDAResult
+from gradscf.tddft.response import build_restricted_tda_operator
+from gradscf.tddft.types import TDAResult
 
 
 def _operator_matrix(vind: Callable[[jnp.ndarray], jnp.ndarray], dim: int) -> jnp.ndarray:

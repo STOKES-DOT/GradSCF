@@ -3,14 +3,14 @@ import re
 
 
 def test_production_code_does_not_depend_on_removed_reference_adapters():
-    root = Path("src/td_graddft")
+    root = Path("src/gradscf")
     offenders = []
     for path in root.rglob("*.py"):
         text = path.read_text()
         if (
             "reference_legacy" in text
             or "pyscf_adapter" in text
-            or "td_graddft.reference" in text
+            or "gradscf.reference" in text
             or "from .reference import" in text
             or "from ..reference import" in text
         ):
@@ -21,14 +21,14 @@ def test_production_code_does_not_depend_on_removed_reference_adapters():
 
 def test_reference_legacy_and_pyscf_adapter_are_not_runtime_modules():
     import importlib
-    import td_graddft
+    import gradscf
 
-    assert "pyscf_adapter" not in td_graddft.__all__
-    assert "reference_legacy" not in td_graddft.__all__
+    assert "pyscf_adapter" not in gradscf.__all__
+    assert "reference_legacy" not in gradscf.__all__
     for module_name in (
-        "td_graddft.pyscf_adapter",
-        "td_graddft.reference_legacy",
-        "td_graddft.reference",
+        "gradscf.pyscf_adapter",
+        "gradscf.reference_legacy",
+        "gradscf.reference",
     ):
         try:
             importlib.import_module(module_name)
@@ -38,22 +38,22 @@ def test_reference_legacy_and_pyscf_adapter_are_not_runtime_modules():
 
 
 def test_runtime_public_api_does_not_expose_pyscf_bridge_symbols():
-    import td_graddft
-    from td_graddft import dft, upstreams
+    import gradscf
+    from gradscf import dft, upstreams
 
     forbidden = {
         "PySCFRSHSpec",
         "make_pyscf_rsh_spec",
         "ground_state_from_pyscf_mean_field",
     }
-    for module in (td_graddft, dft, upstreams):
+    for module in (gradscf, dft, upstreams):
         names = set(getattr(module, "__all__", ())) | set(vars(module))
         assert forbidden.isdisjoint(names)
 
 
 def test_core_public_api_does_not_expose_removed_geomopt_namespace():
     import importlib
-    import td_graddft
+    import gradscf
 
     forbidden = {
         "BOHR_TO_ANGSTROM",
@@ -67,12 +67,12 @@ def test_core_public_api_does_not_expose_removed_geomopt_namespace():
         "run_rks_ground_state_geometry_optimization",
     }
 
-    assert "geomopt" not in td_graddft.__all__
-    assert forbidden.isdisjoint(set(td_graddft.__all__))
+    assert "geomopt" not in gradscf.__all__
+    assert forbidden.isdisjoint(set(gradscf.__all__))
     for name in forbidden:
-        assert not hasattr(td_graddft, name)
+        assert not hasattr(gradscf, name)
 
-    removed_module = ".".join(("td_graddft", "geomopt"))
+    removed_module = ".".join(("gradscf", "geomopt"))
     try:
         importlib.import_module(removed_module)
     except ModuleNotFoundError:
@@ -81,15 +81,15 @@ def test_core_public_api_does_not_expose_removed_geomopt_namespace():
 
 
 def test_pyscf_runtime_imports_are_limited_to_integral_modules():
-    root = Path("src/td_graddft")
+    root = Path("src/gradscf")
     allowed = {
-        Path("src/td_graddft/data/reference.py"),
-        Path("src/td_graddft/df/jk.py"),
-        Path("src/td_graddft/scf/init_guess.py"),
+        Path("src/gradscf/data/reference.py"),
+        Path("src/gradscf/df/jk.py"),
+        Path("src/gradscf/scf/init_guess.py"),
     }
     allowed_prefixes = (
-        Path("src/td_graddft/data/integrals"),
-        Path("src/td_graddft/data/pyscf_basis_snapshot"),
+        Path("src/gradscf/integrals"),
+        Path("src/gradscf/data/pyscf_basis_snapshot"),
     )
     pattern = re.compile(r"^\s*(from\s+pyscf\b|import\s+pyscf\b)", re.MULTILINE)
 
@@ -104,7 +104,7 @@ def test_pyscf_runtime_imports_are_limited_to_integral_modules():
 
 
 def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
-    root = Path("src/td_graddft")
+    root = Path("src/gradscf")
     forbidden = ("mf.TDDFT", "mf.TDA", "grad_dft.interface.pyscf")
 
     offenders = []
@@ -117,8 +117,8 @@ def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
 
 
 def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
-    from td_graddft.scf import features as scf_features
-    from td_graddft.neural_xc import inputs
+    from gradscf.scf import features as scf_features
+    from gradscf.neural_xc import inputs
 
     hidden = (
         "_local_hfx_features_from_basis_dm",
@@ -131,7 +131,7 @@ def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
 
 
 def test_restricted_response_hvp_uses_factorized_transition_features():
-    text = Path("src/td_graddft/tddft/response.py").read_text()
+    text = Path("src/gradscf/tddft/response.py").read_text()
 
     assert "_transition_densities_on_grid" not in text
     assert "def _restricted_grid_xc_response" in text
@@ -148,9 +148,9 @@ def test_restricted_response_hvp_uses_factorized_transition_features():
 
 def test_restricted_response_feature_kind_helpers_are_owned_by_features_module():
     import jax.numpy as jnp
-    from td_graddft import features as features_module
+    from gradscf import features as features_module
 
-    text = Path("src/td_graddft/tddft/response.py").read_text()
+    text = Path("src/gradscf/tddft/response.py").read_text()
 
     assert "def _normalize_response_feature_kind" not in text
     assert "def _infer_response_feature_kind" not in text
@@ -160,8 +160,8 @@ def test_restricted_response_feature_kind_helpers_are_owned_by_features_module()
 
 
 def test_public_api_prefers_molecule_naming_over_reference_naming():
-    import td_graddft
-    from td_graddft import scf, workflows
+    import gradscf
+    from gradscf import scf, workflows
 
     scf_preferred = {
         "QuadratureGrid",
@@ -195,9 +195,9 @@ def test_public_api_prefers_molecule_naming_over_reference_naming():
     }
 
     assert scf_preferred.issubset(set(scf.__all__))
-    assert public_preferred.issubset(set(td_graddft.__all__))
+    assert public_preferred.issubset(set(gradscf.__all__))
     assert scf_legacy.isdisjoint(set(scf.__all__))
-    assert public_legacy.isdisjoint(set(td_graddft.__all__))
+    assert public_legacy.isdisjoint(set(gradscf.__all__))
     assert {"MoleculeRun", "MoleculeSpecConfig", "run_molecule_from_spec"}.issubset(
         set(workflows.__all__)
     )

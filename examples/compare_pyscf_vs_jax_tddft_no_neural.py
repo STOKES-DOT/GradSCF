@@ -9,9 +9,9 @@ import jax
 import numpy as np
 from pyscf import dft, gto
 
-from td_graddft import tdscf
-from td_graddft.data.reference import restricted_reference_from_pyscf
-from td_graddft.spectra import HARTREE_TO_EV
+from gradscf import tdscf
+from gradscf.data.reference import restricted_reference_from_pyscf
+from gradscf.spectra import HARTREE_TO_EV
 
 
 jax.config.update("jax_enable_x64", True)
@@ -67,14 +67,14 @@ def main() -> None:
         )
         result = graddft_td.kernel()
         if not bool(np.asarray(result.converged)):
-            raise RuntimeError(f"GradTDDFT {label} Davidson did not converge.")
+            raise RuntimeError(f"GradSCF {label} Davidson did not converge.")
 
         reference_ev = np.asarray(pyscf_td.e) * HARTREE_TO_EV
         predicted_ev = np.asarray(result.excitation_energies) * HARTREE_TO_EV
         reference_f = np.asarray(pyscf_td.oscillator_strength())
         predicted_f = np.asarray(graddft_td.oscillator_strength())
         print(f"\n{label}")
-        print("state  PySCF/eV  GradTDDFT/eV  |Delta|/eV  PySCF/f  GradTDDFT/f")
+        print("state  PySCF/eV  GradSCF/eV  |Delta|/eV  PySCF/f  GradSCF/f")
         for state in range(int(args.nstates)):
             print(
                 f"{state + 1:5d}  {reference_ev[state]:9.6f}  "

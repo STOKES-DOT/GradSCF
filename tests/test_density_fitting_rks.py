@@ -1,22 +1,22 @@
 import numpy as np
 import pytest
 
-from td_graddft.data import basis_from_pyscf_spec, evaluate_cartesian_ao
-from td_graddft.data.integrals import build_hcore, eri_pair_matrix_packed, eri_tensor, overlap_matrix
-from td_graddft.df import (
+from gradscf.data import basis_from_pyscf_spec, evaluate_cartesian_ao
+from gradscf.integrals import build_hcore, eri_pair_matrix_packed, eri_tensor, overlap_matrix
+from gradscf.df import (
     build_j_from_df,
     build_jk_from_df,
     build_jk_from_df_orbitals,
     eri_to_df_factors,
     true_df_factors_from_libcint_mol,
 )
-from td_graddft.scf import RKSConfig, run_rks_from_integrals
-from td_graddft.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from td_graddft.scf.features import _restricted_response_eri_slices_from_mo_tensor
-from td_graddft.data.integrals.jax.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
-from td_graddft.data.integrals.jax.packed_eri import build_jk_from_eri_pair_matrix, eri_pair_matrix_to_mo_eri_slices
-from td_graddft.tddft import RestrictedCasidaTDDFT
-from td_graddft.tddft._semilocal_response import SemilocalResponseFunctional
+from gradscf.scf import RKSConfig, run_rks_from_integrals
+from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
+from gradscf.scf.features import _restricted_response_eri_slices_from_mo_tensor
+from gradscf.integrals.backends.jax_reference.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
+from gradscf.integrals.backends.jax_reference.packed_eri import build_jk_from_eri_pair_matrix, eri_pair_matrix_to_mo_eri_slices
+from gradscf.tddft import RestrictedCasidaTDDFT
+from gradscf.tddft._semilocal_response import SemilocalResponseFunctional
 
 
 def _pyscf_or_skip():
@@ -232,7 +232,7 @@ def test_direct_no_df_without_screening_uses_packed_jk_path(monkeypatch):
     density = rng.normal(size=(mol.nao_nr(), mol.nao_nr()))
     density = 0.5 * (density + density.T)
 
-    import td_graddft.data.integrals.jax.direct_jk as direct_jk_mod
+    import gradscf.integrals.backends.jax_reference.direct_jk as direct_jk_mod
 
     def _fail_kernel(*args, **kwargs):
         raise AssertionError("unscreened direct J/K should reuse the packed ERI path")
@@ -295,7 +295,7 @@ def test_direct_no_df_shell_screening_skips_screened_quartets(monkeypatch):
     def _fail_kernel(*args, **kwargs):
         raise AssertionError("screened shell quartets should not run the ERI kernel")
 
-    import td_graddft.data.integrals.jax.direct_jk as direct_jk_mod
+    import gradscf.integrals.backends.jax_reference.direct_jk as direct_jk_mod
 
     monkeypatch.setattr(direct_jk_mod, "_run_quartet_kernel_chunked", _fail_kernel)
     shell_pair_bounds = np.zeros((len(basis.shells), len(basis.shells)))
@@ -578,7 +578,7 @@ def test_rks_df_backend_matches_pyscf_water_total_energy():
 def test_strict_jax_df_reference_for_water_skips_full_eri(monkeypatch):
     _pyscf_or_skip()
     from pyscf import dft
-    import td_graddft.scf.inputs as scf_inputs_mod
+    import gradscf.scf.inputs as scf_inputs_mod
 
     mol = _water_mol()
     mf = dft.RKS(mol)
@@ -630,7 +630,7 @@ def test_strict_jax_libcint_df_reference_for_water_skips_full_eri(monkeypatch):
     _pyscf_or_skip()
     from pyscf import dft, gto
 
-    import td_graddft.scf.builders as reference_mod
+    import gradscf.scf.builders as reference_mod
 
     orig_intor = gto.mole.Mole.intor
 
@@ -685,7 +685,7 @@ def test_libcint_df_reference_preserves_df_backend_when_xc_overrides_config(monk
     _pyscf_or_skip()
     from pyscf import gto
 
-    import td_graddft.scf.builders as reference_mod
+    import gradscf.scf.builders as reference_mod
 
     orig_intor = gto.mole.Mole.intor
 

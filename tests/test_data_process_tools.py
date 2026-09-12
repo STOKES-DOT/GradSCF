@@ -4,7 +4,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from td_graddft_tools import (
+from gradscf_tools import (
     build_molecular_target_bundle,
     input_info_atom_rows,
     input_info_to_geometry_string,

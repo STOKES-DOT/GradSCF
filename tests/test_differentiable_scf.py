@@ -5,23 +5,23 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 
-import td_graddft.training.targets as training_targets
-import td_graddft.training.trainer as training_trainer
-import td_graddft.scf.differentiable as scf_differentiable
-import td_graddft.scf.rks as scf_rks
-from td_graddft.xc_backend.jax_libxc import b3lyp_component_basis
-from td_graddft.neural_xc import make_neural_xc_functional
-from td_graddft.neural_xc.inputs import ChunkedHFXNu
+import gradscf.training.targets as training_targets
+import gradscf.training.trainer as training_trainer
+import gradscf.scf.differentiable as scf_differentiable
+import gradscf.scf.rks as scf_rks
+from gradscf.xc_backend.jax_libxc import b3lyp_component_basis
+from gradscf.neural_xc import make_neural_xc_functional
+from gradscf.neural_xc.inputs import ChunkedHFXNu
 from pyscf_reference import restricted_reference_from_pyscf
-from td_graddft.scf import DifferentiableSCF, DifferentiableSCFConfig
-from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
-from td_graddft.scf.differentiable import (
+from gradscf.scf import DifferentiableSCF, DifferentiableSCFConfig
+from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
+from gradscf.scf.differentiable import (
     _replace_molecule,
     _restricted_iteration_molecule,
     _restricted_total_occupations,
     _unrestricted_channel,
 )
-from td_graddft.training import (
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     density_on_grid,
@@ -1013,7 +1013,7 @@ def test_restricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch):
 
 
 def test_training_config_builds_implicit_scf_without_forward_mode_switch():
-    import td_graddft.training.targets as targets_mod
+    import gradscf.training.targets as targets_mod
 
     cfg = MolecularTrainingConfig(
         mode="self_consistent",

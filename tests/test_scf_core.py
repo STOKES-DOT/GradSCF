@@ -1,8 +1,8 @@
-from td_graddft.data import integrals
-from td_graddft.data.integrals.jax import screening
-from td_graddft import features
-from td_graddft.scf import builders, differentiable, facade, inputs, molecules, rhf, rks, uks
-from td_graddft.scf import core
+from gradscf.data import integrals
+from gradscf.integrals.backends.jax_reference import screening
+from gradscf import features
+from gradscf.scf import builders, differentiable, facade, inputs, molecules, rhf, rks, uks
+from gradscf.scf import core
 import jax
 import jax.numpy as jnp
 
@@ -40,7 +40,7 @@ def test_facade_uses_builder_level_reference_and_result_helpers():
 
 
 def test_direct_jk_uses_integrals_screening_helper():
-    from td_graddft.data.integrals.jax import direct_jk
+    from gradscf.integrals.backends.jax_reference import direct_jk
 
     assert direct_jk.shell_pair_schwarz_bounds is screening.shell_pair_schwarz_bounds
 

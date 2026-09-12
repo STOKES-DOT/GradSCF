@@ -3,7 +3,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-from td_graddft.scf import rks
+from gradscf.scf import rks
 
 
 def test_array_xc_value_and_grad_kernel_matches_pointwise_pbe0_gga():

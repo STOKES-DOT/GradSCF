@@ -28,15 +28,15 @@ import numpy as np
 import optax
 from pyscf import gto, scf
 
-from td_graddft.data.hdf5_cache import read_unrestricted_molecule, write_unrestricted_molecule
-from td_graddft import neural_xc
-from td_graddft.neural_xc import (
+from gradscf.data.hdf5_cache import read_unrestricted_molecule, write_unrestricted_molecule
+from gradscf import neural_xc
+from gradscf.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
-from td_graddft.scf import UKSConfig, unrestricted_molecule_from_spec_with_jax_uks
-from td_graddft.training import (
+from gradscf.scf import UKSConfig, unrestricted_molecule_from_spec_with_jax_uks
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,

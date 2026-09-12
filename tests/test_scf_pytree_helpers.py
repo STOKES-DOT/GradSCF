@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import jax
 
-from td_graddft.scf._pytree import pytree_dataclass
+from gradscf.scf._pytree import pytree_dataclass
 
 
 def test_pytree_dataclass_keeps_static_fields_out_of_children():
