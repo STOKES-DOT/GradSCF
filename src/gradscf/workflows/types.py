@@ -105,7 +105,7 @@ class SimulationConfig:
     jax_uks_potential_clip: float = 20.0
     execution_device: Literal["auto", "cpu", "gpu"] = "auto"
     move_reference_to_device: bool = True
-    jax_integral_backend: Literal["jax", "cpu", "gpu", "libcint"] = "cpu"
+    jax_integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu"
     jax_libcint_geometry_grad_policy: Literal["analytic", "error", "zero"] = "analytic"
     jit_tddft: bool = True
     jit_spectrum: bool = True

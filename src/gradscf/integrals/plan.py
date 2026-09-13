@@ -1,5 +1,5 @@
 """Reusable static integral plans with freshly bound basis parameters."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 
 import jax
@@ -103,9 +103,16 @@ class IntegralPlan:
             origin = (jnp.einsum("a,ar->r", charges, parameters.nuclear_coords) / total
                       if total else jnp.zeros(3))
         if self.backend == "native":
-            from .backends.native import evaluate
-            atm, bas, env = self.pack(parameters, origin=origin)
-            return evaluate(operator, atm, bas, env, self.topology.nao, cart=self.topology.cart)
+            from .backends.native_geometry import evaluate_geometry
+            # Keep basis/environment values separate from geometry, allowing
+            # unsupported exponent/coefficient AD to fail explicitly.
+            fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
+                            nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
+            atm, bas, env = self.pack(fixed)
+            coords = jnp.concatenate([parameters.nuclear_coords, parameters.centers], axis=0)
+            origin = jnp.zeros(3, dtype=env.dtype) if origin is None else origin
+            return evaluate_geometry(operator, atm, bas, env, coords, origin,
+                                     self.topology.nao, cart=self.topology.cart)
         from .backends import jax_reference
         names = {"overlap": "overlap_matrix", "kinetic": "kinetic_matrix",
                  "nuclear": "nuclear_attraction_matrix", "dipole": "dipole_matrix", "eri": "eri_tensor"}

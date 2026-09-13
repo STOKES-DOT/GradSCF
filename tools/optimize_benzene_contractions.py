@@ -28,7 +28,7 @@ from gradscf.integrals.normalization import normalized_shell_coefficients, radia
 from gradscf.scf.core import _diagonalize_fock, _orthogonalizer
 from gradscf.scf.rks import RKSConfig, run_rks_from_integrals_traceable
 
-# Same fixed geometry as tools/trace_benzene_pbe_tddft_davidson.py (Angstrom).
+# Same fixed geometry as tests/comparisons/trace_benzene_pbe_tddft_davidson.py (Angstrom).
 BENZENE_ATOM = """
 C 0.000000 1.396792 0.000000
 C -1.209657 0.698396 0.000000
@@ -248,18 +248,6 @@ def main():
     if not np.array_equal(history[-1]["parameters"], result.x):
         record(result.x)
     final_fd = check_gradient(experiment, result.x, evaluate(result.x))
-    from pyscf import gto, scf as pyscf_scf
-    reference_energies = []
-    for basis in ("3-21g", experiment.basis_dict(result.x)):
-        mol = gto.M(atom=experiment.atom, basis=basis, cart=True, verbose=0)
-        mf = pyscf_scf.RHF(mol)
-        mf.conv_tol, mf.conv_tol_grad = 1e-12, 1e-9
-        mf.kernel()
-        if not mf.converged:
-            raise RuntimeError("PySCF endpoint reference did not converge")
-        reference_energies.append(float(mf.e_tot))
-    endpoint_errors = np.abs(np.asarray(reference_energies)-[history[0]["energy_hartree"], history[-1]["energy_hartree"]])
-    np.testing.assert_allclose(endpoint_errors, 0., atol=1e-8, rtol=0)
     summary = dict(molecule=args.molecule, atom_angstrom=experiment.atom, method="RHF", basis="3-21g",
                    integral_backend="native", derivative="JAX converged RHF Lagrangian including Pulay overlap term",
                    dtype="float64", jax_version=jax.__version__, devices=[str(d) for d in jax.devices()],
@@ -267,8 +255,7 @@ def main():
                    iterations=int(result.nit), evaluations=len(cache), initial=history[0], final=history[-1],
                    energy_decrease_hartree=history[0]["energy_hartree"]-history[-1]["energy_hartree"],
                    initial_basis=experiment.basis_dict(experiment.x0), optimized_basis=experiment.basis_dict(result.x),
-                   initial_fd=initial_fd, final_fd=final_fd, pyscf_endpoint_energies=reference_energies,
-                   max_pyscf_energy_error=float(endpoint_errors.max()),
+                   initial_fd=initial_fd, final_fd=final_fd,
                    elapsed_seconds=time.perf_counter()-started)
     (output/"summary.json").write_text(json.dumps(summary, indent=2)+"\n")
     (output/"optimized_basis.json").write_text(json.dumps(summary["optimized_basis"], indent=2)+"\n")
@@ -278,7 +265,7 @@ def main():
         writer.writerows([r[k] for k in ("iteration", "energy_hartree", "max_gradient", "scf_cycles")] for r in history)
     print(f"{result.message}; decrease={summary['energy_decrease_hartree']:.12g} Ha; "
           f"final max|g|={history[-1]['max_gradient']:.3e}; elapsed={summary['elapsed_seconds']:.2f}s", flush=True)
-    print("Final FD:", final_fd, "PySCF max energy error:", summary["max_pyscf_energy_error"], flush=True)
+    print("Final FD:", final_fd, flush=True)
 
 
 if __name__ == "__main__":

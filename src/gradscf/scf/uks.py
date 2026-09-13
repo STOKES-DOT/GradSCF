@@ -20,6 +20,8 @@ from .core import (
     _host_float_unless_traced,
     _validate_density_matrix,
 )
+from .convergence import convergence_reached
+from .energy import XCContribution, unrestricted_energy, unrestricted_fock
 from .rks import (
     _PYSCF_LIKE_DIIS_SPACE,
     _apply_optional_fock_damping,
@@ -50,6 +52,7 @@ class UKSConfig:
     max_cycle: int = 80
     conv_tol: float = 1e-10
     conv_tol_density: float = 1e-8
+    conv_tol_grad: float = 1e-7
     convergence_metric: Literal["energy_and_residual", "energy"] = "energy_and_residual"
     damping: float = 0.0
     level_shift: float = 0.0
@@ -371,21 +374,12 @@ def _raw_fock_and_energy_for_state(
         vxc_grad_b=vxc_grad_b,
         xc_kind=xc_kind,
     )
-    fock_a = h + j_tot - alpha_eff * k_a + vxc_matrix_a + extra_fock_a
-    fock_b = h + j_tot - alpha_eff * k_b + vxc_matrix_b + extra_fock_b
-
-    e_one = jnp.einsum("ij,ij->", density_tot, h, precision=Precision.HIGHEST)
-    e_coul = 0.5 * jnp.einsum("ij,ij->", density_tot, j_tot, precision=Precision.HIGHEST)
-    e_x_hf = jnp.where(
-        include_hf_energy,
-        -0.5 * alpha_eff * (
-            jnp.einsum("ij,ij->", density_a, k_a, precision=Precision.HIGHEST)
-            + jnp.einsum("ij,ij->", density_b, k_b, precision=Precision.HIGHEST)
-        ),
-        jnp.asarray(0.0, dtype=h.dtype),
-    )
-    total = e_one + e_coul + e_x_hf + xc_energy + enuc
-    return total, xc_energy, fock_a, fock_b
+    xc=XCContribution(xc_energy,jnp.stack([vxc_matrix_a,vxc_matrix_b]),alpha_eff,
+        jnp.stack([extra_fock_a,extra_fock_b]),energy_includes_exact_exchange=not include_hf_energy)
+    exchange=jnp.stack([k_a,k_b])
+    fock=unrestricted_fock(h,j_tot,exchange,xc)
+    total=unrestricted_energy(jnp.stack([density_a,density_b]),h,j_tot,exchange,xc,nuclear_repulsion=enuc)
+    return total,xc_energy,fock[0],fock[1]
 
 
 def _molecule_like_state_for_bound_xc(
@@ -457,6 +451,7 @@ def run_unrestricted_scf_scan(
     damping: float,
     conv_tol: float | None = None,
     conv_tol_density: float,
+    conv_tol_grad: float = 1e-7,
     orthogonalization_eps: float,
     convergence_metric: str = "energy_and_residual",
     level_shift: float = 0.0,
@@ -482,7 +477,7 @@ def run_unrestricted_scf_scan(
         carry: tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array, Array],
     ) -> tuple[
         tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array, Array],
-        tuple[Array, Array, Array, Array, Array, Array],
+        tuple[Array, Array, Array, Array, Array, Array, Array],
     ]:
         (
             density_i,
@@ -519,7 +514,7 @@ def run_unrestricted_scf_scan(
             lambda fock, density: _apply_optional_level_shift(
                 fock,
                 overlap,
-                density,
+                2.0 * density,
                 level_shift=jnp.asarray(level_shift, dtype=fock.dtype),
                 active=level_shift != 0.0,
             )
@@ -542,12 +537,17 @@ def run_unrestricted_scf_scan(
         )
         rms_density = _spin_density_rms(density_next, density_i)
         energy_delta = jnp.abs(energy_next - energy_i)
-        converged_step = jnp.where(
-            jnp.asarray(energy_only),
-            energy_delta < energy_tol,
-            rms_density < jnp.asarray(conv_tol_density, dtype=rms_density.dtype),
+        # Test the raw Fock at the new density, not the DIIS extrapolate.
+        # For integer spin occupations ||[F,D]||/sqrt(2) is the norm of
+        # the occupied-virtual orbital gradient in an orthonormal basis.
+        gradient_norm = jnp.linalg.norm(
+            _spin_diis_error(raw_fock_next, density_next, overlap, x)
+        ) / jnp.sqrt(jnp.asarray(2.0, dtype=raw_fock_i.dtype))
+        converged_step = convergence_reached(
+            energy_delta, rms_density, gradient_norm, conv_tol=energy_tol,
+            conv_tol_density=conv_tol_density, conv_tol_grad=conv_tol_grad,
+            energy_only=energy_only, has_prior_cycle=has_prior_cycle,
         )
-        converged_step = jnp.logical_and(converged_step, has_prior_cycle)
         converged_next = jnp.logical_or(
             converged_i,
             converged_step,
@@ -571,13 +571,14 @@ def run_unrestricted_scf_scan(
             energy_next,
             raw_fock_next,
             rms_density,
+            converged_step,
         )
 
     def _freeze(
         carry: tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array, Array],
     ) -> tuple[
         tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array, Array],
-        tuple[Array, Array, Array, Array, Array, Array],
+        tuple[Array, Array, Array, Array, Array, Array, Array],
     ]:
         density_i, mo_coeff_i, mo_energy_i, energy_i, raw_fock_i, *_ = carry
         return carry, (
@@ -587,6 +588,7 @@ def run_unrestricted_scf_scan(
             energy_i,
             raw_fock_i,
             jnp.asarray(0.0, dtype=jnp.asarray(density_i).dtype),
+            jnp.asarray(True),
         )
 
     def body(
@@ -594,7 +596,7 @@ def run_unrestricted_scf_scan(
         _,
     ) -> tuple[
         tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array, Array, Array],
-        tuple[Array, Array, Array, Array, Array, Array],
+        tuple[Array, Array, Array, Array, Array, Array, Array],
     ]:
         return jax.lax.cond(carry[-1], _freeze, _advance, carry)
 
@@ -621,6 +623,7 @@ def run_unrestricted_scf_scan(
         energy_history,
         raw_fock_history,
         rms_history,
+        converged_history,
     ) = jax.lax.scan(
         body,
         (
@@ -647,19 +650,6 @@ def run_unrestricted_scf_scan(
     )
     best_idx = jnp.argmin(rms_history)
     final_idx = jnp.asarray(int(max_cycle) - 1, dtype=jnp.int32)
-    energy_delta_history = jnp.concatenate(
-        [
-            jnp.asarray([jnp.inf], dtype=energy_history.dtype),
-            jnp.abs(energy_history[1:] - energy_history[:-1]),
-        ]
-    )
-    density_converged_history = rms_history < jnp.asarray(conv_tol_density, dtype=rms_history.dtype)
-    energy_converged_history = energy_delta_history < energy_tol
-    converged_history = jnp.where(
-        jnp.asarray(energy_only),
-        energy_converged_history,
-        density_converged_history,
-    )
     first_converged_idx = jnp.argmax(converged_history.astype(jnp.int32))
     converged = jnp.any(converged_history)
     cycles = jnp.where(converged, first_converged_idx + 1, final_idx + 1)
@@ -854,6 +844,7 @@ def run_uks_from_integrals(
         damping=float(cfg.damping),
         conv_tol=float(cfg.conv_tol),
         conv_tol_density=float(cfg.conv_tol_density),
+        conv_tol_grad=float(cfg.conv_tol_grad),
         orthogonalization_eps=float(cfg.orthogonalization_eps),
         convergence_metric=str(cfg.convergence_metric),
         level_shift=float(cfg.level_shift),
@@ -864,10 +855,10 @@ def run_uks_from_integrals(
     mo_energy_a, mo_energy_b = mo_energy_spin[0], mo_energy_spin[1]
     fock_a, fock_b = raw_fock_spin[0], raw_fock_spin[1]
     if cfg.level_shift != 0.0:
-        mo_energy_a, mo_coeff_a = _diagonalize_fock(fock_a, x)
-        mo_energy_b, mo_coeff_b = _diagonalize_fock(fock_b, x)
-        density_a = _build_density_from_occ(mo_coeff_a, mo_occ_a)
-        density_b = _build_density_from_occ(mo_coeff_b, mo_occ_b)
+        # Remove the shift from reported energies without reoccupying a different
+        # unshifted root. Convergence establishes stationarity, not stability.
+        mo_energy_a = jnp.diag(mo_coeff_a.T @ fock_a @ mo_coeff_a)
+        mo_energy_b = jnp.diag(mo_coeff_b.T @ fock_b @ mo_coeff_b)
     energy, xc_energy, fock_a, fock_b = eval_state(
         density_a,
         density_b,

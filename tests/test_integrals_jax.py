@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from gradscf.integrals.basis import basis_from_pyscf_mol_cart, cartesian_angular_tuples
+from pyscf_adapters import basis_from_pyscf_mol_cart
+from gradscf.integrals.basis import cartesian_angular_tuples
 from gradscf.integrals import (
     build_hcore,
     eri_element,

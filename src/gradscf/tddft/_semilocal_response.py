@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import weakref
+import jax.numpy as jnp
 
 from gradscf.features import _contains_tracer, restricted_grid_response_variables
 from gradscf.xc_backend.jax_libxc import eval_xc_response_tensor, hybrid_coeff, xc_type
@@ -20,9 +21,14 @@ class SemilocalResponseFunctional:
     def __post_init__(self) -> None:
         object.__setattr__(self, "xc_spec", str(self.xc_spec).lower())
         object.__setattr__(self, "exact_exchange_fraction", float(hybrid_coeff(self.xc_spec)))
-        object.__setattr__(self, "response_feature_kind", str(xc_type(self.xc_spec)))
+        kind = str(xc_type(self.xc_spec))
+        object.__setattr__(self, "response_feature_kind", "LDA" if kind == "HF" else kind)
 
     def grid_response_tensor(self, molecule):
+        if xc_type(self.xc_spec) == "HF":
+            # Exact exchange is assembled separately. HF has no semilocal
+            # kernel; use a single density-feature channel containing zeros.
+            return jnp.zeros((1,1,len(molecule.grid.weights)),dtype=jnp.asarray(molecule.grid.weights).dtype)
         cache_key = (id(molecule), self.xc_spec)
         cached = _GRID_RESPONSE_TENSOR_CACHE.get(cache_key)
         if cached is not None:

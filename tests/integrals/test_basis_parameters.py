@@ -87,12 +87,14 @@ def test_plan_does_not_cache_parameter_values():
     np.testing.assert_allclose(plan.evaluate("kinetic", p2), 2*plan.evaluate("kinetic", params), atol=1e-12)
 
 
-def test_backend_capabilities_do_not_claim_native_derivatives():
+def test_native_capabilities_distinguish_geometry_and_basis_derivatives():
     assert hasattr(integrals, "backend_capabilities")
     caps = integrals.backend_capabilities("native")
     assert caps.supports("eri", derivative_order=0)
     assert not caps.supports("eri", variable="exponents", derivative_order=1)
-    assert not caps.supports("kinetic", variable="centers", derivative_order=1)
+    assert caps.supports("kinetic", variable="centers", derivative_order=1)
+    assert caps.supports("nuclear", variable="nuclear_coords", derivative_order=1)
+    assert not caps.supports("eri", variable="centers", derivative_order=2)
 
 
 def test_reference_eri_parameter_gradient_and_center_gradient():

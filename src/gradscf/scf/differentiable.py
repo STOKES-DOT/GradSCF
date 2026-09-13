@@ -17,11 +17,11 @@ from ..neural_xc.inputs import (
     hfx_nu_source,
 )
 from .core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
-from .implicit import (
-    ImplicitFixedPointConfig,
-    implicit_fixed_point_solution,
-)
+from .autodiff import SCFDifferentiationConfig, normalize_scf_gradient_mode
+from .implicit import implicit_fixed_point_solution
 from .xc_energy import xc_energy_and_potential_from_density
+from .energy import (XCContribution, restricted_energy, restricted_fock,
+                     unrestricted_energy, unrestricted_fock)
 from .rks import (
     RKSConfig,
     _build_jk,
@@ -257,16 +257,10 @@ def _resolved_xc_object(
     functional: Any,
     molecule: Any,
 ) -> Any:
-    scf_molecule_binder = getattr(functional, "bind_to_molecule_for_scf", None)
-    if scf_molecule_binder is not None:
-        return scf_molecule_binder(params, molecule)
-    molecule_binder = getattr(functional, "bind_to_molecule", None)
-    if molecule_binder is not None:
-        return molecule_binder(params, molecule)
-    binder = getattr(functional, "bind", None)
-    if binder is not None:
-        return binder(params)
-    return functional
+    binder = getattr(functional, "bind_to_molecule_for_scf", None)
+    if not callable(binder):
+        raise TypeError("SCF XC requires bind_to_molecule_for_scf(params, molecule).")
+    return binder(params, molecule)
 
 
 def _scf_xc_components(
@@ -279,22 +273,12 @@ def _scf_xc_components(
     direct = getattr(functional, "scf_potential_components_and_alpha", None)
     if callable(direct):
         direct_components = direct(params, molecule)
-        extra_fock = None
-        if len(direct_components) == 4:
-            v_rho, v_grad, xc_kind, alpha = direct_components
-            v_tau = jnp.zeros_like(jnp.asarray(v_rho))
-            v_lapl = jnp.zeros_like(jnp.asarray(v_rho))
-        elif len(direct_components) == 6:
-            v_rho, v_grad, v_tau, v_lapl, xc_kind, alpha = direct_components
-        elif len(direct_components) == 7:
-            v_rho, v_grad, v_tau, v_lapl, xc_kind, alpha, extra_fock = direct_components
-        else:
+        if len(direct_components) != 7:
             raise ValueError(
-                "scf_potential_components_and_alpha must return "
-                "(v_rho, v_grad, xc_kind, alpha) or "
-                "(v_rho, v_grad, v_tau, v_lapl, xc_kind, alpha) or "
+                "scf_potential_components_and_alpha must return 7 components: "
                 "(v_rho, v_grad, v_tau, v_lapl, xc_kind, alpha, extra_fock)."
             )
+        v_rho, v_grad, v_tau, v_lapl, xc_kind, alpha, extra_fock = direct_components
         if extra_fock is None:
             extra_fock_matrix = jnp.zeros(
                 (molecule.ao.shape[1], molecule.ao.shape[1]),
@@ -322,8 +306,6 @@ def _scf_xc_components(
     resolved = _resolved_xc_object(params, functional, molecule)
     v_rho, v_grad, v_tau, v_lapl, xc_kind = _grid_xc_potential_components_from_resolved(
         resolved,
-        functional=functional,
-        params=params,
         molecule=molecule,
     )
     alpha = jnp.asarray(getattr(resolved, "exact_exchange_fraction", 0.0))
@@ -477,76 +459,30 @@ def _clip_hybrid_alpha(alpha: Array) -> Array:
 
 
 def _grid_xc_potential_components_from_resolved(
-    resolved: Any,
-    *,
-    functional: Any,
-    params: PyTree,
-    molecule: Any,
+    resolved: Any, *, molecule: Any,
 ) -> tuple[Array, Array, Array, Array, str]:
     component_getter = getattr(resolved, "grid_potential_components", None)
-    response_kind = _normalize_response_feature_kind(
-        getattr(resolved, "response_feature_kind", None)
-    )
-    if callable(component_getter):
-        components = component_getter(molecule)
-        if len(components) == 2:
-            v_rho, v_grad = components
-            v_tau = jnp.zeros_like(jnp.asarray(v_rho))
-            v_lapl = jnp.zeros_like(jnp.asarray(v_rho))
-        elif len(components) == 3:
-            v_rho, v_grad, v_tau = components
-            v_lapl = jnp.zeros_like(jnp.asarray(v_rho))
-        elif len(components) == 4:
-            v_rho, v_grad, v_tau, v_lapl = components
-        else:
-            raise ValueError(
-                "grid_potential_components must return (v_rho, v_grad) or "
-                "(v_rho, v_grad, v_tau) or (v_rho, v_grad, v_tau, v_lapl)."
-            )
-        v_rho = jnp.asarray(v_rho)
-        v_grad = jnp.asarray(v_grad, dtype=v_rho.dtype)
-        v_tau = jnp.asarray(v_tau, dtype=v_rho.dtype)
-        v_lapl = jnp.asarray(v_lapl, dtype=v_rho.dtype)
-        if v_grad.ndim == 2 and v_grad.shape == (3, v_rho.shape[0]):
-            v_grad = v_grad.T
-        if v_grad.ndim != 2 or v_grad.shape[0] != v_rho.shape[0] or v_grad.shape[1] != 3:
-            raise ValueError(
-                "v_grad must have shape (ngrids, 3) compatible with v_rho."
-            )
-        if v_tau.shape != v_rho.shape:
-            raise ValueError("v_tau must have the same shape as v_rho.")
-        if v_lapl.shape != v_rho.shape:
-            raise ValueError("v_lapl must have the same shape as v_rho.")
-        return v_rho, v_grad, v_tau, v_lapl, response_kind
-
-    grid_potential = getattr(resolved, "grid_potential", None)
-    if callable(grid_potential):
-        v_rho = jnp.asarray(grid_potential(molecule))
+    if not callable(component_getter):
+        raise TypeError("Bound SCF XC requires grid_potential_components(molecule).")
+    components = component_getter(molecule)
+    # BoundNeuralXCFunctional currently returns three components when no
+    # Laplacian channel is present, otherwise four. Both are active contracts.
+    if len(components) == 3:
+        v_rho, v_grad, v_tau = components
+        v_lapl = jnp.zeros_like(jnp.asarray(v_rho))
+    elif len(components) == 4:
+        v_rho, v_grad, v_tau, v_lapl = components
     else:
-        density_matrix = _spin_summed_density_matrix(molecule)
-        ao = jnp.asarray(molecule.ao)
-        total_density = jnp.einsum(
-            "rp,pq,rq->r",
-            ao,
-            density_matrix,
-            ao,
-            precision=Precision.HIGHEST,
-        )
-        local_potential = getattr(resolved, "local_potential", None)
-        if callable(local_potential):
-            v_rho = jnp.asarray(local_potential(total_density))
-        else:
-            functional_local_potential = getattr(functional, "local_potential", None)
-            if functional_local_potential is None:
-                raise AttributeError(
-                    "The XC functional must expose local_potential(...) or grid_potential(...)."
-                )
-            v_rho = jnp.asarray(functional_local_potential(params, total_density))
+        raise ValueError("grid_potential_components must return 3 or 4 components.")
     v_rho = jnp.asarray(v_rho)
-    v_grad = jnp.zeros(v_rho.shape + (3,), dtype=v_rho.dtype)
-    v_tau = jnp.zeros_like(v_rho)
-    v_lapl = jnp.zeros_like(v_rho)
-    return v_rho, v_grad, v_tau, v_lapl, "LDA"
+    v_grad, v_tau, v_lapl = (jnp.asarray(v, dtype=v_rho.dtype)
+                           for v in (v_grad, v_tau, v_lapl))
+    if v_grad.shape != v_rho.shape + (3,):
+        raise ValueError("v_grad must have shape (ngrids, 3) compatible with v_rho.")
+    if v_tau.shape != v_rho.shape or v_lapl.shape != v_rho.shape:
+        raise ValueError("v_tau and v_lapl must have the same shape as v_rho.")
+    return v_rho, v_grad, v_tau, v_lapl, _normalize_response_feature_kind(
+        getattr(resolved, "response_feature_kind", None))
 
 
 def _build_vxc_matrix_from_components(
@@ -654,10 +590,8 @@ def _restricted_xc_fock_terms(
         )
 
     energy_alpha_callback = getattr(functional, "scf_xc_energy_and_alpha_for_density", None)
-    energy_callback = getattr(functional, "scf_xc_energy_for_density", None)
-    if callable(energy_alpha_callback) or callable(energy_callback):
+    if callable(energy_alpha_callback):
         density = _spin_summed_density_matrix(molecule)
-        has_aux = callable(energy_alpha_callback)
         extra_fock_getter = getattr(functional, "scf_extra_fock_for_density", None)
         extra_fock = (
             extra_fock_getter(params, molecule, density)
@@ -668,20 +602,12 @@ def _restricted_xc_fock_terms(
             params,
             molecule=molecule,
             density=density,
-            xc_energy_fn=energy_alpha_callback if has_aux else energy_callback,
+            xc_energy_fn=energy_alpha_callback,
             exact_exchange_fraction=0.0,
             extra_fock_matrix=extra_fock,
-            has_aux=has_aux,
+            has_aux=True,
         )
-        if has_aux:
-            alpha = result.aux
-        else:
-            alpha_getter = getattr(functional, "scf_exact_exchange_fraction", None)
-            alpha = (
-                alpha_getter(params, molecule, density)
-                if callable(alpha_getter)
-                else jnp.asarray(0.0, dtype=functional_dtype)
-            )
+        alpha = result.aux
         return (
             jnp.asarray(result.vxc_matrix, dtype=functional_dtype),
             _clip_hybrid_alpha(jnp.asarray(alpha, dtype=functional_dtype)),
@@ -718,7 +644,7 @@ class DifferentiableSCFConfig:
     """Configuration for fixed-density / self-consistent differentiable SCF."""
 
     mode: Literal["fixed_density", "self_consistent"] = "fixed_density"
-    gradient_mode: Literal["expl", "impl"] = "expl"
+    gradient_mode: Literal["unrolled", "implicit", "expl", "impl"] = "expl"
     max_cycle: int = 12
     damping: float = 0.25
     level_shift: float = 0.0
@@ -726,6 +652,7 @@ class DifferentiableSCFConfig:
     convergence_metric: Literal["energy_and_residual", "energy"] = "energy_and_residual"
     occupation_tolerance: float = 1e-8
     conv_tol_density: float = 1e-8
+    conv_tol_grad: float = 1e-7
     orthogonalization_eps: float = 1e-10
     eigenvalue_jitter: float = 1e-8
     vxc_clip: float = 20.0
@@ -735,20 +662,29 @@ class DifferentiableSCFConfig:
     implicit_diff_tolerance: float = 1e-6
     implicit_diff_regularization: float = 0.0
     implicit_diff_restart: int = 12
+    differentiation: SCFDifferentiationConfig | None = None
 
     def __post_init__(self) -> None:
-        _valid_gradient_modes = {"expl", "impl"}
-        if self.gradient_mode not in _valid_gradient_modes:
-            raise ValueError(
-                f"gradient_mode must be one of {_valid_gradient_modes}, "
-                f"got {self.gradient_mode!r}."
-            )
+        normalize_scf_gradient_mode(self.gradient_mode)
         _valid_convergence_metrics = {"energy_and_residual", "energy"}
         if self.convergence_metric not in _valid_convergence_metrics:
             raise ValueError(
                 "convergence_metric must be one of "
                 f"{_valid_convergence_metrics}, got {self.convergence_metric!r}."
             )
+
+    def differentiation_config(self) -> SCFDifferentiationConfig:
+        """Use an explicit SCF policy, otherwise adapt the legacy DFT fields."""
+        if self.differentiation is not None:
+            return self.differentiation
+        return SCFDifferentiationConfig(
+            mode=self.gradient_mode,
+            tolerance=self.implicit_diff_tolerance,
+            max_iter=self.implicit_diff_max_iter,
+            restart=self.implicit_diff_restart,
+            regularization=self.implicit_diff_regularization,
+            require_converged=self.require_converged_iterates,
+        )
 
     def energy_convergence_tolerance(self) -> float:
         if self.conv_tol_energy is not None:
@@ -1070,19 +1006,10 @@ class DifferentiableSCF:
             mo_coeff,
             mo_energy,
         )
-        fock = ctx.h1e + j_mat - 0.5 * alpha * k_mat + vxc_matrix + vhf_matrix
-        one_body = jnp.einsum("ij,ij->", density, ctx.h1e, precision=Precision.HIGHEST)
-        coulomb = 0.5 * jnp.einsum("ij,ij->", density, j_mat, precision=Precision.HIGHEST)
-        exact_exchange = -0.25 * alpha * jnp.einsum(
-            "ij,ij->",
-            density,
-            k_mat,
-            precision=Precision.HIGHEST,
-        )
-        total = one_body + coulomb + exact_exchange + xc_energy + jnp.asarray(
-            getattr(ctx.molecule, "nuclear_repulsion", 0.0),
-            dtype=ctx.h1e.dtype,
-        )
+        xc=XCContribution(xc_energy,vxc_matrix,alpha,vhf_matrix)
+        fock=restricted_fock(ctx.h1e,j_mat,k_mat,xc)
+        total=restricted_energy(density,ctx.h1e,j_mat,k_mat,xc,
+            nuclear_repulsion=jnp.asarray(getattr(ctx.molecule,"nuclear_repulsion",0.),dtype=ctx.h1e.dtype))
         return total, xc_energy, _safe_symmetric_matrix(fock), alpha, j_mat, k_mat
 
     def _restricted_fock_from_density(
@@ -1222,6 +1149,7 @@ class DifferentiableSCF:
             max_cycle=self.config.max_cycle,
             conv_tol=conv_tol,
             conv_tol_density=self.config.conv_tol_density,
+            conv_tol_grad=self.config.conv_tol_grad,
             damping=self.config.damping,
             level_shift=self.config.level_shift,
             orthogonalization_eps=self.config.orthogonalization_eps,
@@ -1291,14 +1219,14 @@ class DifferentiableSCF:
         xc_params: PyTree,
     ) -> tuple[Any, DifferentiableSCFInfo]:
         if _is_unrestricted_reference(molecule):
-            if self.config.gradient_mode == "impl":
+            if self.config.differentiation_config().mode == "implicit":
                 return self._full_scf_implicit_fixed_point_unrestricted(
                     molecule,
                     xc_functional,
                     xc_params,
                 )
             return self._full_scf_unrestricted(molecule, xc_functional, xc_params)
-        if self.config.gradient_mode == "impl":
+        if self.config.differentiation_config().mode == "implicit":
             return self._full_scf_implicit_fixed_point(molecule, xc_functional, xc_params)
         problem = self._restricted_scf_problem(molecule, xc_functional, xc_params)
         (
@@ -1409,17 +1337,10 @@ class DifferentiableSCF:
             xc_kind=xc_kind,
         )
         alpha = _clip_hybrid_alpha(alpha)
-        fock_spin = jnp.stack(
-            [
-                _safe_symmetric_matrix(
-                    h1e + j_mat - alpha * k_alpha + extra_fock_a + vxc_matrix_a
-                ),
-                _safe_symmetric_matrix(
-                    h1e + j_mat - alpha * k_beta + extra_fock_b + vxc_matrix_b
-                ),
-            ],
-            axis=0,
-        )
+        xc=XCContribution(0.,jnp.stack([vxc_matrix_a,vxc_matrix_b]),alpha,
+                          jnp.stack([extra_fock_a,extra_fock_b]))
+        fock_spin=jax.vmap(_safe_symmetric_matrix)(
+            unrestricted_fock(h1e,j_mat,jnp.stack([k_alpha,k_beta]),xc))
         return fock_spin, molecule_iter, density_total, j_mat, k_alpha, k_beta, alpha
 
     def _full_scf_unrestricted(
@@ -1480,25 +1401,15 @@ class DifferentiableSCF:
                 with_exchange=with_exchange,
                 jk_from_orbitals=True,
             )
-            one_body = jnp.einsum("spq,pq->", density_spin, h1e, optimize=True)
-            coulomb = 0.5 * jnp.einsum("pq,pq->", density_total, j_mat, optimize=True)
-            exchange = -0.5 * alpha * (
-                jnp.einsum("pq,pq->", density_spin[0], k_alpha, optimize=True)
-                + jnp.einsum("pq,pq->", density_spin[1], k_beta, optimize=True)
-            )
             energy_from_molecule = getattr(xc_functional, "energy_from_molecule", None)
             xc_energy = (
                 energy_from_molecule(xc_params, molecule_iter)
                 if callable(energy_from_molecule)
                 else jnp.asarray(0.0, dtype=h1e.dtype)
             )
-            total_energy = (
-                one_body
-                + coulomb
-                + exchange
-                + jnp.asarray(xc_energy, dtype=h1e.dtype)
-                + jnp.asarray(getattr(molecule, "nuclear_repulsion", 0.0), dtype=h1e.dtype)
-            )
+            xc=XCContribution(jnp.asarray(xc_energy,dtype=h1e.dtype),0.,alpha)
+            total_energy=unrestricted_energy(density_spin,h1e,j_mat,jnp.stack([k_alpha,k_beta]),xc,
+                nuclear_repulsion=jnp.asarray(getattr(molecule,"nuclear_repulsion",0.),dtype=h1e.dtype))
             return fock_spin, fock_spin, total_energy
 
         (
@@ -1524,6 +1435,7 @@ class DifferentiableSCF:
             damping=float(self.config.damping),
             conv_tol=float(self.config.energy_convergence_tolerance()),
             conv_tol_density=float(self.config.conv_tol_density),
+            conv_tol_grad=float(self.config.conv_tol_grad),
             orthogonalization_eps=float(self.config.orthogonalization_eps),
             convergence_metric=str(self.config.convergence_metric),
             level_shift=float(self.config.level_shift),
@@ -1675,12 +1587,7 @@ class DifferentiableSCF:
                 neginf=0.0,
             )
 
-        implicit_cfg = ImplicitFixedPointConfig(
-            tolerance=float(self.config.implicit_diff_tolerance),
-            max_iter=int(self.config.implicit_diff_max_iter),
-            regularization=float(self.config.implicit_diff_regularization),
-            restart=int(self.config.implicit_diff_restart),
-        )
+        implicit_cfg = self.config.differentiation_config().as_implicit_config()
 
         if fixed_point_args is None:
             def _fixed_point_density(
@@ -1708,6 +1615,8 @@ class DifferentiableSCF:
             fixed_point=_fixed_point_density,
             fixed_point_args=fixed_point_args,
             config=implicit_cfg,
+            converged=forward_info.converged,
+            require_converged=self.config.differentiation_config().require_converged,
         )
         fock_spin_implicit = _fock_from_density(density_spin_implicit, xc_params)
         mo_energy_spin_implicit, mo_coeff_spin_implicit = jax.vmap(
@@ -1829,12 +1738,7 @@ class DifferentiableSCF:
                 fock, _alpha, _j_mat, _k_mat = _full_fock_from_density(density_var, params_var, args)
                 return _density_from_fock(fock, args)
 
-        implicit_cfg = ImplicitFixedPointConfig(
-            tolerance=float(self.config.implicit_diff_tolerance),
-            max_iter=int(self.config.implicit_diff_max_iter),
-            regularization=float(self.config.implicit_diff_regularization),
-            restart=int(self.config.implicit_diff_restart),
-        )
+        implicit_cfg = self.config.differentiation_config().as_implicit_config()
 
         density_implicit = implicit_fixed_point_solution(
             xc_params,
@@ -1842,6 +1746,8 @@ class DifferentiableSCF:
             fixed_point=_fixed_point_density,
             fixed_point_args=fixed_point_args,
             config=implicit_cfg,
+            converged=converged,
+            require_converged=self.config.differentiation_config().require_converged,
         )
 
         fock_implicit, _alpha, _j_mat, _k_mat = _full_fock_from_density(

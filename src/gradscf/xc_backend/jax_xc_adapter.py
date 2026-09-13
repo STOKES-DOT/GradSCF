@@ -290,6 +290,9 @@ class _JAXXCModule:
     def __getattr__(self, name: str):
         if name in SAFE_JAX_XC_WRAPPED_COMPOSITES:
             return self._hybrid_factory(name)
+        if name == "lda_c_pw":
+            from .jax_xc_compat import pw_parameter_factory
+            return pw_parameter_factory(getattr(self._module, name))
         return getattr(self._module, name)
 
     def _hybrid_factory(self, name: str):

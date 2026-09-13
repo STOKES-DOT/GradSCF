@@ -10,7 +10,7 @@ import pytest
 
 
 def _load_training_tool():
-    path = Path("tools/closed_shell_s1_self_consistent_train.py")
+    path = Path("tests/comparisons/closed_shell_s1_self_consistent_train.py")
     spec = importlib.util.spec_from_file_location("closed_shell_s1_self_consistent_train", path)
     assert spec is not None
     assert spec.loader is not None
@@ -22,7 +22,7 @@ def _load_training_tool():
 
 def _load_evaluation_tool():
     _load_training_tool()
-    path = Path("tools/evaluate_closed_shell_checkpoint.py")
+    path = Path("tests/comparisons/evaluate_closed_shell_checkpoint.py")
     spec = importlib.util.spec_from_file_location("evaluate_closed_shell_checkpoint", path)
     assert spec is not None
     assert spec.loader is not None

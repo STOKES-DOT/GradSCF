@@ -108,7 +108,7 @@ def test_rks_kernel_runs_ground_state_without_building_reference(monkeypatch):
     assert captured["atom"].symbols == ("H", "H")
     assert captured["basis"] == "sto-3g"
     assert captured["xc_spec"] == "pbe"
-    assert captured["init_guess"] == "minao"
+    assert captured["init_guess"] == "hcore"
     assert captured["integral_backend"] == "cpu"
     assert captured["libcint_geometry_grad_policy"] == "analytic"
     assert captured["config"].jk_backend == "full"

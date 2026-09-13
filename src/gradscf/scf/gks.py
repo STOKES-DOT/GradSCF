@@ -15,6 +15,7 @@ from ..xc_backend.jax_libxc import hybrid_coeff, xc_type
 from .core import _contains_jax_tracer, _host_float_unless_traced
 from .facade import _BaseKS
 from gradscf.integrals.assembly import build_uks_integral_inputs
+from .convergence import convergence_reached
 from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
 from .uks import UKSConfig, _point_unrestricted_xc_value_and_grad_kernel
 from .uks import _unrestricted_vxc_matrices, _unrestricted_xc_energy_and_potential_on_grid
@@ -187,10 +188,10 @@ def run_gks_from_integrals(
         raise ValueError("Generalized SCF currently requires real spatial AOs and integrals.")
     if not isinstance(nelectron, Integral) or not 0 < nelectron <= 2*n:
         raise ValueError("Invalid total electron count for generalized SCF.")
-    if cfg.max_cycle < 1 or min(cfg.conv_tol, cfg.conv_tol_density, cfg.conv_tol_grad) <= 0:
-        raise ValueError("Generalized SCF requires positive iterations and tolerances.")
-    if cfg.convergence_metric != "energy_and_residual":
-        raise ValueError("Generalized SCF requires energy_and_residual convergence.")
+    if cfg.max_cycle < 1 or cfg.conv_tol < 0 or min(cfg.conv_tol_density, cfg.conv_tol_grad) <= 0:
+        raise ValueError("Generalized SCF requires positive iterations, density/gradient tolerances, and nonnegative conv_tol.")
+    if cfg.convergence_metric not in ("energy_and_residual", "energy"):
+        raise ValueError("Generalized SCF requires energy_and_residual or energy convergence.")
     ao, deriv, weights = map(jnp.asarray, (ao, ao_deriv1, grid_weights))
     real_dtype = jnp.result_type(s, h.real, eri, ao, deriv, weights, nuclear_repulsion, jnp.float32)
     if init_density is not None:
@@ -254,9 +255,11 @@ def run_gks_from_integrals(
         energy, exc, raw = evaluate(dm)
         grad = gradient(coeff, raw)
         delta = jnp.sqrt(jnp.mean(jnp.abs(dm - old.density)**2))
-        converged = ((jnp.abs(energy - old.energy) < cfg.conv_tol)
-                     & (delta < cfg.conv_tol_density) & (grad < cfg.conv_tol_grad)
-                     & jnp.isfinite(energy))
+        converged = convergence_reached(
+            energy - old.energy, delta, grad, conv_tol=cfg.conv_tol,
+            conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
+            energy_only=cfg.convergence_metric == "energy", has_prior_cycle=old.cycles > 0,
+        )
         return _GeneralizedIteration(coeff, dm, energy, exc, raw, f, fh, eh, head, count,
                                      old.cycles+1, converged, grad)
 

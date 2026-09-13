@@ -55,11 +55,14 @@ def test_build_spectrum_handles_empty_neural_states():
     assert math.isnan(spectrum.low_energy_mae_ev)
 
 
-def test_training_scf_gradient_mode_is_always_implicit():
+@pytest.mark.parametrize('mode, expected', [
+    ('impl','implicit'), ('implicit','implicit'), ('expl','unrolled'), ('unrolled','unrolled'),
+])
+def test_training_scf_gradient_mode_honors_the_shared_policy(mode, expected):
     config = NeuralXCTrainingConfig(
-        objective=MolecularTrainingConfig(mode="fixed_density", scf_gradient_mode="impl"),
+        objective=MolecularTrainingConfig(mode="fixed_density", scf_gradient_mode=mode),
     )
-    assert _resolve_training_scf_gradient_mode(config) == "impl"
+    assert _resolve_training_scf_gradient_mode(config) == expected
 
 
 def test_strict_graddft_ground_state_canonicalizes_network_and_loss_shape():

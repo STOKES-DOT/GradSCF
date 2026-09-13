@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from gradscf.data import basis_from_pyscf_spec, basis_from_spec
+from gradscf.integrals import basis_from_pyscf_spec, basis_from_spec
 from gradscf.integrals.basis import _normalize_raw_shell_coefficients
-from gradscf.data.pyscf_basis_loader import load_basis_from_snapshot
+from gradscf.integrals.basis_data import load_basis_from_snapshot
 from gradscf.integrals import build_hcore, eri_tensor, overlap_matrix
 
 

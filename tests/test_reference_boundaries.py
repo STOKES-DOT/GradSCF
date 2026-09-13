@@ -89,7 +89,7 @@ def test_pyscf_runtime_imports_are_limited_to_integral_modules():
     }
     allowed_prefixes = (
         Path("src/gradscf/integrals"),
-        Path("src/gradscf/data/pyscf_basis_snapshot"),
+        Path("src/gradscf/integrals/basis_data/pyscf_basis_snapshot"),
     )
     pattern = re.compile(r"^\s*(from\s+pyscf\b|import\s+pyscf\b)", re.MULTILINE)
 
@@ -117,17 +117,17 @@ def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
 
 
 def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
-    from gradscf.scf import features as scf_features
+    import reference_scf_features as scf_features
     from gradscf.neural_xc import inputs
 
     hidden = (
         "_local_hfx_features_from_basis_dm",
-        "_local_hfx_features_from_dm",
         "_local_pt2_feature_from_restricted_orbitals",
     )
     for name in hidden:
         assert not hasattr(scf_features, name)
         assert hasattr(inputs, name)
+    assert not hasattr(inputs, "_local_hfx_features_from_dm")
 
 
 def test_restricted_response_hvp_uses_factorized_transition_features():

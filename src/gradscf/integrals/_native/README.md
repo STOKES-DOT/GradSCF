@@ -10,14 +10,15 @@ Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
 ## Directory layout
 
 - `__init__.py`, `build.py`: private library loading and offline build CLI.
-- `csrc/ffi.cc`: GradSCF C++ FFI adapter.
+- `csrc/ffi.cc`: GradSCF C++ value FFI adapter.
+- `csrc/geometry.cc`: streaming analytic coordinate JVP/VJP drivers.
+- `csrc/tables.h`: shared table validation and owned libcint buffers.
 - `vendor/`: pinned, unmodified upstream C sources, licenses and checksums.
 - `include/`, `exports.*`, `CMakeLists.txt`: build configuration and ABI exports.
 - `patches/`: documentation of upstream adaptations.
 - `build/`, `lib/`: generated build products, excluded from Git and packaging.
 
-The legacy `gradscf._native` package forwards to this implementation and keeps
-one shared registration cache. Source distributions and wheels include the
+Source distributions and wheels include the
 native sources; compiled libraries are built locally for the installed JAX.
 
 ## Offline source build
@@ -40,7 +41,7 @@ this initial source build. `--jobs` defaults to 2 for compilation only. Integral
 evaluation is serial and does not modify process-wide threading settings.
 
 All vendor symbols have hidden visibility and a linker export allowlist;
-`GradSCFIntegrals` is the only exported entry point. There is no dynamically
+Only `GradSCFIntegrals`, `GradSCFGeometryJVP` and `GradSCFGeometryVJP` are exported. There is no dynamically
 linked libcint, PySCF, BLAS, OpenMP, or Python library. Loading uses `RTLD_LOCAL`.
 
 ## Contract
@@ -78,11 +79,23 @@ This check includes a Cartesian contraction-cache lower bound even for spherical
 output. Every native shell cache query must also return a strictly positive size;
 libcint's zero-on-overflow sentinel is returned to JAX as an error before filling.
 
-Forward evaluation and JIT are implemented. JVP/VJP, basis differentiation,
-GPU FFI, ECPs, periodic integrals, spinors, range separation, packed ERIs and
-fused J/K are not implemented. JAX differentiation raises an explicit error;
-there is no numerical differentiation fallback. Full ERIs require O(nao^4)
-output memory. Use the JAX reference backend when derivative rules are needed.
+## Coordinate derivatives
+
+`integrals.make_plan(..., backend="native").evaluate(...)` supports first-order
+`jax.jvp`, `jax.vjp`, `jax.grad`, `jax.jacfwd` and `jax.jacrev` for nuclear
+coordinates and basis centers, including JIT/batching. Dipole origins also
+participate in AD; a default charge-center origin follows nuclear motion.
+C++ evaluates analytic derivative shell blocks and immediately contracts them
+with the tangent or cotangent. No full coordinate Jacobian or Python callback
+is used. Nuclear-attraction operator motion and AO-center motion are separate.
+
+The low-level raw-ENV `backends.native.evaluate` remains value-only: an arbitrary
+ENV vector mixes geometry, exponents and coefficients. Use integral plans for
+geometry AD. Native exponent/coefficient and higher derivatives remain
+unsupported and fail explicitly. The JAX reference backend remains available
+for those basis-parameter derivatives. GPU FFI, ECPs, periodic integrals,
+spinors, range separation, packed ERIs and fused J/K are not exposed.
+Full integral values still require O(nao^4) memory.
 
 ## Why these upstream files
 
@@ -94,6 +107,8 @@ Shared libcint optimizer objects also reference grid and two-/three-center
 environment helpers; those small dependencies are included even though no
 such operator is exposed. Large optional polynomial-fit tables, F12 code,
 other generated operators, and upstream build/test machinery are excluded.
+The pinned `autocode/grad1.c` and `autocode/grad2.c` provide the one-/two-electron
+first-derivative kernels; their blob and SHA256 hashes are in the manifest.
 All vendored files remain byte-identical to their pinned upstream blobs.
 
 The numerical tests compare identical tables with PySCF at absolute tolerance

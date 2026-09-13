@@ -67,3 +67,17 @@ def test_user_scripts_avoid_old_neural_xc_names():
             offenders.append(str(path))
 
     assert offenders == []
+
+
+def test_user_scripts_do_not_import_pyscf_or_test_helpers():
+    import ast
+
+    offenders = []
+    for path in TOOLS + EXAMPLES:
+        for node in ast.walk(ast.parse(path.read_text())):
+            modules = ([name.name for name in node.names] if isinstance(node, ast.Import)
+                       else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            for module in modules:
+                if module.split(".")[0] in {"pyscf", "gpu4pyscf", "pyscf_reference", "tests", "comparisons"}:
+                    offenders.append(f"{path}:{node.lineno}: {module}")
+    assert offenders == []

@@ -11,7 +11,7 @@ import numpy as np
 def test_distribution_uses_gradscf_name_and_package_data():
     metadata = tomllib.loads(Path("pyproject.toml").read_text())
     assert metadata["project"]["name"] == "gradscf"
-    assert "gradscf.data" in metadata["tool"]["setuptools"]["package-data"]
+    assert "gradscf.integrals.basis_data" in metadata["tool"]["setuptools"]["package-data"]
     assert not Path("src/td_graddft").exists()
     assert not Path("src/td_graddft_tools").exists()
 
@@ -33,7 +33,7 @@ def test_gradscf_loads_bundled_basis_resources():
     assert importlib.util.find_spec("gradscf") is not None
     from importlib.resources import files
 
-    basis = files("gradscf.data").joinpath("pyscf_basis_snapshot/sto-3g.dat")
+    basis = files("gradscf.integrals.basis_data").joinpath("pyscf_basis_snapshot/sto-3g.dat")
     assert basis.is_file()
     assert "BASIS" in basis.read_text()
 

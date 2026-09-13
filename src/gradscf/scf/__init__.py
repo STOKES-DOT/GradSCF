@@ -1,6 +1,7 @@
 """Pure-JAX SCF solvers."""
 
 from . import core
+from .autodiff import SCFDifferentiationConfig, attach_scf_backward, normalize_scf_gradient_mode
 from .differentiable import (
     DifferentiableSCF,
     DifferentiableSCFConfig,
@@ -33,10 +34,21 @@ from .uks import (
 )
 from .facade import RKS, UKS
 from .uhf import UHF, UHFConfig, UHFResult, run_uhf, run_uhf_from_integrals
+from .stability import (
+    UnrestrictedStabilityResult, UnrestrictedStabilizationResult,
+    UHFStabilityResult, UHFStabilizationResult, uhf_stability, stabilize_uhf_from_integrals,
+    uks_stability, stabilize_uks_from_integrals,
+)
 from .rohf import ROHF, ROHFConfig, ROHFResult, run_rohf, run_rohf_from_integrals
 from .roks import ROKS, ROKSConfig, ROKSResult, run_roks_from_integrals
 from .ghf import GHF, GHFConfig, GHFResult, run_ghf, run_ghf_from_integrals
 from .gks import GKS, GKSConfig, GKSResult, run_gks_from_integrals
+from .orbital_optimization import (
+    OrbitalOptimizationResult,
+    minimize_uks_from_integrals,
+    minimize_roks_from_integrals,
+    minimize_gks_from_integrals,
+)
 from .builders import (
     restricted_molecule_from_spec_with_jax_rks,
     unrestricted_molecule_from_spec_with_jax_uks,
@@ -50,6 +62,13 @@ from gradscf.integrals.assembly import (
 )
 
 __all__ = [
+    "OrbitalOptimizationResult",
+    "minimize_uks_from_integrals",
+    "minimize_roks_from_integrals",
+    "minimize_gks_from_integrals",
+    "SCFDifferentiationConfig",
+    "attach_scf_backward",
+    "normalize_scf_gradient_mode",
     "DifferentiableSCF",
     "DifferentiableSCFConfig",
     "DifferentiableSCFInfo",
@@ -65,6 +84,14 @@ __all__ = [
     "UHF",
     "UHFConfig",
     "UHFResult",
+    "UnrestrictedStabilityResult",
+    "UnrestrictedStabilizationResult",
+    "uks_stability",
+    "stabilize_uks_from_integrals",
+    "UHFStabilityResult",
+    "UHFStabilizationResult",
+    "uhf_stability",
+    "stabilize_uhf_from_integrals",
     "run_uhf",
     "run_uhf_from_integrals",
     "ROHF",

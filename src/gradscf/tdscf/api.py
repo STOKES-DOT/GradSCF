@@ -24,6 +24,9 @@ def _molecule_from_source(source: Any) -> Any:
             if callable(ensure_molecule):
                 return ensure_molecule()
     if hasattr(source, "reference"):
+        ensure_reference = getattr(source, "_ensure_reference", None)
+        if callable(ensure_reference):
+            return ensure_reference()
         molecule = getattr(source, "reference")
         if molecule is None:
             ensure_molecule = getattr(source, "_ensure_molecule", None)

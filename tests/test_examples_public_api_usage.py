@@ -2,11 +2,11 @@ from pathlib import Path
 
 
 EXAMPLES_USING_PUBLIC_TDSCF = (
-    Path("examples/compare_pyscf_vs_jax_tddft_no_neural.py"),
+    Path("tests/comparisons/compare_pyscf_vs_jax_tddft_no_neural.py"),
 )
 
 EXAMPLES_USING_NEURAL_XC_FACADE = (
-    Path("examples/h2_fci_self_consistent_train.py"),
+    Path("tests/comparisons/h2_fci_self_consistent_train.py"),
 )
 
 

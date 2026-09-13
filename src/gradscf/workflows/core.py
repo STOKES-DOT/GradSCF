@@ -20,6 +20,7 @@ from gradscf.scf.builders import (
     unrestricted_molecule_from_spec_with_jax_uks,
 )
 from gradscf.scf import RHFConfig, RKSConfig, UKSConfig
+from gradscf.scf.autodiff import normalize_scf_gradient_mode
 from gradscf.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
 from gradscf.training import (
     MolecularTrainingConfig,
@@ -61,9 +62,8 @@ def _compiled_lorentzian_spectrum():
 
 def _resolve_training_scf_gradient_mode(
     config: NeuralXCTrainingConfig,
-) -> Literal["impl"]:
-    del config
-    return "impl"
+) -> Literal["implicit", "unrolled"]:
+    return normalize_scf_gradient_mode(config.objective.scf_gradient_mode)
 
 
 def _canonicalize_graddft_ground_state_config(
@@ -539,8 +539,8 @@ def train_neural_xc(
     train_step = make_molecular_train_step(functional, training_config=molecular_config)
     eval_loss = make_molecular_eval(functional, training_config=molecular_config)
     fallback_train_step = None
-    if config.recover_nonfinite_steps and selected_scf_gradient_mode != "impl":
-        fallback_training = replace(molecular_config, scf_gradient_mode="impl")
+    if config.recover_nonfinite_steps and selected_scf_gradient_mode != "implicit":
+        fallback_training = replace(molecular_config, scf_gradient_mode="implicit")
         fallback_train_step = make_molecular_train_step(
             functional,
             training_config=fallback_training,
@@ -601,7 +601,7 @@ def train_neural_xc(
     fallback_recoveries = 0
     guard_post_update = (
         molecular_config.mode == "self_consistent"
-        and selected_scf_gradient_mode == "impl"
+        and selected_scf_gradient_mode == "implicit"
     )
     for step in range(1, config.steps + 1):
         prev_state = state

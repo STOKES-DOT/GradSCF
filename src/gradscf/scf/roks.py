@@ -14,6 +14,7 @@ from .core import _build_density_from_occ, _contains_jax_tracer, _host_float_unl
 from .core import _diagonalize_fock, _orthogonalizer, _validate_density_matrix
 from .facade import _BaseKS
 from gradscf.integrals.assembly import build_uks_integral_inputs
+from .convergence import convergence_reached
 from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
 from .rks import _apply_level_shift, _orthonormal_diis_error
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
@@ -113,10 +114,10 @@ def run_roks_from_integrals(
     nao = h.shape[0]
     if any(not isinstance(n, int) or n < 0 or n > nao for n in (nalpha, nbeta)) or nalpha + nbeta == 0:
         raise ValueError("Invalid occupation counts for restricted open-shell SCF.")
-    if cfg.max_cycle < 1 or min(cfg.conv_tol, cfg.conv_tol_density, cfg.conv_tol_grad) <= 0:
-        raise ValueError("ROKS requires positive max_cycle and convergence tolerances.")
-    if cfg.convergence_metric != "energy_and_residual":
-        raise ValueError("ROKS requires energy_and_residual convergence.")
+    if cfg.max_cycle < 1 or cfg.conv_tol < 0 or min(cfg.conv_tol_density, cfg.conv_tol_grad) <= 0:
+        raise ValueError("ROKS requires positive max_cycle, density/gradient tolerances, and nonnegative conv_tol.")
+    if cfg.convergence_metric not in ("energy_and_residual", "energy"):
+        raise ValueError("ROKS requires energy_and_residual or energy convergence.")
     if cfg.jk_backend != "full":
         raise NotImplementedError("ROKS currently requires jk_backend='full'.")
     if any(jnp.iscomplexobj(a) for a in (s, h, eri, init_density_alpha, init_density_beta, init_mo_coeff)):
@@ -190,9 +191,11 @@ def run_roks_from_integrals(
         energy, exc, fs, effective = evaluate(density)
         gradient = _ro_gradient(coeff, _ro_spin_occ(occ, alpha_major), fs)
         delta_dm = jnp.sqrt(jnp.mean((density - old.density) ** 2))
-        converged = ((jnp.abs(energy - old.energy) < cfg.conv_tol)
-                     & (delta_dm < cfg.conv_tol_density) & (gradient < cfg.conv_tol_grad)
-                     & jnp.isfinite(energy))
+        converged = convergence_reached(
+            energy - old.energy, delta_dm, gradient, conv_tol=cfg.conv_tol,
+            conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
+            energy_only=cfg.convergence_metric == "energy", has_prior_cycle=old.cycles > 0,
+        )
         return _ROIteration(coeff, occ, density, energy, exc, fs, effective, f,
                             fh, eh, head, count, old.cycles + 1, converged, gradient)
 

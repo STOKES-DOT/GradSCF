@@ -27,12 +27,12 @@ def backend_capabilities(name):
     operators = ("overlap", "kinetic", "nuclear", "dipole", "eri")
     if name == "native":
         return BackendCapabilities(name, operators, ("cpu",), True,
-                                   representations=("cartesian", "spherical"))
+                                   ("centers", "nuclear_coords"), 1,
+                                   representations=("cartesian", "spherical"),
+                                   ad_modes=("jvp", "vjp"))
     if name == "jax_reference":
         return BackendCapabilities(name, operators, ("cpu", "gpu"), True,
                                    ("centers", "nuclear_coords", "exponents", "coefficients"), 1,
                                    layouts=("full", "s4"), dtypes=("float32", "float64"),
                                    ad_modes=("jvp", "vjp"))
-    if name == "gpu4pyscf":
-        return BackendCapabilities(name, ("eri",), ("gpu",), False)
     raise ValueError(f"Unknown integral backend: {name!r}")

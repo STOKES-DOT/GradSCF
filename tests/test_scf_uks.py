@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from gradscf.scf import UKSConfig, run_uks_from_integrals
-from gradscf.scf.inputs import build_uks_integral_inputs
+from gradscf.integrals.assembly import build_uks_integral_inputs
 from gradscf.scf.uks import (
     _point_unrestricted_xc_value_and_grad_kernel,
     run_unrestricted_scf_scan,
@@ -239,3 +239,77 @@ def test_unrestricted_b88_derivative_is_finite_with_empty_beta_channel():
         )(point[None, :])[1][0]
     )(variables[0])
     assert jnp.all(jnp.isfinite(response))
+
+
+def _run_two_orbital_scan(builder, *, max_cycle=4, **controls):
+    """Minimal spin-resolved scan with one occupied alpha orbital."""
+    defaults = dict(conv_tol=1e-12, conv_tol_density=1e-9,
+                    convergence_metric="energy_and_residual", level_shift=0.0)
+    defaults.update(controls)
+    return run_unrestricted_scf_scan(
+        fock_builder=builder,
+        density_spin=jnp.asarray([[[1., 0.], [0., 0.]], [[0., 0.], [0., 0.]]]),
+        mo_coeff_spin=jnp.stack([jnp.eye(2), jnp.eye(2)]),
+        mo_occ_spin=jnp.asarray([[1., 0.], [0., 0.]]),
+        mo_energy_spin=jnp.asarray([[-1., 1.], [-1., 1.]]),
+        overlap=jnp.eye(2), max_cycle=max_cycle, damping=0.,
+        orthogonalization_eps=1e-10, **defaults,
+    )
+
+
+def test_unrestricted_scan_does_not_report_unchecked_first_cycle():
+    fock = jnp.stack([jnp.diag(jnp.asarray([-1., 1.]))] * 2)
+    result = _run_two_orbital_scan(lambda *_: (fock, fock, jnp.asarray(-1.)), max_cycle=1)
+    assert not bool(result[4])
+
+
+def test_unrestricted_scan_requires_raw_fock_stationarity():
+    def builder(density, *_):
+        # A steep response can have tiny density steps yet a nonzero raw-Fock
+        # commutator. Loose density tolerance must not bypass stationarity.
+        offdiag = 0.01 + 2.0 * density[0, 0, 1]
+        fock = jnp.asarray([[-1., offdiag], [offdiag, 1.]])
+        spin = jnp.stack([fock, fock])
+        return spin, spin, jnp.sum(density * spin)
+
+    result = _run_two_orbital_scan(builder, max_cycle=2, conv_tol_density=0.1)
+    assert not bool(result[4])
+
+
+def test_unrestricted_level_shift_only_moves_unoccupied_spin_orbitals():
+    fock = jnp.stack([jnp.diag(jnp.asarray([-1., 1.]))] * 2)
+    result = _run_two_orbital_scan(
+        lambda *_: (fock, fock, jnp.asarray(-1.)), max_cycle=1, level_shift=0.6,
+    )
+    np.testing.assert_allclose(result[2][0], [-1., 1.6], atol=1e-12, rtol=0)
+    np.testing.assert_allclose(result[2][1], [-0.4, 1.6], atol=1e-12, rtol=0)
+
+
+def test_unrestricted_scan_energy_tolerance_is_not_replaced_by_density_tolerance():
+    def builder(density, *_):
+        offdiag = 0.01 + 2.0 * density[0, 0, 1]
+        fock = jnp.asarray([[-1., offdiag], [offdiag, 1.]])
+        spin = jnp.stack([fock, fock])
+        return spin, spin, jnp.sum(density * spin)
+
+    result = _run_two_orbital_scan(
+        builder, max_cycle=2, conv_tol_density=0.1, conv_tol_grad=1.,
+    )
+    assert not bool(result[4])
+
+
+def test_uks_level_shift_finalization_preserves_selected_stationary_density():
+    # A shifted iteration can select a stationary excited determinant. Reporting
+    # convergence is not a stability test; finalization must not silently switch
+    # the determinant by refilling the unshifted Fock eigenvectors.
+    result = run_uks_from_integrals(
+        overlap=np.eye(2), hcore=np.diag([-1., 1.]), eri=np.zeros((2, 2, 2, 2)),
+        nalpha=1, nbeta=0, nuclear_repulsion=0.,
+        ao=np.zeros((0, 2)), ao_deriv1=np.zeros((4, 0, 2)), grid_weights=np.zeros(0),
+        init_density_alpha=np.diag([0., 1.]), init_density_beta=np.zeros((2, 2)),
+        config=UKSConfig(xc_spec="hf", level_shift=3., max_cycle=4),
+    )
+    assert result.converged
+    np.testing.assert_allclose(result.density_matrix_alpha, np.diag([0., 1.]), atol=1e-12)
+    np.testing.assert_allclose(result.total_energy, 1., atol=1e-12)
+    np.testing.assert_allclose(result.mo_energy_alpha, [1., -1.], atol=1e-12)

@@ -206,7 +206,7 @@ def test_ghf_nonconvergence_and_invalid_input():
 
 def test_ghf_jax_basis_one_electron_spinor():
     from pyscf import gto as pgto, scf as pscf
-    from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+    from pyscf_adapters import basis_from_pyscf_mol_cart
 
     mol = pgto.M(atom="H 0 0 0; H 0 0 1.06", basis="sto-3g", charge=1,
                  spin=1, cart=True, verbose=0)

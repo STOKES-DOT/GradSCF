@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf.integrals import precompile_eri_kernels
-from gradscf.integrals.backends.pyscf import LibcintGeometryGradPolicy
-from ..data.molecule import MoleculeSpec
+from gradscf.integrals.input_types import GeometryGradPolicy
+from ..data.molecule import MoleculeSpec, parse_molecule_spec
 from ..xc_backend.jax_libxc import hybrid_coeff, parse_xc
 from ..neural_xc.inputs import (
     _local_hfx_features_from_basis_dm,
@@ -64,6 +64,20 @@ def _empty_rep_tensor_like(overlap: Any) -> np.ndarray:
     return np.zeros((0, 0, 0, 0), dtype=np.asarray(overlap).dtype)
 
 
+def complete_restricted_response_inputs(inputs, spec, basis):
+    """Add a missing dipole tensor without recomputing S/H/ERI/grid or SCF."""
+    if inputs.dipole_integrals is not None:
+        return inputs
+    if inputs.integral_backend in {'native','cpu','libcint'}:
+        from ..integrals import prepare_basis, make_plan
+        topology, parameters = prepare_basis(spec,basis,cart=True)
+        dipole = make_plan(topology,backend='native').evaluate('dipole',parameters)
+    else:
+        from ..integrals import dipole_matrix
+        dipole = dipole_matrix(inputs.basis)
+    return replace(inputs,dipole_integrals=dipole)
+
+
 def restricted_molecule_from_spec_with_jax_rks(
     *,
     atom: Any,
@@ -77,8 +91,8 @@ def restricted_molecule_from_spec_with_jax_rks(
     max_l: int = 3,
     rks_config: RKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["jax", "cpu", "gpu", "libcint"] = "cpu",
-    libcint_geometry_grad_policy: LibcintGeometryGradPolicy = "analytic",
+    integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu",
+    libcint_geometry_grad_policy: GeometryGradPolicy = "analytic",
     energy_target: float | None = None,
     compute_local_hfx_features: bool = False,
     compute_local_hfx_aux: bool = False,
@@ -86,16 +100,21 @@ def restricted_molecule_from_spec_with_jax_rks(
     hfx_omega_values: tuple[float, ...] = (0.0, 0.4),
     hfx_chunk_size: int = 512,
     include_dipole_integrals: bool = True,
-    init_guess: Any = "minao",
+    init_guess: Any = "hcore",
     chkfile: str | None = None,
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
     precompile_eri: bool = False,
     precompile_eri_chunk_size: int = 512,
     verbose: int = 0,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
     **mol_kwargs: Any,
 ) -> RestrictedMolecule:
     """Build a restricted strict-JAX RKS reference directly from molecule specs."""
+
+    if scf_result is not None and scf_inputs is None:
+        raise ValueError('A cached SCF result requires the inputs from the same calculation.')
 
     xc_spec_resolved = str(xc_spec)
     parse_xc(xc_spec_resolved)
@@ -104,31 +123,35 @@ def restricted_molecule_from_spec_with_jax_rks(
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
 
     exact_exchange_fraction = float(hybrid_coeff(xc_spec_resolved))
-    scf_inputs = build_rks_integral_inputs(
-        atom=atom,
-        basis=basis,
-        config=cfg,
-        xc_spec=xc_spec_resolved,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        cart=cart,
-        grids_level=grids_level,
-        max_l=max_l,
-        grid_ao_backend=grid_ao_backend,
-        integral_backend=integral_backend,
-        libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-        include_dipole_integrals=include_dipole_integrals,
-        init_guess=init_guess,
-        chkfile=chkfile,
-        init_guess_sap_basis=init_guess_sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project,
-        precompile_eri=precompile_eri,
-        precompile_eri_chunk_size=precompile_eri_chunk_size,
-        _precompile_eri_kernels=precompile_eri_kernels,
-        verbose=verbose,
-        **mol_kwargs,
-    )
+    if scf_inputs is None:
+        scf_inputs = build_rks_integral_inputs(
+            atom=atom,
+            basis=basis,
+            config=cfg,
+            xc_spec=xc_spec_resolved,
+            unit=unit,
+            charge=charge,
+            spin=spin,
+            cart=cart,
+            grids_level=grids_level,
+            max_l=max_l,
+            grid_ao_backend=grid_ao_backend,
+            integral_backend=integral_backend,
+            libcint_geometry_grad_policy=libcint_geometry_grad_policy,
+            include_dipole_integrals=include_dipole_integrals,
+            init_guess=init_guess,
+            chkfile=chkfile,
+            init_guess_sap_basis=init_guess_sap_basis,
+            init_guess_chkfile_project=init_guess_chkfile_project,
+            precompile_eri=precompile_eri,
+            precompile_eri_chunk_size=precompile_eri_chunk_size,
+            _precompile_eri_kernels=precompile_eri_kernels,
+            verbose=verbose,
+            **mol_kwargs,
+        )
+    if include_dipole_integrals and scf_inputs.dipole_integrals is None:
+        spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+        scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis)
     basis_cart = scf_inputs.basis
     s = scf_inputs.overlap
     h1e = scf_inputs.hcore
@@ -147,10 +170,9 @@ def restricted_molecule_from_spec_with_jax_rks(
             "Use implicit differential SCF instead."
         )
     nelectron = scf_inputs.nelectron
-    rks = run_rks_from_integrals(
-        **scf_inputs.as_rks_kwargs(),
-        config=cfg,
-    )
+    rks = scf_result
+    if rks is None:
+        rks = run_rks_from_integrals(**scf_inputs.as_rks_kwargs(), config=cfg)
     if not rks.converged:
         if not (
             jnp.all(jnp.isfinite(rks.mo_coeff))
@@ -268,6 +290,7 @@ def restricted_molecule_from_spec_with_jax_rks(
         df_factors=reference_arrays["df_factors"],
         eri_pair_matrix=reference_eri_pair_matrix,
         scf_converged=bool(rks.converged),
+        scf_cycles=int(rks.cycles),
     )
 
 
@@ -293,6 +316,8 @@ def build_restricted_reference_from_facade(
     include_dipole_integrals: bool,
     geometry_is_traced: bool,
     reference_builder: Any,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
 ) -> Any:
     if geometry_is_traced:
         raise NotImplementedError(
@@ -323,6 +348,7 @@ def build_restricted_reference_from_facade(
         hfx_chunk_size=hfx_chunk_size,
         include_dipole_integrals=include_dipole_integrals,
         verbose=mol.verbose,
+        **({"scf_inputs": scf_inputs, "scf_result": scf_result} if scf_inputs is not None else {}),
     )
 
 
@@ -344,6 +370,7 @@ def build_restricted_scf_result_from_facade(
     geometry_is_traced: bool,
     build_inputs_fn: Any,
     run_rks_fn: Any,
+    return_inputs: bool = False,
 ) -> Any:
     if geometry_is_traced:
         raise NotImplementedError(
@@ -371,10 +398,8 @@ def build_restricted_scf_result_from_facade(
         include_dipole_integrals=False,
         verbose=mol.verbose,
     )
-    return run_rks_fn(
-        **scf_inputs.as_rks_kwargs(),
-        config=rks_config,
-    )
+    result = run_rks_fn(**scf_inputs.as_rks_kwargs(), config=rks_config)
+    return (result, scf_inputs) if return_inputs else result
 
 
 def unrestricted_molecule_from_spec_with_jax_uks(
@@ -390,15 +415,15 @@ def unrestricted_molecule_from_spec_with_jax_uks(
     max_l: int = 3,
     uks_config: UKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["jax", "cpu", "gpu", "libcint"] = "cpu",
-    libcint_geometry_grad_policy: LibcintGeometryGradPolicy = "error",
+    integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu",
+    libcint_geometry_grad_policy: GeometryGradPolicy = "error",
     energy_target: float | None = None,
     compute_local_hfx_features: bool = False,
     compute_local_hfx_aux: bool = False,
     compute_local_pt2_features: bool = False,
     hfx_omega_values: tuple[float, ...] = (0.0, 0.4),
     hfx_chunk_size: int = 512,
-    init_guess: Any = "minao",
+    init_guess: Any = "hcore",
     chkfile: str | None = None,
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
@@ -537,6 +562,8 @@ def unrestricted_molecule_from_spec_with_jax_uks(
         pt2_local=pt2_local,
         pt2_fock_response=pt2_fock_response,
         df_factors=scf_inputs.df_factors,
+        scf_converged=bool(uks.converged) if not uks_is_traceable else None,
+        scf_cycles=int(uks.cycles) if not uks_is_traceable else None,
     )
 
 

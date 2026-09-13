@@ -7,7 +7,7 @@ from pyscf_reference import (
     restricted_reference_from_pyscf_with_jax_rks,
 )
 from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from gradscf.scf.features import _charge_center
+from reference_scf_features import _charge_center
 from gradscf.scf import RKSConfig
 from gradscf.scf.rks import TraceableRKSResult
 from gradscf.workflows.core import run_reference
@@ -96,7 +96,7 @@ def test_build_rks_integral_inputs_accepts_strict_jax_default_grid_level():
     _pyscf_or_skip()
     from pyscf import dft, gto
 
-    from gradscf.scf.inputs import build_rks_integral_inputs
+    from gradscf.integrals.assembly import build_rks_integral_inputs
 
     atom = """
     H 0.0 0.0 -0.35

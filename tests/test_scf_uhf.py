@@ -47,7 +47,7 @@ def test_uhf_basis_one_electron_has_no_self_interaction():
     assert hasattr(scf, "run_uhf")
     pytest.importorskip("pyscf")
     from pyscf import gto as pyscf_gto, scf as pyscf_scf
-    from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+    from pyscf_adapters import basis_from_pyscf_mol_cart
 
     mol = pyscf_gto.M(
         atom="H 0 0 0; H 0 0 1.06", basis="sto-3g", charge=1,

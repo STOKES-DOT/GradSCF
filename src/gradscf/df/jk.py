@@ -25,6 +25,8 @@ def eri_pair_matrix_to_df_factors(
     max_rank: int | None = None,
     dtype: Array | None = None,
 ) -> Array:
+    """Spectrally factorize packed native ERIs; no auxiliary basis is fitted."""
+
     pair_np = np.asarray(pair_matrix, dtype=float)
     eigvals, eigvecs = np.linalg.eigh(0.5 * (pair_np + pair_np.T))
     keep = np.where(eigvals > float(tol))[0]
@@ -50,7 +52,7 @@ def eri_pair_matrix_to_df_factors_traceable(
     tol: float = 1e-10,
     max_rank: int | None = None,
 ) -> Array:
-    """Traceable AO-pair Cholesky-like factorization for differentiable paths."""
+    """Traceable spectral AO-pair factorization, without an auxiliary fitting basis."""
 
     pair = jnp.asarray(pair_matrix)
     sym_pair = 0.5 * (pair + pair.T)
@@ -81,7 +83,9 @@ def eri_to_df_factors(
     tol: float = 1e-10,
     max_rank: int | None = None,
 ) -> Array:
-    """Build a symmetric DF/Cholesky-like factorization from a full AO ERI tensor.
+    """Build a spectral factorization from a full AO ERI tensor.
+
+    This compresses the full ERI and is not auxiliary-basis density fitting.
 
     The factorization is performed in the AO-pair space:
     (pq|rs) ~= sum_Q B_Q[p,q] B_Q[r,s]
@@ -115,46 +119,6 @@ def eri_to_df_factors_from_basis(
         max_rank=max_rank,
         dtype=pair,
     )
-
-
-def true_df_factors_from_libcint_mol(
-    mol,
-    *,
-    auxbasis=None,
-) -> Array:
-    """Build true density-fitting factors from libcint 3c2e/2c2e integrals.
-
-    Returns factors in the existing GradSCF layout:
-    ``df_factors[Q, p, q]`` such that
-    ``(pq|rs) ~= sum_Q df_factors[Q,p,q] * df_factors[Q,r,s]``.
-    """
-
-    try:
-        from pyscf import df
-    except ModuleNotFoundError as exc:
-        raise ImportError(
-            "PySCF/libcint is required to build true DF factors from a libcint Mole handle."
-        ) from exc
-
-    nao = int(mol.nao_nr())
-    cderi = np.asarray(
-        df.incore.cholesky_eri(
-            mol,
-            auxbasis=auxbasis,
-            aosym="s1",
-        ),
-        dtype=float,
-    )
-    if cderi.ndim != 2:
-        raise RuntimeError(
-            f"Unexpected cholesky_eri output rank {cderi.ndim}; expected 2."
-        )
-    if cderi.shape[1] != nao * nao:
-        raise RuntimeError(
-            "Unexpected cholesky_eri output shape "
-            f"{cderi.shape}; expected trailing dimension {nao * nao}."
-        )
-    return jnp.asarray(cderi.reshape(cderi.shape[0], nao, nao))
 
 
 def df_factors_to_mo_eri_slices(
@@ -224,7 +188,7 @@ def build_jk_from_df_orbitals(
     """Build DF J/K using occupied orbitals for the exchange contraction.
 
     For a density matrix assembled from orbitals, the K contraction can use
-    ``B_Q C_occ`` instead of ``B_Q D``. This follows PySCF's DF-HF path and
+    ``B_Q C_occ`` instead of ``B_Q D``. This
     reduces the large exchange intermediate from ``naux * nao * nao`` to
     ``naux * nao * nocc`` for closed-shell RKS.
     """
@@ -269,8 +233,7 @@ def build_jk_from_df_orbitals(
 def build_j_from_df(df_factors: Array, density: Array) -> Array:
     """Build Coulomb matrix only from DF factors.
 
-    This mirrors the PySCF `with_j=True, with_k=False` path for pure
-    semilocal functionals where HF exchange is absent.
+    Useful for pure semilocal functionals where HF exchange is absent.
     """
 
     factors = jnp.asarray(df_factors)

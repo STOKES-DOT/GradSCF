@@ -1,7 +1,7 @@
-from gradscf.data import integrals
+from gradscf import integrals
 from gradscf.integrals.backends.jax_reference import screening
 from gradscf import features
-from gradscf.scf import builders, differentiable, facade, inputs, molecules, rhf, rks, uks
+from gradscf.scf import builders, differentiable, facade, molecules, rhf, rks, uks
 from gradscf.scf import core
 import jax
 import jax.numpy as jnp
@@ -19,7 +19,6 @@ def test_scf_modules_share_core_helper_implementations():
 
     assert facade._contains_jax_tracer is core._contains_jax_tracer
     assert builders._contains_jax_tracer is core._contains_jax_tracer
-    assert inputs._contains_jax_tracer is core._contains_jax_tracer
 
     assert uks._host_float_unless_traced is core._host_float_unless_traced
 

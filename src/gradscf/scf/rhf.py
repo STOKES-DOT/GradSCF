@@ -17,6 +17,7 @@ class RHFConfig:
     max_cycle: int = 800
     conv_tol: float = 1e-10
     conv_tol_density: float = 1e-8
+    conv_tol_grad: float = 1e-7
     diis_start_cycle: int = 2
     diis_space: int = 8
     damping: float = 0.0
@@ -90,6 +91,7 @@ def run_rhf_from_integrals(
             max_cycle=cfg.max_cycle,
             conv_tol=cfg.conv_tol,
             conv_tol_density=cfg.conv_tol_density,
+            conv_tol_grad=cfg.conv_tol_grad,
             damping=cfg.damping,
             level_shift=cfg.level_shift,
             orthogonalization_eps=cfg.orthogonalization_eps,

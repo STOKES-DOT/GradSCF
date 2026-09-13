@@ -36,6 +36,12 @@ from .excited_state_trainer import (
 )
 from .neural_xc_trainer import NeuralXCTrainer
 from .results import TrainingResult
+from .forces import (
+    EnergyAndForces,
+    energy_and_forces,
+    force_matching_loss,
+    make_force_loss_and_grad,
+)
 
 __all__ = [
     "MolecularTrainingDatum",
@@ -68,4 +74,8 @@ __all__ = [
     "ExcitedStateFineTuner",
     "NeuralXCTrainer",
     "TrainingResult",
+    "EnergyAndForces",
+    "energy_and_forces",
+    "force_matching_loss",
+    "make_force_loss_and_grad",
 ]

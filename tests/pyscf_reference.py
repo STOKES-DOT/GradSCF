@@ -6,7 +6,7 @@ from typing import Any, Literal
 import numpy as np
 import jax.numpy as jnp
 
-from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+from pyscf_adapters import basis_from_pyscf_mol_cart, _local_hfx_features_from_dm
 from gradscf.integrals import (
     build_hcore,
     dipole_matrix,
@@ -17,11 +17,10 @@ from gradscf.integrals import (
 from gradscf.xc_backend.jax_libxc import parse_xc
 from gradscf.neural_xc.inputs import (
     _local_hfx_features_from_basis_dm,
-    _local_hfx_features_from_dm,
     _local_pt2_feature_from_restricted_orbitals,
 )
 from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from gradscf.scf.features import (
+from reference_scf_features import (
     _charge_center,
     _eval_grid_ao,
     _restricted_response_eri_slices_from_mo_tensor,

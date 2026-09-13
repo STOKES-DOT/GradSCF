@@ -4,7 +4,6 @@ from .basis import (
     prepare_basis,
     CartesianAO,
     CartesianBasis,
-    basis_from_pyscf_mol_cart,
     basis_from_pyscf_spec,
     cartesian_angular_tuples,
 )
@@ -17,7 +16,6 @@ __all__ = [
     "CartesianBasis",
     "M",
     "Mole",
-    "basis_from_pyscf_mol_cart",
     "basis_from_pyscf_spec",
     "cartesian_angular_tuples",
     "evaluate_cartesian_ao",

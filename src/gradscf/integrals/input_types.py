@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from jaxtyping import Array
 from .basis import CartesianBasis
+
+GeometryGradPolicy = Literal["analytic", "error", "zero"]
 
 @dataclass(frozen=True)
 class RKSIntegralInputs:
@@ -124,5 +126,4 @@ class UKSIntegralInputs:
             "init_mo_energy_alpha": self.init_mo_energy_alpha,
             "init_mo_energy_beta": self.init_mo_energy_beta,
         }
-
 

@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from gradscf.data import basis_from_pyscf_mol_cart, evaluate_cartesian_ao
+from pyscf_adapters import basis_from_pyscf_mol_cart
+from gradscf.integrals import evaluate_cartesian_ao
 
 
 def _pyscf_or_skip():

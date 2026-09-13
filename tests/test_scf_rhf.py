@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+from pyscf_adapters import basis_from_pyscf_mol_cart
 from gradscf.scf import RHFConfig, run_rhf
 
 

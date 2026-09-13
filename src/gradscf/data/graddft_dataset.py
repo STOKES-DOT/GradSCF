@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import importlib
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
@@ -220,8 +219,7 @@ def load_graddft_ground_atom_records(
 ) -> tuple[GradDFTGroundAtomRecord, ...]:
     """Load GradDFT XND atom ground-state targets from the raw Atoms sheet.
 
-    This reads the original GradDFT `XND_dataset.xlsx` directly. It does not
-    generate reference energies with PySCF/FCI/CASSCF.
+    Target energies are read from the original GradDFT `XND_dataset.xlsx`.
     """
 
     path = Path(xnd_dataset_xlsx)
@@ -261,13 +259,13 @@ def build_graddft_ground_atom_molecule(
     record: GradDFTGroundAtomRecord,
     *,
     basis: str,
-    reference_builder: str = "pyscf",
+    reference_builder: str = "native",
     xc_spec: str = "hf",
     grids_level: int = 0,
     max_l: int = 3,
-    integral_backend: str = "jax",
+    integral_backend: str = "cpu",
     grid_ao_backend: str = "jax",
-    init_guess: Any = "1e",
+    init_guess: Any = "hcore",
     scf_max_cycle: int = 80,
     scf_conv_tol: float = 1e-10,
     scf_conv_tol_density: float = 1e-8,
@@ -281,36 +279,45 @@ def build_graddft_ground_atom_molecule(
     hfx_nu_storage: str = "dense",
     verbose: int = 0,
 ) -> Any:
-    """Build one GradSCF ground-state molecule from a GradDFT atom record."""
+    """Run native atomic SCF and retain its calculated energy and convergence.
+
+    The correlated dataset target remains on the record/training datum.
+    ``jax`` is retained as a builder alias; ``integral_backend`` selects the
+    integral implementation. Atomic ``auto`` HFX storage is dense.
+    """
 
     builder_mode = str(reference_builder).lower()
-    if builder_mode == "pyscf":
-        return _build_graddft_ground_atom_molecule_from_pyscf(
-            record,
-            basis=str(basis),
-            xc_spec=str(xc_spec),
-            grids_level=int(grids_level),
-            max_l=int(max_l),
-            init_guess=init_guess,
-            scf_max_cycle=int(scf_max_cycle),
-            scf_conv_tol=float(scf_conv_tol),
-            scf_conv_tol_density=float(scf_conv_tol_density),
-            scf_damping=float(scf_damping),
-            scf_level_shift=float(scf_level_shift),
-            compute_local_hfx_features=bool(compute_local_hfx_features),
-            compute_local_hfx_aux=bool(compute_local_hfx_aux),
-            hfx_omega_values=tuple(float(value) for value in hfx_omega_values),
-            hfx_chunk_size=int(hfx_chunk_size),
-            hfx_nu_storage=str(hfx_nu_storage),
-            verbose=int(verbose),
-        )
-    if builder_mode != "jax":
-        raise ValueError("reference_builder must be 'jax' or 'pyscf'.")
+    if builder_mode not in {"native", "jax"}:
+        raise ValueError("reference_builder must be 'native' or 'jax'.")
+    storage = str(hfx_nu_storage).lower()
+    if storage not in {"dense", "array", "auto", "chunked"}:
+        raise ValueError("hfx_nu_storage must be 'dense', 'array', 'auto', or 'chunked'.")
+    chunked_hfx = storage == "chunked" and compute_local_hfx_features and compute_local_hfx_aux
+
+    def finalize(molecule: Any) -> Any:
+        molecule = _require_converged_atom_reference(molecule, record, basis=basis)
+        if chunked_hfx:
+            from gradscf.integrals.basis import basis_from_spec
+            from gradscf.neural_xc.inputs import ChunkedHFXNu
+
+            basis_cart = basis_from_spec(
+                record.atom, basis=basis, unit=record.unit, charge=record.charge,
+                spin=record.spin, max_l=max_l, precompute_eri_groups=False,
+            )
+            molecule = replace(
+                molecule,
+                hfx_nu_api=ChunkedHFXNu.from_basis(
+                    basis_cart, molecule.grid.coords,
+                    omega_values=tuple(float(value) for value in hfx_omega_values),
+                    chunk_size=int(hfx_chunk_size),
+                ),
+            )
+        return molecule
 
     if int(record.spin) == 0:
         from gradscf.scf import RKSConfig, restricted_molecule_from_spec_with_jax_rks
 
-        return restricted_molecule_from_spec_with_jax_rks(
+        molecule = restricted_molecule_from_spec_with_jax_rks(
             atom=record.atom,
             basis=str(basis),
             xc_spec=str(xc_spec),
@@ -331,18 +338,19 @@ def build_graddft_ground_atom_molecule(
             ),
             grid_ao_backend=str(grid_ao_backend),
             integral_backend=str(integral_backend),
-            energy_target=float(record.target_energy_h),
             compute_local_hfx_features=bool(compute_local_hfx_features),
-            compute_local_hfx_aux=bool(compute_local_hfx_aux),
+            compute_local_hfx_aux=bool(compute_local_hfx_aux) and not chunked_hfx,
             hfx_omega_values=tuple(float(value) for value in hfx_omega_values),
             hfx_chunk_size=int(hfx_chunk_size),
             init_guess=init_guess,
             verbose=int(verbose),
         )
 
+        return finalize(molecule)
+
     from gradscf.scf import UKSConfig, unrestricted_molecule_from_spec_with_jax_uks
 
-    return unrestricted_molecule_from_spec_with_jax_uks(
+    molecule = unrestricted_molecule_from_spec_with_jax_uks(
         atom=record.atom,
         basis=str(basis),
         xc_spec=str(xc_spec),
@@ -359,218 +367,29 @@ def build_graddft_ground_atom_molecule(
             conv_tol_density=float(scf_conv_tol_density),
             damping=float(scf_damping),
             level_shift=float(scf_level_shift),
+            jk_backend=str(rks_jk_backend),
         ),
         grid_ao_backend=str(grid_ao_backend),
         integral_backend=str(integral_backend),
-        energy_target=float(record.target_energy_h),
         compute_local_hfx_features=bool(compute_local_hfx_features),
-        compute_local_hfx_aux=bool(compute_local_hfx_aux),
+        compute_local_hfx_aux=bool(compute_local_hfx_aux) and not chunked_hfx,
         hfx_omega_values=tuple(float(value) for value in hfx_omega_values),
         hfx_chunk_size=int(hfx_chunk_size),
         init_guess=init_guess,
         verbose=int(verbose),
     )
+    return finalize(molecule)
 
 
-def _build_graddft_ground_atom_molecule_from_pyscf(
-    record: GradDFTGroundAtomRecord,
-    *,
-    basis: str,
-    xc_spec: str,
-    grids_level: int,
-    max_l: int,
-    compute_local_hfx_features: bool,
-    compute_local_hfx_aux: bool,
-    hfx_omega_values: tuple[float, ...],
-    hfx_chunk_size: int,
-    hfx_nu_storage: str,
-    init_guess: Any,
-    scf_max_cycle: int,
-    scf_conv_tol: float,
-    scf_conv_tol_density: float,
-    scf_damping: float,
-    scf_level_shift: float,
-    verbose: int,
+def _require_converged_atom_reference(
+    molecule: Any, record: GradDFTGroundAtomRecord, *, basis: str
 ) -> Any:
-    """Build one GradDFT atom reference through PySCF, then package cached arrays."""
-
-    del max_l
-    try:
-        dft = importlib.import_module("pyscf.dft")
-        gto = importlib.import_module("pyscf.gto")
-    except ModuleNotFoundError as exc:
-        raise ImportError("PySCF is required for reference_builder='pyscf'.") from exc
-
-    mol = gto.Mole()
-    mol.atom = record.atom
-    mol.unit = str(record.unit)
-    mol.basis = str(basis)
-    mol.charge = int(record.charge)
-    mol.spin = int(record.spin)
-    mol.cart = True
-    mol.verbose = int(verbose)
-    mol.build()
-
-    mf = _run_pyscf_atom_reference_scf(
-        dft,
-        mol,
-        restricted=(int(record.spin) == 0),
-        xc_spec=str(xc_spec),
-        grids_level=int(grids_level),
-        init_guess=init_guess,
-        scf_max_cycle=int(scf_max_cycle),
-        scf_conv_tol=float(scf_conv_tol),
-        scf_conv_tol_density=float(scf_conv_tol_density),
-        scf_damping=float(scf_damping),
-        scf_level_shift=float(scf_level_shift),
-        verbose=int(verbose),
-        symbol=str(record.symbol),
-        basis=str(basis),
-    )
-
-    if int(record.spin) == 0:
-        from gradscf.data.reference import restricted_reference_from_pyscf
-
-        storage = "dense" if str(hfx_nu_storage) == "array" else str(hfx_nu_storage)
-        return restricted_reference_from_pyscf(
-            mf,
-            compute_local_hfx_features=bool(compute_local_hfx_features),
-            compute_local_hfx_aux=bool(compute_local_hfx_aux),
-            hfx_omega_values=tuple(float(value) for value in hfx_omega_values),
-            hfx_chunk_size=int(hfx_chunk_size),
-            array_backend="jax",
-            hfx_nu_storage=storage,
+    if not bool(molecule.scf_converged):
+        raise RuntimeError(
+            f"Native atom SCF did not converge for {record.symbol} with basis={basis!r}; "
+            f"cycles={molecule.scf_cycles!r}, last_energy={molecule.mf_energy!r}."
         )
-
-    from gradscf.data.reference import unrestricted_reference_from_pyscf
-
-    storage = "dense" if str(hfx_nu_storage) == "array" else str(hfx_nu_storage)
-    return unrestricted_reference_from_pyscf(
-        mf,
-        compute_local_hfx_features=bool(compute_local_hfx_features),
-        compute_local_hfx_aux=bool(compute_local_hfx_aux),
-        hfx_omega_values=tuple(float(value) for value in hfx_omega_values),
-        hfx_chunk_size=int(hfx_chunk_size),
-        array_backend="jax",
-        hfx_nu_storage=storage,
-    )
-
-
-def _pyscf_atom_reference_attempts(
-    *,
-    init_guess: Any,
-    scf_max_cycle: int,
-    scf_damping: float,
-    scf_level_shift: float,
-) -> tuple[dict[str, Any], ...]:
-    first_guess = str(init_guess) if isinstance(init_guess, str) else "minao"
-    first_max_cycle = min(max(1, int(scf_max_cycle)), 80)
-    return (
-        {
-            "init_guess": first_guess,
-            "damping": float(scf_damping),
-            "level_shift": float(scf_level_shift),
-            "max_cycle": first_max_cycle,
-            "newton": False,
-        },
-        {
-            "init_guess": "minao",
-            "damping": max(float(scf_damping), 0.20),
-            "level_shift": max(float(scf_level_shift), 0.20),
-            "max_cycle": max(int(scf_max_cycle), 160),
-            "newton": False,
-            "frac_occ": True,
-        },
-        {
-            "init_guess": "atom",
-            "damping": max(float(scf_damping), 0.30),
-            "level_shift": max(float(scf_level_shift), 0.50),
-            "max_cycle": max(int(scf_max_cycle), 160),
-            "newton": False,
-            "frac_occ": True,
-        },
-        {
-            "init_guess": "atom",
-            "damping": 0.0,
-            "level_shift": 0.0,
-            "max_cycle": max(int(scf_max_cycle), 512),
-            "newton": True,
-            "frac_occ": False,
-        },
-    )
-
-
-def _configure_pyscf_atom_mf(
-    mf: Any,
-    *,
-    xc_spec: str,
-    grids_level: int,
-    scf_conv_tol: float,
-    scf_conv_tol_density: float,
-    verbose: int,
-    attempt: dict[str, Any],
-) -> Any:
-    mf.xc = str(xc_spec)
-    mf.grids.level = int(grids_level)
-    mf.max_cycle = int(attempt["max_cycle"])
-    mf.conv_tol = float(scf_conv_tol)
-    mf.conv_tol_grad = float(scf_conv_tol_density)
-    mf.damping = float(attempt["damping"])
-    mf.level_shift = float(attempt["level_shift"])
-    mf.init_guess = str(attempt["init_guess"])
-    mf.verbose = int(verbose)
-    return mf
-
-
-def _run_pyscf_atom_reference_scf(
-    dft_module: Any,
-    mol: Any,
-    *,
-    restricted: bool,
-    xc_spec: str,
-    grids_level: int,
-    init_guess: Any,
-    scf_max_cycle: int,
-    scf_conv_tol: float,
-    scf_conv_tol_density: float,
-    scf_damping: float,
-    scf_level_shift: float,
-    verbose: int,
-    symbol: str,
-    basis: str,
-) -> Any:
-    attempts = _pyscf_atom_reference_attempts(
-        init_guess=init_guess,
-        scf_max_cycle=int(scf_max_cycle),
-        scf_damping=float(scf_damping),
-        scf_level_shift=float(scf_level_shift),
-    )
-    last_mf = None
-    for attempt in attempts:
-        mf = dft_module.RKS(mol) if bool(restricted) else dft_module.UKS(mol)
-        if bool(attempt["newton"]):
-            mf = mf.newton()
-        if bool(attempt.get("frac_occ", False)):
-            scf = importlib.import_module("pyscf.scf")
-            mf = scf.addons.frac_occ(mf)
-        mf = _configure_pyscf_atom_mf(
-            mf,
-            xc_spec=str(xc_spec),
-            grids_level=int(grids_level),
-            scf_conv_tol=float(scf_conv_tol),
-            scf_conv_tol_density=float(scf_conv_tol_density),
-            verbose=int(verbose),
-            attempt=attempt,
-        )
-        mf.kernel()
-        last_mf = mf
-        if bool(getattr(mf, "converged", False)):
-            return mf
-    raise RuntimeError(
-        f"PySCF atom reference did not converge for {symbol} "
-        f"with basis={basis!r}, xc={xc_spec!r}, grid={grids_level}; "
-        f"last_energy={getattr(last_mf, 'e_tot', None)!r}."
-    )
+    return molecule
 
 
 def build_graddft_ground_atom_datum(

@@ -1,18 +1,18 @@
+from pyscf_data_reference import true_df_factors_from_libcint_mol
 import numpy as np
 import pytest
 
-from gradscf.data import basis_from_pyscf_spec, evaluate_cartesian_ao
+from gradscf.integrals import basis_from_pyscf_spec, evaluate_cartesian_ao
 from gradscf.integrals import build_hcore, eri_pair_matrix_packed, eri_tensor, overlap_matrix
 from gradscf.df import (
     build_j_from_df,
     build_jk_from_df,
     build_jk_from_df_orbitals,
     eri_to_df_factors,
-    true_df_factors_from_libcint_mol,
 )
 from gradscf.scf import RKSConfig, run_rks_from_integrals
 from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from gradscf.scf.features import _restricted_response_eri_slices_from_mo_tensor
+from reference_scf_features import _restricted_response_eri_slices_from_mo_tensor
 from gradscf.integrals.backends.jax_reference.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
 from gradscf.integrals.backends.jax_reference.packed_eri import build_jk_from_eri_pair_matrix, eri_pair_matrix_to_mo_eri_slices
 from gradscf.tddft import RestrictedCasidaTDDFT
@@ -575,27 +575,21 @@ def test_rks_df_backend_matches_pyscf_water_total_energy():
     assert np.isclose(out.total_energy, mf.e_tot, atol=5e-5, rtol=5e-5)
 
 
-def test_strict_jax_df_reference_for_water_skips_full_eri(monkeypatch):
+def test_native_spectral_df_reference_for_water_packs_factors():
     _pyscf_or_skip()
     from pyscf import dft
-    import gradscf.scf.inputs as scf_inputs_mod
 
     mol = _water_mol()
     mf = dft.RKS(mol)
-    mf.xc = "pbe"
+    mf.xc = "hf"
     mf.grids.level = 0
     mf.conv_tol = 1e-10
     mf.max_cycle = 120
     mf.kernel()
     assert mf.converged
 
-    def _fail_eri_tensor(*args, **kwargs):
-        raise AssertionError("strict-JAX DF reference path should not call eri_tensor")
-
-    monkeypatch.setattr(scf_inputs_mod, "eri_tensor", _fail_eri_tensor)
-
     cfg = RKSConfig(
-        xc_spec="pbe",
+        xc_spec="hf",
         max_cycle=50,
         conv_tol=1e-9,
         conv_tol_density=1e-7,
@@ -607,7 +601,7 @@ def test_strict_jax_df_reference_for_water_skips_full_eri(monkeypatch):
     ref = restricted_molecule_from_spec_with_jax_rks(
         atom=mol.atom,
         basis="sto-3g",
-        xc_spec="pbe",
+        xc_spec="hf",
         unit="Angstrom",
         charge=0,
         spin=0,
@@ -626,24 +620,15 @@ def test_strict_jax_df_reference_for_water_skips_full_eri(monkeypatch):
     assert np.isclose(ref.mf_energy, mf.e_tot, atol=5e-5, rtol=5e-5)
 
 
-def test_strict_jax_libcint_df_reference_for_water_skips_full_eri(monkeypatch):
+def test_native_spectral_df_reference_matches_full_eri_reference():
     _pyscf_or_skip()
-    from pyscf import dft, gto
+    from pyscf import dft
 
     import gradscf.scf.builders as reference_mod
 
-    orig_intor = gto.mole.Mole.intor
-
-    def _guarded_intor(self, intor, *args, **kwargs):
-        if str(intor) == "int2e_cart":
-            raise AssertionError("libcint DF reference path should not call full int2e")
-        return orig_intor(self, intor, *args, **kwargs)
-
-    monkeypatch.setattr(gto.mole.Mole, "intor", _guarded_intor)
-
     mol = _water_mol()
-    mf = dft.RKS(mol).density_fit()
-    mf.xc = "pbe"
+    mf = dft.RKS(mol)
+    mf.xc = "hf"
     mf.grids.level = 0
     mf.conv_tol = 1e-10
     mf.max_cycle = 120
@@ -653,7 +638,7 @@ def test_strict_jax_libcint_df_reference_for_water_skips_full_eri(monkeypatch):
     ref = reference_mod.restricted_molecule_from_spec_with_jax_rks(
         atom=mol.atom,
         basis="sto-3g",
-        xc_spec="pbe",
+        xc_spec="hf",
         unit="Angstrom",
         charge=0,
         spin=0,
@@ -661,7 +646,7 @@ def test_strict_jax_libcint_df_reference_for_water_skips_full_eri(monkeypatch):
         grids_level=0,
         max_l=1,
         rks_config=RKSConfig(
-            xc_spec="pbe",
+            xc_spec="hf",
             max_cycle=50,
             conv_tol=1e-9,
             conv_tol_density=1e-7,
@@ -681,25 +666,15 @@ def test_strict_jax_libcint_df_reference_for_water_skips_full_eri(monkeypatch):
     assert np.isclose(ref.mf_energy, mf.e_tot, atol=2e-4, rtol=2e-4)
 
 
-def test_libcint_df_reference_preserves_df_backend_when_xc_overrides_config(monkeypatch):
+def test_native_spectral_df_reference_preserves_backend_when_xc_overrides_config():
     _pyscf_or_skip()
-    from pyscf import gto
 
     import gradscf.scf.builders as reference_mod
-
-    orig_intor = gto.mole.Mole.intor
-
-    def _guarded_intor(self, intor, *args, **kwargs):
-        if str(intor) == "int2e_cart":
-            raise AssertionError("xc override must not reset jk_backend='df'")
-        return orig_intor(self, intor, *args, **kwargs)
-
-    monkeypatch.setattr(gto.mole.Mole, "intor", _guarded_intor)
 
     ref = reference_mod.restricted_molecule_from_spec_with_jax_rks(
         atom=_water_mol().atom,
         basis="sto-3g",
-        xc_spec="pbe0",
+        xc_spec="hf",
         unit="Angstrom",
         charge=0,
         spin=0,

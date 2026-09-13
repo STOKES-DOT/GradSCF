@@ -26,9 +26,9 @@ def evaluate(operator, atm, bas, env, nao, cart=True):
     Returns ``(nao, nao)``; dipole returns ``(3, nao, nao)`` and ERI returns
     ``(nao, nao, nao, nao)`` in chemists' order, with no symmetry compression.
 
-    This initial native backend has no JVP/VJP rule: JAX differentiation raises
-    an explicit error. The ``jax_reference`` backend provides differentiable
-    reference integrals. No finite differences or Python callbacks are hidden.
+    This raw-ENV entry point is value-only. IntegralPlan.evaluate separates
+    geometry from basis data and adds native coordinate JVP/VJP. Arbitrary
+    ENV differentiation raises; no finite differences or callbacks are hidden.
     """
     if operator not in _OPERATORS:
         raise ValueError(f"Unknown native integral operator {operator!r}")

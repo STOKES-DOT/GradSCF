@@ -1,27 +1,13 @@
-from __future__ import annotations
-
-import warnings
+"""Standalone initial density inputs; hcore orbitals are formed by SCF."""
 from dataclasses import dataclass
 from typing import Any
-
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 
-from gradscf.integrals.backends.pyscf import build_libcint_mol
-from ..data.molecule import MoleculeSpec
-
-_HCORE_GUESS_KEYS = frozenset({"1e", "hcore"})
-_PYSCF_GUESS_KEYS = frozenset(
-    {"minao", "atom", "huckel", "mod_huckel", "sap", "vsap", "chkfile"}
-)
-
-
 @dataclass(frozen=True)
 class RestrictedInitGuess:
     density: Array | None = None
-
 
 @dataclass(frozen=True)
 class UnrestrictedInitGuess:
@@ -29,259 +15,61 @@ class UnrestrictedInitGuess:
     density_beta: Array | None = None
 
 
-def _guess_key(init_guess: Any) -> str | None:
-    if not isinstance(init_guess, str):
-        return None
-    key = str(init_guess).strip().lower()
-    if key.startswith("chk"):
-        return "chkfile"
-    return key
+def _hcore_requested(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        if value.lower() in {"hcore", "1e"}:
+            return True
+        raise ValueError(f"Unsupported initial guess {value!r}; use 'hcore'/'1e' or supply a density matrix")
+    return False
 
 
-def _normalize_density_matrix(dm: Any) -> np.ndarray:
-    dm_np = np.asarray(jax.device_get(dm), dtype=np.float64)
-    if dm_np.ndim != 2 or dm_np.shape[0] != dm_np.shape[1]:
-        raise ValueError("Restricted initial guess density must be a square 2D matrix.")
-    return 0.5 * (dm_np + dm_np.T)
+def _density(value, dtype):
+    dm = jnp.asarray(value, dtype=dtype)
+    if dm.ndim != 2 or dm.shape[0] != dm.shape[1]:
+        raise ValueError("Initial density must be a square matrix")
+    return .5*(dm+dm.T.conj())
 
 
-def _normalize_spin_density_matrices(dm: Any) -> tuple[np.ndarray, np.ndarray]:
-    dm_np = np.asarray(jax.device_get(dm), dtype=np.float64)
-    if dm_np.ndim == 3 and dm_np.shape[0] == 2:
-        dma, dmb = dm_np[0], dm_np[1]
-    elif isinstance(dm, (tuple, list)) and len(dm) == 2:
-        dma = np.asarray(jax.device_get(dm[0]), dtype=np.float64)
-        dmb = np.asarray(jax.device_get(dm[1]), dtype=np.float64)
-    else:
-        raise ValueError(
-            "Unrestricted initial guess density must be a (2, nao, nao) array or a 2-tuple."
-        )
-    if dma.ndim != 2 or dmb.ndim != 2 or dma.shape != dmb.shape or dma.shape[0] != dma.shape[1]:
-        raise ValueError("Unrestricted initial guess densities must be square matrices with matching shapes.")
-    return 0.5 * (dma + dma.T), 0.5 * (dmb + dmb.T)
-
-
-def _warn_traceable_init_guess_fallback(key: str) -> None:
-    warnings.warn(
-        f"Initial guess '{key}' is host-only in the current SCF implementation; "
-        "traceable geometry falls back to the hcore/1e initial guess.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
-
-
-def _build_pyscf_ks_object(
-    *,
-    restricted: bool,
-    atom: Any,
-    basis: Any,
-    unit: str,
-    charge: int,
-    spin: int,
-    cart: bool,
-    verbose: int,
-    xc_spec: str,
-    sap_basis: Any | None,
-    chkfile: str | None,
-    libcint_mol: Any | None = None,
-) -> tuple[Any, Any]:
-    from pyscf import dft
-
-    mol = libcint_mol
-    if mol is None:
-        mol = build_libcint_mol(
-            atom=atom,
-            basis=basis,
-            unit=unit,
-            charge=charge,
-            spin=spin,
-            cart=cart,
-            verbose=verbose,
-        )
-    mf = dft.RKS(mol, xc=xc_spec) if restricted else dft.UKS(mol, xc=xc_spec)
-    mf.verbose = int(verbose)
-    if sap_basis is not None:
-        mf.sap_basis = sap_basis
-    if chkfile is not None:
-        mf.chkfile = chkfile
-    return mol, mf
-
-
-def _guess_density_from_pyscf(
-    *,
-    restricted: bool,
-    atom: Any,
-    basis: Any,
-    unit: str,
-    charge: int,
-    spin: int,
-    cart: bool,
-    verbose: int,
-    xc_spec: str,
-    init_guess: str,
-    sap_basis: Any | None,
-    chkfile: str | None,
-    chkfile_project: bool | None,
-    libcint_mol: Any | None = None,
-) -> Any | None:
-    try:
-        mol, mf = _build_pyscf_ks_object(
-            restricted=restricted,
-            atom=atom,
-            basis=basis,
-            unit=unit,
-            charge=charge,
-            spin=spin,
-            cart=cart,
-            verbose=verbose,
-            xc_spec=xc_spec,
-            sap_basis=sap_basis,
-            chkfile=chkfile,
-            libcint_mol=libcint_mol,
-        )
-    except ModuleNotFoundError:
-        warnings.warn(
-            "PySCF is unavailable; falling back to the hcore/1e initial guess.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-        return None
-
-    key = _guess_key(init_guess)
-    if key is None:
-        key = "minao"
-    if key == "chkfile":
-        try:
-            dm = mf.init_guess_by_chkfile(chkfile=chkfile, project=chkfile_project)
-        except (OSError, IOError, FileNotFoundError, KeyError, TypeError):
-            warnings.warn(
-                "Failed to load initial guess from chkfile; falling back to MINAO.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            dm = mf.init_guess_by_minao(mol)
-    else:
-        dm = mf.get_init_guess(mol, key=key)
-    return _normalize_density_matrix(dm) if restricted else _normalize_spin_density_matrices(dm)
-
-
-def _host_guess_key(init_guess: str, *, geometry_is_traced: bool) -> str | None:
-    key = _guess_key(init_guess) or "minao"
-    if key in _HCORE_GUESS_KEYS:
-        return None
-    if key not in _PYSCF_GUESS_KEYS:
-        key = "minao"
-    if geometry_is_traced:
-        _warn_traceable_init_guess_fallback(key)
-        return None
-    return key
-
-
-def restricted_init_guess_from_pyscf(
-    *,
-    atom: Any,
-    basis: Any,
-    unit: str,
-    charge: int,
-    spin: int,
-    cart: bool,
-    verbose: int,
-    xc_spec: str,
-    init_guess: Any,
-    sap_basis: Any | None,
-    chkfile: str | None,
-    chkfile_project: bool | None,
-    geometry_is_traced: bool,
-    dtype: Any,
-    libcint_mol: Any | None = None,
-) -> RestrictedInitGuess:
-    if not isinstance(init_guess, str):
-        if init_guess is None:
-            return RestrictedInitGuess()
-        return RestrictedInitGuess(density=jnp.asarray(_normalize_density_matrix(init_guess), dtype=dtype))
-
-    key = _host_guess_key(init_guess, geometry_is_traced=geometry_is_traced)
-    if key is None:
+def restricted_initial_guess(*, init_guess: Any, dtype: Any):
+    if _hcore_requested(init_guess):
         return RestrictedInitGuess()
-    dm = _guess_density_from_pyscf(
-        restricted=True,
-        atom=atom,
-        basis=basis,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        cart=cart,
-        verbose=verbose,
-        xc_spec=xc_spec,
-        init_guess=key,
-        sap_basis=sap_basis,
-        chkfile=chkfile,
-        chkfile_project=chkfile_project,
-        libcint_mol=libcint_mol,
-    )
-    if dm is None:
-        return RestrictedInitGuess()
-    return RestrictedInitGuess(density=jnp.asarray(dm, dtype=dtype))
+    return RestrictedInitGuess(_density(init_guess, dtype))
 
 
-def unrestricted_init_guess_from_pyscf(
-    *,
-    atom: Any,
-    basis: Any,
-    unit: str,
-    charge: int,
-    spin: int,
-    cart: bool,
-    verbose: int,
-    xc_spec: str,
-    init_guess: Any,
-    sap_basis: Any | None,
-    chkfile: str | None,
-    chkfile_project: bool | None,
-    geometry_is_traced: bool,
-    dtype: Any,
-    libcint_mol: Any | None = None,
-) -> UnrestrictedInitGuess:
-    if not isinstance(init_guess, str):
-        if init_guess is None:
-            return UnrestrictedInitGuess()
-        density_alpha, density_beta = _normalize_spin_density_matrices(init_guess)
-        return UnrestrictedInitGuess(
-            density_alpha=jnp.asarray(density_alpha, dtype=dtype),
-            density_beta=jnp.asarray(density_beta, dtype=dtype),
-        )
-
-    key = _host_guess_key(init_guess, geometry_is_traced=geometry_is_traced)
-    if key is None:
+def unrestricted_initial_guess(*, init_guess: Any, dtype: Any):
+    if _hcore_requested(init_guess):
         return UnrestrictedInitGuess()
-    dm_pair = _guess_density_from_pyscf(
-        restricted=False,
-        atom=atom,
-        basis=basis,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        cart=cart,
-        verbose=verbose,
-        xc_spec=xc_spec,
-        init_guess=key,
-        sap_basis=sap_basis,
-        chkfile=chkfile,
-        chkfile_project=chkfile_project,
-        libcint_mol=libcint_mol,
-    )
-    if dm_pair is None:
-        return UnrestrictedInitGuess()
-    density_alpha, density_beta = dm_pair
-    return UnrestrictedInitGuess(
-        density_alpha=jnp.asarray(density_alpha, dtype=dtype),
-        density_beta=jnp.asarray(density_beta, dtype=dtype),
-    )
+    dm = jnp.asarray(init_guess, dtype=dtype)
+    if dm.ndim != 3 or dm.shape[0] != 2:
+        raise ValueError("Unrestricted initial density must have shape (2, nao, nao)")
+    return UnrestrictedInitGuess(_density(dm[0], dtype), _density(dm[1], dtype))
+
+def orbital_rotation_guesses(mo_coeff, *, amplitudes=(0., .1), seed=20260913):
+    """Return reproducible, metric-preserving orbital guesses for explicit restarts.
+
+    This host-side helper rotates a complete S-orthonormal orbital matrix;
+    refilling the requested occupations preserves electron counts/idempotency.
+    It does not select a root or assert that a converged state is the ground
+    state. The caller must inspect convergence and compare candidate energies.
+    """
+    coeff = np.asarray(mo_coeff)
+    scales = tuple(float(a) for a in amplitudes)
+    if coeff.ndim != 2 or coeff.shape[0] != coeff.shape[1] or not np.all(np.isfinite(coeff)):
+        raise ValueError("Expected a finite, complete square orbital matrix")
+    if not scales or any(not np.isfinite(a) or a < 0 for a in scales):
+        raise ValueError("Rotation amplitudes must be finite and nonnegative")
+    random = np.random.default_rng(seed).normal(size=coeff.shape)
+    generator = random-random.T
+    # exp(A) from the Hermitian eigendecomposition of i*A, avoiding another
+    # runtime dependency and retaining an exactly orthogonal rotation in theory.
+    eigenvalues, vectors = np.linalg.eigh(1j*generator)
+    guesses = []
+    for scale in scales:
+        rotation = ((vectors*np.exp(-1j*scale*eigenvalues))@vectors.conj().T).real
+        guesses.append(coeff.copy() if scale == 0 else coeff@rotation)
+    return tuple(guesses)
 
 
-__all__ = [
-    "RestrictedInitGuess",
-    "UnrestrictedInitGuess",
-    "restricted_init_guess_from_pyscf",
-    "unrestricted_init_guess_from_pyscf",
-]
+__all__ = ["RestrictedInitGuess", "UnrestrictedInitGuess", "restricted_initial_guess", "unrestricted_initial_guess", "orbital_rotation_guesses"]

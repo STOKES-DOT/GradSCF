@@ -1,4 +1,4 @@
-"""Density-fitting helpers inspired by PySCF's df namespace."""
+"""JAX ERI factorization and Coulomb/exchange contractions."""
 
 from .jk import (
     build_j_from_df,
@@ -9,7 +9,6 @@ from .jk import (
     eri_pair_matrix_to_df_factors_traceable,
     eri_to_df_factors,
     eri_to_df_factors_from_basis,
-    true_df_factors_from_libcint_mol,
 )
 
 __all__ = [
@@ -21,5 +20,4 @@ __all__ = [
     "eri_pair_matrix_to_df_factors_traceable",
     "eri_to_df_factors",
     "eri_to_df_factors_from_basis",
-    "true_df_factors_from_libcint_mol",
 ]

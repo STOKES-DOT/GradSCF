@@ -28,7 +28,8 @@ list(TRANSFORM CINT_SOURCES PREPEND "vendor/libcint/src/")
 list(TRANSFORM CINT_SOURCES APPEND ".c")
 add_library(gradscf_integrals SHARED
   ${CINT_SOURCES} vendor/libcint/src/autocode/intor1.c
-  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc)
+  vendor/libcint/src/autocode/grad1.c vendor/libcint/src/autocode/grad2.c
+  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc)
 target_include_directories(gradscf_integrals PRIVATE
   "${JAX_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated"
   vendor/libcint/src vendor/libcint/include)

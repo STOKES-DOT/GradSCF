@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pytest
 
-from gradscf.integrals.basis import basis_from_pyscf_mol_cart
+from pyscf_adapters import basis_from_pyscf_mol_cart
 from gradscf.integrals import eri_element, overlap_element
 from pyscf_reference import unrestricted_reference_from_pyscf
 from gradscf.spectra import oscillator_strengths

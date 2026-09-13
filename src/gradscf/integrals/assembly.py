@@ -1,373 +1,161 @@
-"""Public integral-input assembly API.
-
-Backend helpers receive explicit callables so the compatibility module
-``gradscf.scf.inputs`` shares the same patch points as this public entry point.
-SCF configuration and initial-guess implementations are imported on demand.
-"""
-
+"""Standalone integral/grid assembly for restricted and unrestricted SCF."""
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
-from .basis import basis_from_molecule_spec
-from ..data.grid import build_molecular_grid_from_spec
-from ..data.grid_ao import evaluate_cartesian_ao, evaluate_cartesian_ao_with_derivatives
-from ..data.molecule import MoleculeSpec
+from typing import Any
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from .basis import basis_from_molecule_spec, prepare_basis
+from .plan import make_plan
+from .grids import build_molecular_grid_from_spec
+from .grids.ao import evaluate_cartesian_ao, evaluate_cartesian_ao_with_derivatives
 from .backends.jax_reference import (
-    build_hcore, dipole_matrix, eri_pair_matrix_packed, eri_tensor,
-    overlap_matrix, overlap_hcore_matrices, precompile_eri_kernels,
+    overlap_matrix, build_hcore, dipole_matrix, eri_tensor,
+    eri_pair_matrix_packed, precompile_eri_kernels,
 )
-from .autodiff import LibcintGeometryGradPolicy
 from .input_types import RKSIntegralInputs, UKSIntegralInputs
-from .input_grid import _GRID_AO_INPUT_CACHE
-from .input_libcint import (
-    _LIBCINT_HOST_INTEGRAL_CACHE, _cached_libcint_host_integral,
-    _gpu4pyscf_eri,
-)
-from . import input_libcint as _libcint
+from .input_spin import _unrestricted_spin_electron_counts
 from . import input_grid as _grid
-from . import assembly_cpu as _cpu
-from . import assembly_jax as _jax
-from ..xc_backend.jax_libxc import parse_xc
-
-if TYPE_CHECKING:
-    from ..scf.rks import RKSConfig
-    from ..scf.uks import UKSConfig
-
-_SCFConfig = TypeVar("_SCFConfig", "RKSConfig", "UKSConfig")
+from ..data.molecule import MoleculeSpec, parse_molecule_spec
+from ..xc_backend.jax_libxc import parse_xc, xc_type
 
 
-def restricted_init_guess_from_pyscf(**kwargs):
-    from ..scf.init_guess import restricted_init_guess_from_pyscf as build_guess
-    return build_guess(**kwargs)
-
-
-def unrestricted_init_guess_from_pyscf(**kwargs):
-    from ..scf.init_guess import unrestricted_init_guess_from_pyscf as build_guess
-    return build_guess(**kwargs)
-
-
-def _libcint_one_electron_from_mol(**kwargs):
-    return _libcint._libcint_one_electron_from_mol(
-        **kwargs,
-        _cached_libcint_host_integral=_cached_libcint_host_integral,
-    )
+def _resolve_config(config, xc_spec, config_type):
+    name = str(xc_spec if xc_spec is not None else (config.xc_spec if config is not None else "pbe"))
+    parse_xc(name)
+    cfg = config_type(xc_spec=name) if config is None else config
+    return (replace(cfg, xc_spec=name) if cfg.xc_spec != name else cfg), name
 
 
 def _prepare_basis_grid_context(**kwargs):
     return _grid._prepare_basis_grid_context(
-        **kwargs,
-        basis_from_molecule_spec=basis_from_molecule_spec,
+        **kwargs, basis_from_molecule_spec=basis_from_molecule_spec,
         build_molecular_grid_from_spec=build_molecular_grid_from_spec,
-        evaluate_cartesian_ao_with_derivatives=evaluate_cartesian_ao_with_derivatives,
-    )
+        evaluate_cartesian_ao_with_derivatives=evaluate_cartesian_ao_with_derivatives)
 
 
 def _grid_ao_payload(context, **kwargs):
-    return _grid._grid_ao_payload(
-        context, **kwargs,
-        evaluate_cartesian_ao_with_derivatives=evaluate_cartesian_ao_with_derivatives,
-    )
+    return _grid._grid_ao_payload(context, **kwargs,
+        evaluate_cartesian_ao_with_derivatives=evaluate_cartesian_ao_with_derivatives)
 
 
-def _build_rks_inputs_from_cpu_backbone(**kwargs):
-    return _cpu._build_rks_inputs_from_cpu_backbone(
-        **kwargs,
-        _prepare_basis_grid_context=_prepare_basis_grid_context,
-        _grid_ao_payload=_grid_ao_payload,
-        _cached_libcint_host_integral=_cached_libcint_host_integral,
-        _libcint_one_electron_from_mol=_libcint_one_electron_from_mol,
-        restricted_init_guess_from_pyscf=restricted_init_guess_from_pyscf,
-    )
+def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
+                  grids_level, max_l, grid_ao_backend, integral_backend,
+                  geometry_grad_policy, include_dipole, precompile_eri,
+                  precompile_eri_chunk_size, precompiler, chkfile, sap_basis,
+                  chkfile_project, mol_kwargs):
+    if not cart:
+        raise NotImplementedError("SCF/grid assembly currently requires Cartesian AOs; integral plans also support spherical AOs")
+    mode = str(integral_backend).lower()
+    if mode in {"cpu", "libcint"}:
+        mode = "native"
+    if mode not in {"native", "jax"}:
+        raise ValueError("integral_backend must be 'native'/'cpu' or 'jax'; the external GPU backend was removed")
+    if grid_ao_backend != "jax":
+        raise ValueError("Only grid_ao_backend='jax' is supported")
+    if geometry_grad_policy not in {"analytic", "error", "zero"}:
+        raise ValueError("geometry gradient policy must be 'analytic', 'error', or 'zero'")
+    if chkfile is not None or sap_basis is not None or chkfile_project is not None:
+        raise NotImplementedError("External checkpoint/SAP guess options were removed; supply an initial density matrix")
+    if mol_kwargs:
+        raise TypeError(f"Unsupported molecular options: {', '.join(sorted(mol_kwargs))}")
+    if mode == "native" and cfg.jk_backend == "direct":
+        raise NotImplementedError("Native direct J/K is not implemented; use full/df, or select the JAX reference direct backend")
+    spec = atom if isinstance(atom, MoleculeSpec) else parse_molecule_spec(atom, unit=unit, charge=charge, spin=spin)
+    laplacian = xc_type(xc_spec) == "MGGA"
+    context = _prepare_basis_grid_context(spec=spec, basis=basis, max_l=max_l,
+        grids_level=grids_level, precompute_eri_groups=(mode == "jax"), needs_ao_laplacian=laplacian)
+    if context.geometry_is_traced and geometry_grad_policy == "error":
+        raise NotImplementedError("Geometry gradients are disabled by geometry_grad_policy='error'")
+    if mode == "native":
+        top, params = prepare_basis(spec, basis, cart=True)
+        if geometry_grad_policy == "zero":
+            params = replace(params, centers=jax.lax.stop_gradient(params.centers),
+                             nuclear_coords=jax.lax.stop_gradient(params.nuclear_coords))
+        plan = make_plan(top, backend="native")
+        s = plan.evaluate("overlap", params)
+        h = plan.evaluate("kinetic", params)+plan.evaluate("nuclear", params)
+        full_eri = plan.evaluate("eri", params)
+        dipole = plan.evaluate("dipole", params) if include_dipole else None
+        rows, cols = np.tril_indices(top.nao)
+        pair = full_eri[rows[:,None], cols[:,None], rows[None,:], cols[None,:]]
+    else:
+        b = context.basis
+        if precompile_eri:
+            precompiler(b, engine="jit", chunk_size=int(precompile_eri_chunk_size))
+        s, h = overlap_matrix(b), build_hcore(b)
+        dipole = dipole_matrix(b) if include_dipole else None
+        full_eri = None
+        pair = None if cfg.jk_backend == "direct" else eri_pair_matrix_packed(b)
+    factors = None
+    if cfg.jk_backend == "df":
+        from ..df import eri_pair_matrix_to_df_factors, eri_pair_matrix_to_df_factors_traceable
+        factorize = eri_pair_matrix_to_df_factors_traceable if context.geometry_is_traced else eri_pair_matrix_to_df_factors
+        factors = factorize(pair, nao=s.shape[0], tol=cfg.df_tol, max_rank=cfg.df_max_rank)
+    ao, ao_deriv1, ao_laplacian = _grid_ao_payload(context, needs_ao_laplacian=laplacian)
+    return spec, context, s, h, full_eri, pair, factors, dipole, ao, ao_deriv1, ao_laplacian, mode
 
 
-def _build_uks_inputs_from_cpu_backbone(**kwargs):
-    return _cpu._build_uks_inputs_from_cpu_backbone(
-        **kwargs,
-        _prepare_basis_grid_context=_prepare_basis_grid_context,
-        _grid_ao_payload=_grid_ao_payload,
-        _cached_libcint_host_integral=_cached_libcint_host_integral,
-        _libcint_one_electron_from_mol=_libcint_one_electron_from_mol,
-        unrestricted_init_guess_from_pyscf=unrestricted_init_guess_from_pyscf,
-    )
-
-
-def _build_rks_inputs_from_jax_backbone(**kwargs):
-    return _jax._build_rks_inputs_from_jax_backbone(
-        **kwargs,
-        _prepare_basis_grid_context=_prepare_basis_grid_context,
-        _grid_ao_payload=_grid_ao_payload,
-        restricted_init_guess_from_pyscf=restricted_init_guess_from_pyscf,
-        overlap_hcore_matrices=overlap_hcore_matrices,
-        dipole_matrix=dipole_matrix,
-        eri_pair_matrix_packed=eri_pair_matrix_packed,
-    )
-
-
-def _build_uks_inputs_from_jax_backbone(**kwargs):
-    return _jax._build_uks_inputs_from_jax_backbone(
-        **kwargs,
-        _prepare_basis_grid_context=_prepare_basis_grid_context,
-        _grid_ao_payload=_grid_ao_payload,
-        unrestricted_init_guess_from_pyscf=unrestricted_init_guess_from_pyscf,
-        overlap_matrix=overlap_matrix,
-        build_hcore=build_hcore,
-        dipole_matrix=dipole_matrix,
-        eri_tensor=eri_tensor,
-    )
-
-
-def _resolve_config(
-    config: _SCFConfig | None,
-    xc_spec: str | None,
-    config_type: type[_SCFConfig],
-) -> tuple[_SCFConfig, str]:
-    xc_spec_resolved = str(xc_spec if xc_spec is not None else (config.xc_spec if config is not None else "pbe"))
-    parse_xc(xc_spec_resolved)
-    cfg = config_type(xc_spec=xc_spec_resolved) if config is None else config
-    if cfg.xc_spec != xc_spec_resolved:
-        cfg = replace(cfg, xc_spec=xc_spec_resolved)
-    return cfg, xc_spec_resolved
-
-
-def _resolve_integral_input_modes(
-    *,
-    integral_backend: Literal["jax", "cpu", "gpu", "libcint"],
-    grid_ao_backend: Literal["jax"],
-    libcint_geometry_grad_policy: LibcintGeometryGradPolicy,
-) -> tuple[str, str, str]:
-    integral_backend_mode = str(integral_backend).lower()
-    if integral_backend_mode == "libcint":
-        integral_backend_mode = "cpu"
-    if integral_backend_mode not in {"jax", "cpu", "gpu"}:
-        raise ValueError(
-            f"Unsupported integral_backend={integral_backend!r}. Expected 'jax', 'cpu', or 'gpu'."
-        )
-    grid_ao_backend_mode = str(grid_ao_backend).lower()
-    if grid_ao_backend_mode != "jax":
-        raise ValueError(
-            f"Unsupported grid_ao_backend={grid_ao_backend!r}. "
-            "Only grid_ao_backend='jax' is supported."
-        )
-    libcint_grad_policy_mode = str(libcint_geometry_grad_policy).lower()
-    if libcint_grad_policy_mode not in {"analytic", "error", "zero"}:
-        raise ValueError(
-            f"Unsupported libcint_geometry_grad_policy={libcint_geometry_grad_policy!r}. "
-            "Expected 'analytic', 'error', or 'zero'."
-        )
-    return integral_backend_mode, grid_ao_backend_mode, libcint_grad_policy_mode
-
-
-def build_rks_integral_inputs(
-    *,
-    atom: Any,
-    basis: Any,
-    config: RKSConfig | None = None,
-    xc_spec: str | None = None,
-    unit: str = "Angstrom",
-    charge: int = 0,
-    spin: int = 0,
-    cart: bool = True,
-    grids_level: int = 0,
-    max_l: int = 3,
-    grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["jax", "cpu", "gpu", "libcint"] = "cpu",
-    libcint_geometry_grad_policy: LibcintGeometryGradPolicy = "analytic",
-    precompile_eri: bool = False,
-    precompile_eri_chunk_size: int = 512,
-    _precompile_eri_kernels: Any = precompile_eri_kernels,
-    include_dipole_integrals: bool = True,
-    init_guess: Any = "minao",
-    chkfile: str | None = None,
-    init_guess_sap_basis: Any | None = None,
-    init_guess_chkfile_project: bool | None = None,
-    verbose: int = 0,
-    **mol_kwargs: Any,
-) -> RKSIntegralInputs:
-    """Build integral/grid inputs for the restricted KS SCF kernel."""
-
-    if isinstance(atom, MoleculeSpec):
-        charge = int(atom.charge)
-        spin = int(atom.spin)
-    if int(spin) != 0:
-        raise NotImplementedError("build_rks_integral_inputs only supports closed-shell systems.")
-    if not bool(cart):
-        raise NotImplementedError("build_rks_integral_inputs currently supports cart=True only.")
-
+def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
+    unit="Angstrom", charge=0, spin=0, cart=True, grids_level=0, max_l=3,
+    grid_ao_backend="jax", integral_backend="native", libcint_geometry_grad_policy="analytic",
+    precompile_eri=False, precompile_eri_chunk_size=512, _precompile_eri_kernels=precompile_eri_kernels,
+    include_dipole_integrals=True, init_guess="hcore", chkfile=None,
+    init_guess_sap_basis=None, init_guess_chkfile_project=None, verbose=0, **mol_kwargs):
     from ..scf.rks import RKSConfig
-
-    cfg, xc_spec_resolved = _resolve_config(config, xc_spec, RKSConfig)
-    integral_backend_mode, grid_ao_backend_mode, libcint_grad_policy_mode = _resolve_integral_input_modes(
-        integral_backend=integral_backend,
-        grid_ao_backend=grid_ao_backend,
-        libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-    )
-    if integral_backend_mode == "cpu":
-        return _build_rks_inputs_from_cpu_backbone(
-            atom=atom,
-            basis=basis,
-            cfg=cfg,
-            xc_spec_resolved=xc_spec_resolved,
-            unit=unit,
-            charge=charge,
-            spin=spin,
-            cart=bool(cart),
-            grids_level=grids_level,
-            max_l=max_l,
-            precompile_eri=precompile_eri,
-            include_dipole_integrals=include_dipole_integrals,
-            init_guess=init_guess,
-            chkfile=chkfile,
-            init_guess_sap_basis=init_guess_sap_basis,
-            init_guess_chkfile_project=init_guess_chkfile_project,
-            verbose=verbose,
-            integral_backend_mode=integral_backend_mode,
-            grid_ao_backend_mode=grid_ao_backend_mode,
-            libcint_grad_policy_mode=libcint_grad_policy_mode,
-            mol_kwargs=dict(mol_kwargs),
-        )
-    inputs = _build_rks_inputs_from_jax_backbone(
-        atom=atom,
-        basis=basis,
-        cfg=cfg,
-        xc_spec_resolved=xc_spec_resolved,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        grids_level=grids_level,
-        max_l=max_l,
-        precompile_eri=precompile_eri,
-        precompile_eri_chunk_size=precompile_eri_chunk_size,
-        include_dipole_integrals=include_dipole_integrals,
-        init_guess=init_guess,
-        chkfile=chkfile,
-        init_guess_sap_basis=init_guess_sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project,
-        verbose=verbose,
-        integral_backend_mode=integral_backend_mode,
-        grid_ao_backend_mode=grid_ao_backend_mode,
-        _precompile_eri_kernels=_precompile_eri_kernels,
-    )
-    if integral_backend_mode == "gpu" and cfg.jk_backend == "full":
-        inputs = replace(
-            inputs,
-            eri_pair_matrix=_gpu4pyscf_eri(
-                packed=True,
-                atom=atom,
-                basis=basis,
-                unit=unit,
-                charge=charge,
-                spin=spin,
-                cart=bool(cart),
-                verbose=verbose,
-                mol_kwargs=dict(mol_kwargs),
-            ),
-        )
-    return inputs
+    from ..scf.init_guess import restricted_initial_guess
+    cfg, name = _resolve_config(config, xc_spec, RKSConfig)
+    actual_spin = atom.spin if isinstance(atom, MoleculeSpec) else spin
+    if actual_spin != 0:
+        raise NotImplementedError("Restricted inputs require a closed-shell system")
+    values = _build_common(atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
+        cart=cart,grids_level=grids_level,max_l=max_l,grid_ao_backend=grid_ao_backend,
+        integral_backend=integral_backend,geometry_grad_policy=libcint_geometry_grad_policy,
+        include_dipole=include_dipole_integrals,precompile_eri=precompile_eri,
+        precompile_eri_chunk_size=precompile_eri_chunk_size,precompiler=_precompile_eri_kernels,
+        chkfile=chkfile,sap_basis=init_guess_sap_basis,chkfile_project=init_guess_chkfile_project,mol_kwargs=mol_kwargs)
+    spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode=values
+    initial = restricted_initial_guess(init_guess=init_guess,dtype=h.dtype)
+    nelectron = int(np.asarray(spec.charges).sum())-int(spec.charge)
+    return RKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=None,
+        eri_pair_matrix=pair if cfg.jk_backend == "full" else None,df_factors=factors,
+        direct_basis=ctx.basis if cfg.jk_backend == "direct" else None,nelectron=nelectron,
+        nuclear_repulsion=spec.nuclear_repulsion,coords=ctx.coords,grid_weights=ctx.grid_weights,
+        ao=ao,ao_deriv1=dao,ao_laplacian=lap,dipole_integrals=dipole,init_density=initial.density,
+        molecule_charge=int(spec.charge),geometry_is_traced=ctx.geometry_is_traced,
+        integral_backend=mode,grid_ao_backend="jax")
 
 
-def build_uks_integral_inputs(
-    *,
-    atom: Any,
-    basis: Any,
-    config: UKSConfig | None = None,
-    xc_spec: str | None = None,
-    unit: str = "Angstrom",
-    charge: int = 0,
-    spin: int = 1,
-    cart: bool = True,
-    grids_level: int = 0,
-    max_l: int = 3,
-    grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["jax", "cpu", "gpu", "libcint"] = "cpu",
-    libcint_geometry_grad_policy: LibcintGeometryGradPolicy = "error",
-    precompile_eri: bool = False,
-    precompile_eri_chunk_size: int = 512,
-    _precompile_eri_kernels: Any = precompile_eri_kernels,
-    init_guess: Any = "minao",
-    chkfile: str | None = None,
-    init_guess_sap_basis: Any | None = None,
-    init_guess_chkfile_project: bool | None = None,
-    verbose: int = 0,
-    **mol_kwargs: Any,
-) -> UKSIntegralInputs:
-    """Build integral/grid inputs for the unrestricted KS SCF kernel."""
-
-    if isinstance(atom, MoleculeSpec):
-        charge = int(atom.charge)
-        spin = int(atom.spin)
-    if not bool(cart):
-        raise NotImplementedError("build_uks_integral_inputs currently supports cart=True only.")
-
+def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
+    unit="Angstrom", charge=0, spin=1, cart=True, grids_level=0, max_l=3,
+    grid_ao_backend="jax", integral_backend="native", libcint_geometry_grad_policy="analytic",
+    precompile_eri=False, precompile_eri_chunk_size=512, _precompile_eri_kernels=precompile_eri_kernels,
+    init_guess="hcore", chkfile=None, init_guess_sap_basis=None,
+    init_guess_chkfile_project=None, verbose=0, **mol_kwargs):
     from ..scf.uks import UKSConfig
-
-    cfg, xc_spec_resolved = _resolve_config(config, xc_spec, UKSConfig)
-    integral_backend_mode, grid_ao_backend_mode, libcint_grad_policy_mode = _resolve_integral_input_modes(
-        integral_backend=integral_backend,
-        grid_ao_backend=grid_ao_backend,
-        libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-    )
-    if integral_backend_mode in {"cpu", "gpu"}:
-        inputs = _build_uks_inputs_from_cpu_backbone(
-            atom=atom,
-            basis=basis,
-            cfg=cfg,
-            xc_spec_resolved=xc_spec_resolved,
-            unit=unit,
-            charge=charge,
-            spin=spin,
-            cart=bool(cart),
-            grids_level=grids_level,
-            max_l=max_l,
-            precompile_eri=precompile_eri,
-            init_guess=init_guess,
-            chkfile=chkfile,
-            init_guess_sap_basis=init_guess_sap_basis,
-            init_guess_chkfile_project=init_guess_chkfile_project,
-            verbose=verbose,
-            integral_backend_mode=integral_backend_mode,
-            grid_ao_backend_mode=grid_ao_backend_mode,
-            libcint_grad_policy_mode=libcint_grad_policy_mode,
-            mol_kwargs=dict(mol_kwargs),
-        )
-        if integral_backend_mode == "gpu" and cfg.jk_backend == "full":
-            inputs = replace(
-                inputs,
-                eri=_gpu4pyscf_eri(
-                    packed=False,
-                    atom=atom,
-                    basis=basis,
-                    unit=unit,
-                    charge=charge,
-                    spin=spin,
-                    cart=bool(cart),
-                    verbose=verbose,
-                    mol_kwargs=dict(mol_kwargs),
-                ),
-            )
-        return inputs
-    inputs = _build_uks_inputs_from_jax_backbone(
-        atom=atom,
-        basis=basis,
-        cfg=cfg,
-        xc_spec_resolved=xc_spec_resolved,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        grids_level=grids_level,
-        max_l=max_l,
-        precompile_eri=precompile_eri,
-        init_guess=init_guess,
-        chkfile=chkfile,
-        init_guess_sap_basis=init_guess_sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project,
-        precompile_eri_chunk_size=precompile_eri_chunk_size,
-        verbose=verbose,
-        integral_backend_mode=integral_backend_mode,
-        grid_ao_backend_mode=grid_ao_backend_mode,
-        _precompile_eri_kernels=_precompile_eri_kernels,
-    )
-    return inputs
-
+    from ..scf.init_guess import unrestricted_initial_guess
+    cfg, name = _resolve_config(config, xc_spec, UKSConfig)
+    values = _build_common(atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
+        cart=cart,grids_level=grids_level,max_l=max_l,grid_ao_backend=grid_ao_backend,
+        integral_backend=integral_backend,geometry_grad_policy=libcint_geometry_grad_policy,
+        include_dipole=True,precompile_eri=precompile_eri,precompile_eri_chunk_size=precompile_eri_chunk_size,
+        precompiler=_precompile_eri_kernels,chkfile=chkfile,sap_basis=init_guess_sap_basis,
+        chkfile_project=init_guess_chkfile_project,mol_kwargs=mol_kwargs)
+    spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode=values
+    initial=unrestricted_initial_guess(init_guess=init_guess,dtype=h.dtype)
+    total=int(np.asarray(spec.charges).sum())-int(spec.charge)
+    nalpha,nbeta=_unrestricted_spin_electron_counts(total,int(spec.spin))
+    if cfg.jk_backend == "df":
+        eri=jnp.zeros((0,0,0,0),dtype=h.dtype)
+    elif eri is None:
+        eri=eri_tensor(ctx.basis)
+    return UKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=eri,df_factors=factors,
+        nalpha=nalpha,nbeta=nbeta,nuclear_repulsion=spec.nuclear_repulsion,
+        coords=ctx.coords,grid_weights=ctx.grid_weights,ao=ao,ao_deriv1=dao,ao_laplacian=lap,
+        dipole_integrals=dipole,init_density_alpha=initial.density_alpha,init_density_beta=initial.density_beta,
+        total_electrons=total,molecule_charge=int(spec.charge),geometry_is_traced=ctx.geometry_is_traced,
+        integral_backend=mode,grid_ao_backend="jax")
 
 __all__ = ["RKSIntegralInputs", "UKSIntegralInputs", "build_rks_integral_inputs", "build_uks_integral_inputs"]

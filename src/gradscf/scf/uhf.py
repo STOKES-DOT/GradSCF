@@ -22,6 +22,7 @@ class UHFConfig:
     max_cycle: int = 80
     conv_tol: float = 1e-10
     conv_tol_density: float = 1e-8
+    conv_tol_grad: float = 1e-7
     convergence_metric: Literal["energy_and_residual", "energy"] = "energy_and_residual"
     damping: float = 0.0
     level_shift: float = 0.0

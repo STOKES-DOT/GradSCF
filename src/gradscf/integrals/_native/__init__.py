@@ -19,8 +19,13 @@ def register_integrals():
             "`python -m gradscf.integrals._native.build` (requires CMake and a C/C++ compiler)."
         )
     handle = ctypes.CDLL(str(library), mode=ctypes.RTLD_LOCAL)
-    jax.ffi.register_ffi_target(
-        "gradscf_integrals_cpu_v1", jax.ffi.pycapsule(handle.GradSCFIntegrals),
-        platform="cpu", api_version=1,
-    )
+    targets = {"gradscf_integrals_cpu_v1": "GradSCFIntegrals",
+               "gradscf_geometry_jvp_cpu_v1": "GradSCFGeometryJVP",
+               "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP"}
+    for target, symbol in targets.items():
+        if not hasattr(handle, symbol):
+            raise RuntimeError("Native integral library is stale; rebuild with "
+                               "python -m gradscf.integrals._native.build")
+        jax.ffi.register_ffi_target(target, jax.ffi.pycapsule(getattr(handle, symbol)),
+                                    platform="cpu", api_version=1)
     return handle

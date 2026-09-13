@@ -1,20 +1,9 @@
-"""Data/grid APIs with lazy compatibility exports for basis construction."""
+"""Molecular data and dataset APIs."""
 from importlib import import_module
 
-_EXPORTS = {'CartesianAO': 'gradscf.integrals.basis',
- 'CartesianBasis': 'gradscf.integrals.basis',
- 'basis_from_molecule_spec': 'gradscf.integrals.basis',
- 'basis_from_spec': 'gradscf.integrals.basis',
- 'basis_from_pyscf_spec': 'gradscf.integrals.basis',
- 'cartesian_angular_tuples': 'gradscf.integrals.basis',
- 'basis_from_pyscf_mol_cart': 'gradscf.integrals.basis',
- 'build_molecular_grid': 'gradscf.data.grid',
- 'build_molecular_grid_from_spec': 'gradscf.data.grid',
- 'MoleculeSpec': 'gradscf.data.molecule',
+_EXPORTS = {'MoleculeSpec': 'gradscf.data.molecule',
  'atomic_number': 'gradscf.data.molecule',
  'parse_molecule_spec': 'gradscf.data.molecule',
- 'load_basis_from_snapshot': 'gradscf.data.pyscf_basis_loader',
- 'evaluate_cartesian_ao': 'gradscf.data.grid_ao',
  'GRADDFT_GROUND_ATOM_SYMBOLS': 'gradscf.data.graddft_dataset',
  'GRADDFT_GROUND_TEST_ATOMS': 'gradscf.data.graddft_dataset',
  'GRADDFT_XND_ATOM_ENERGY_COLUMN': 'gradscf.data.graddft_dataset',

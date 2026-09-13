@@ -21,6 +21,7 @@ class QuadratureGrid:
     static_fields=(
         "nocc",
         "scf_converged",
+        "scf_cycles",
         "runtime_scf_backend",
         "runtime_scf_options",
         "hfx_nu_api",
@@ -67,6 +68,7 @@ class RestrictedMolecule:
     eri_ovvo: jnp.ndarray | None = None
     eri_oovv: jnp.ndarray | None = None
     scf_converged: bool | None = None
+    scf_cycles: int | None = None
     runtime_scf_backend: str | None = None
     runtime_scf_options: Any | None = None
 
@@ -78,6 +80,8 @@ class RestrictedMolecule:
     static_fields=(
         "nocc_alpha",
         "nocc_beta",
+        "scf_converged",
+        "scf_cycles",
         "runtime_scf_backend",
         "runtime_scf_options",
         "hfx_nu_api",
@@ -115,6 +119,8 @@ class UnrestrictedMolecule:
     pt2_fock_response: jnp.ndarray | None = None
     scf_initial_density: jnp.ndarray | None = None
     df_factors: jnp.ndarray | None = None
+    scf_converged: bool | None = None
+    scf_cycles: int | None = None
     runtime_scf_backend: str | None = None
     runtime_scf_options: Any | None = None
 

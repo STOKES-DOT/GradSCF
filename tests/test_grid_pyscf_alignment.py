@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.data.grid import (
+from gradscf.integrals.grids import (
     BRAGG_RADII,
     BUNDLED_LEBEDEV_POINTS,
     TREUTLER_XI,

@@ -27,11 +27,9 @@ _EXPORTS = {'DirectJKResult': 'gradscf.integrals.jk',
  'eri_tensor': 'gradscf.integrals.two_electron',
  'eri_tensor_screened': 'gradscf.integrals.two_electron',
  'precompile_eri_kernels': 'gradscf.integrals.two_electron',
- 'build_libcint_mol': 'gradscf.integrals.backends.pyscf_mol',
- 'libcint_intor_name': 'gradscf.integrals.backends.pyscf_mol',
  'BasisTopology': 'gradscf.integrals.basis',
  'BasisParameters': 'gradscf.integrals.basis',
- 'prepare_basis': 'gradscf.gto.basis',
+ 'prepare_basis': 'gradscf.integrals.basis',
  'make_plan': 'gradscf.integrals.plan',
  'IntegralPlan': 'gradscf.integrals.plan',
  'backend_capabilities': 'gradscf.integrals.capabilities',
@@ -39,6 +37,7 @@ _EXPORTS = {'DirectJKResult': 'gradscf.integrals.jk',
  'build_uks_integral_inputs': 'gradscf.integrals.assembly',
  'RKSIntegralInputs': 'gradscf.integrals.assembly',
  'UKSIntegralInputs': 'gradscf.integrals.assembly'}
+_EXPORTS.update({'CartesianAO': 'gradscf.integrals.basis', 'CartesianBasis': 'gradscf.integrals.basis', 'basis_from_molecule_spec': 'gradscf.integrals.basis', 'basis_from_spec': 'gradscf.integrals.basis', 'basis_from_pyscf_spec': 'gradscf.integrals.basis', 'cartesian_angular_tuples': 'gradscf.integrals.basis', 'load_basis_from_snapshot': 'gradscf.integrals.basis_data', 'build_molecular_grid': 'gradscf.integrals.grids', 'build_molecular_grid_from_spec': 'gradscf.integrals.grids', 'evaluate_cartesian_ao': 'gradscf.integrals.grids.ao', 'evaluate_cartesian_ao_with_derivatives': 'gradscf.integrals.grids.ao'})
 __all__ = list(_EXPORTS)
 
 def __getattr__(name):

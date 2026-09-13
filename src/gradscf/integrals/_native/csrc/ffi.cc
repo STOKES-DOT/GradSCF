@@ -1,25 +1,10 @@
 // CPU float64 JAX FFI adapter. No Python callbacks or process-global optimizer.
-#include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <exception>
-#include <limits>
-#include <vector>
-
-#include "xla/ffi/api/ffi.h"
+#include "tables.h"
 extern "C" {
-#include "cint.h"
-#include "cint_funcs.h"
 using LegacyIntor = int (*)();
 void GTOnr2e_fill_s1(LegacyIntor, LegacyIntor, double*, double*, int, int, int,
                     int*, int*, CINTOpt*, int*, int, int*, int, double*);
 }
-#undef atm
-#undef bas
-
-namespace ffi = xla::ffi;
-using Intor = int (*)(double*, int*, int*, int*, int, int*, int,
-                     double*, CINTOpt*, double*);
 static int NoPrescreen() { return 1; }
 
 static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
@@ -28,43 +13,12 @@ static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
                            ffi::ResultBuffer<ffi::F64> result,
                            int32_t op, int32_t cart) {
   try {
-    if (atoms.dimensions()[1] != ATM_SLOTS ||
-        basis.dimensions()[1] != BAS_SLOTS || environment.element_count() < 20)
-      return ffi::Error::InvalidArgument("Invalid libcint table dimensions");
-    const int natm = atoms.dimensions()[0], nbas = basis.dimensions()[0];
-    // libcint's C interface is mutable; own the buffers passed into it.
-    std::vector<int> atm(atoms.typed_data(), atoms.typed_data() + atoms.element_count());
-    std::vector<int> bas(basis.typed_data(), basis.typed_data() + basis.element_count());
-    std::vector<double> env(environment.typed_data(),
-                            environment.typed_data() + environment.element_count());
-    for (double value : env)
-      if (!std::isfinite(value))
-        return ffi::Error::InvalidArgument("Native integral env must be finite");
-    // This build intentionally exposes ordinary Coulomb only.
-    if (env[PTR_RANGE_OMEGA] != 0.)
-      return ffi::Error::InvalidArgument("Range-separated integrals are not supported");
-    auto inside = [&](int ptr, int64_t count) {
-      return ptr >= PTR_ENV_START && count > 0 &&
-             int64_t(ptr) + count <= int64_t(env.size());
-    };
-    for (int a = 0; a < natm; ++a) {
-      const int* row = atm.data() + a * ATM_SLOTS;
-      if (!inside(row[PTR_COORD], 3) || row[NUC_MOD_OF] != 1)
-        return ffi::Error::InvalidArgument("Native backend requires valid point nuclei");
-    }
-    std::vector<int> ao(nbas + 1, 0);
-    for (int s = 0; s < nbas; ++s) {
-      const int* row = bas.data() + s * BAS_SLOTS;
-      int l = row[ANG_OF], np = row[NPRIM_OF], nc = row[NCTR_OF];
-      if (row[ATOM_OF] < 0 || row[ATOM_OF] >= natm || l < 0 || l > 12 ||
-          np < 1 || np > 64 || nc < 1 || nc > 64 || row[KAPPA_OF] != 0 ||
-          !inside(row[PTR_EXP], np) || !inside(row[PTR_COEFF], int64_t(np)*nc))
-        return ffi::Error::InvalidArgument("Invalid or unsupported libcint basis table");
-      for (int p = 0; p < np; ++p)
-        if (env[row[PTR_EXP] + p] <= 0.)
-          return ffi::Error::InvalidArgument("Gaussian exponents must be positive");
-      ao[s + 1] = ao[s] + nc * (cart ? (l + 1)*(l + 2)/2 : 2*l + 1);
-    }
+    IntegralTables tables(atoms, basis, environment, op, cart);
+    const int natm=tables.natm, nbas=tables.nbas;
+    auto& atm=tables.atm;
+    auto& bas=tables.bas;
+    auto& env=tables.env;
+    auto& ao=tables.ao;
     const int n = ao.back(), components = op == 3 ? 3 : 1;
     const int rank = op == 4 ? 4 : (op == 3 ? 3 : 2);
     if (op < 0 || op > 4 || (cart != 0 && cart != 1) || n < 1 ||

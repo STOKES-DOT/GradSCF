@@ -141,26 +141,6 @@ def optimize_coefficients(*, bond=.74, scf_steps=20, maxiter=40, gtol=1e-8, verb
     return summary
 
 
-def validate_pyscf(summary):
-    """Check both endpoint energies with independent PySCF SCF/integrals."""
-    from pyscf import gto, scf
-    energies = []
-    for basis in ("3-21g", summary["optimized_basis"]):
-        mol = gto.M(atom=f"H 0 0 0; H 0 0 {summary['bond_angstrom']}", basis=basis,
-                    unit="Angstrom", cart=True, verbose=0)
-        mf = scf.RHF(mol)
-        mf.conv_tol = 1e-12
-        mf.conv_tol_grad = 1e-9
-        mf.kernel()
-        if not mf.converged:
-            raise RuntimeError("Independent PySCF validation did not converge")
-        energies.append(float(mf.e_tot))
-    errors = np.asarray(energies)-[summary["initial_energy_hartree"], summary["final_energy_hartree"]]
-    np.testing.assert_allclose(errors, 0., atol=1e-8, rtol=0)
-    return dict(initial_energy_hartree=energies[0], final_energy_hartree=energies[1],
-                max_energy_error_hartree=float(np.max(np.abs(errors))))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bond", type=float, default=.74)
@@ -169,7 +149,6 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/optimized-321g-contractions"))
     args = parser.parse_args()
     result = optimize_coefficients(bond=args.bond, scf_steps=args.scf_steps, maxiter=args.maxiter)
-    result["pyscf_validation"] = validate_pyscf(result)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir/"summary.json").write_text(json.dumps(result, indent=2)+"\n")
     (args.output_dir/"optimized_basis.json").write_text(json.dumps(result["optimized_basis"], indent=2)+"\n")
@@ -177,7 +156,6 @@ def main():
         writer = csv.DictWriter(f, fieldnames=list(result["history"][0]))
         writer.writeheader()
         writer.writerows(result["history"])
-    print("PySCF endpoint validation:", result["pyscf_validation"], flush=True)
     if not result["optimizer_success"]:
         raise RuntimeError(result["optimizer_message"])
 

@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from ..scf.autodiff import normalize_scf_gradient_mode
+
 
 def _pytree_dataclass(*, static_fields: tuple[str, ...] = ()):
     static_field_names = frozenset(static_fields)
@@ -160,7 +162,7 @@ class MolecularTrainingConfig:
     fractional_branch_scf_iterate_selection: (
         Literal["final", "best_rms", "first_converged"] | None
     ) = None
-    scf_gradient_mode: Literal["expl", "impl"] = "impl"
+    scf_gradient_mode: Literal["unrolled", "implicit", "expl", "impl"] = "impl"
     scf_implicit_diff_max_iter: int = 6
     scf_implicit_diff_tolerance: float = 1e-6
     scf_implicit_diff_regularization: float = 0.0
@@ -176,8 +178,7 @@ class MolecularTrainingConfig:
             raise ValueError(
                 "implicit_eigenvector gradients require excited_state_solver='tda'."
             )
-        if self.scf_gradient_mode not in {"impl", "expl"}:
-            raise ValueError("scf_gradient_mode must be 'impl' or 'expl'.")
+        normalize_scf_gradient_mode(self.scf_gradient_mode)
         if self.mode not in {"fixed_density", "self_consistent"}:
             raise ValueError("mode must be 'fixed_density' or 'self_consistent'.")
         if self.e0_normalization not in {"none", "per_electron", "per_atom"}:

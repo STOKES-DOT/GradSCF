@@ -10,7 +10,7 @@ import numpy as np
 from jaxtyping import Array
 
 from gradscf.data.molecule import MoleculeSpec, parse_molecule_spec
-from gradscf.data.pyscf_basis_loader import load_basis_from_snapshot
+from gradscf.integrals.basis_data import load_basis_from_snapshot
 
 
 from gradscf.integrals.normalization import _normalize_raw_shell_coefficients
@@ -562,70 +562,6 @@ class CartesianBasis:
         )
 
 
-def basis_from_pyscf_mol_cart(
-    mol: Any,
-    *,
-    max_l: int = 3,
-    precompute_eri_groups: bool = True,
-) -> CartesianBasis:
-    """Build a Cartesian AO basis from a PySCF Mole.
-
-    Notes:
-    - Requires `mol.cart = True` for direct cartesian AO ordering.
-    - Current integral engine supports up to `l=3` (s/p/d/f).
-    """
-
-    if not bool(getattr(mol, "cart", False)):
-        raise ValueError(
-            "basis_from_pyscf_mol_cart requires a PySCF Mole with cart=True."
-        )
-
-    aos: list[CartesianAO] = []
-    shells: list[ContractedShell] = []
-    for ib in range(mol.nbas):
-        l = int(mol.bas_angular(ib))
-        if l > max_l:
-            raise NotImplementedError(
-                f"Current JAX integral implementation supports l<= {max_l}, got l={l}."
-            )
-        atom_idx = int(mol.bas_atom(ib))
-        center = np.asarray(mol.atom_coord(atom_idx), dtype=float)
-        exponents = np.asarray(mol.bas_exp(ib), dtype=float)
-        ctr_coeff = np.asarray(mol.bas_ctr_coeff(ib), dtype=float)  # (nprim, nctr)
-        if ctr_coeff.ndim == 1:
-            ctr_coeff = ctr_coeff[:, None]
-
-        for ctr in range(ctr_coeff.shape[1]):
-            coeff = ctr_coeff[:, ctr]
-            angulars = tuple(cartesian_angular_tuples(l))
-            shell_start = len(aos)
-            for angular in angulars:
-                aos.append(
-                    CartesianAO(
-                        center=center,
-                        angular=angular,
-                        exponents=exponents,
-                        coefficients=coeff,
-                    )
-                )
-            shell_stop = len(aos)
-            shells.append(
-                ContractedShell(
-                    center=center,
-                    angulars=angulars,
-                    exponents=exponents,
-                    coefficients=coeff,
-                    ao_indices=np.arange(shell_start, shell_stop, dtype=np.int32),
-                )
-            )
-
-    return CartesianBasis(
-        aos=tuple(aos),
-        precompute_eri_groups=bool(precompute_eri_groups),
-        atom_coords=np.asarray(mol.atom_coords(), dtype=float),
-        atom_charges=np.asarray(mol.atom_charges(), dtype=float),
-        shells=tuple(shells),
-    )
 
 
 def basis_from_pyscf_spec(

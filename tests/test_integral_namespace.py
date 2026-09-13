@@ -11,14 +11,21 @@ def test_integrals_has_canonical_public_namespace():
     assert integrals.eri_tensor is jax_reference.eri_tensor
 
 
-def test_basis_and_legacy_imports_share_objects():
+def test_gto_facade_uses_canonical_basis_implementation():
     assert importlib.util.find_spec("gradscf.integrals") is not None
     from gradscf.integrals.basis import CartesianAO, CartesianBasis
-    from gradscf.data.basis import CartesianAO as OldAO, CartesianBasis as OldBasis
-    from gradscf.data.integrals import overlap_matrix as old_overlap
-    from gradscf.integrals import overlap_matrix
-    assert CartesianAO is OldAO and CartesianBasis is OldBasis
-    assert overlap_matrix is old_overlap
+    from gradscf.gto import basis as facade
+    from gradscf.integrals.basis import prepare_basis
+    assert facade.CartesianAO is CartesianAO and facade.CartesianBasis is CartesianBasis
+    assert facade.prepare_basis is prepare_basis
+
+
+def test_retired_integral_modules_are_removed():
+    from pathlib import Path
+    root = Path("src/gradscf")
+    for path in ("data/integrals", "data/basis.py", "data/grid.py", "data/grid_ao.py",
+                 "data/pyscf_basis_loader.py", "data/pyscf_basis_snapshot", "scf/inputs.py", "_native"):
+        assert not (root/path).exists(), path
 
 
 def test_reference_integral_still_computes_normalized_overlap():
