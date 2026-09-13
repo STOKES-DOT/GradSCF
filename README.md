@@ -25,7 +25,7 @@ dedicated `gradscf` API. Original copyright notices and licenses are retained.
 The first release contains:
 
 - restricted and unrestricted JAX SCF;
-- differentiable explicit (`expl`) and implicit (`impl`) SCF modes;
+- differentiable `unrolled` and `implicit` SCF modes (`expl` / `impl` aliases remain supported);
 - matrix-free TDA and full Casida TDDFT with Davidson solvers;
 - strict conventional XC response through `jax-xc`;
 - residual Neural XC models with semilocal, fixed-cache HFX, and optional
@@ -48,15 +48,17 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev,upstreams]"
 ```
 
-The `upstreams` extra installs PySCF and `jax-xc`. For manuscript scripts and
+The `upstreams` extra installs `jax-xc`. Independent PySCF reference tests
+use the separate `comparison-tests` extra. For manuscript scripts and
 checkpoint evaluation, install:
 
 ```bash
 python -m pip install -e ".[dev,reproducibility]"
 ```
 
-GPU runs require a CUDA-enabled JAX build and a GPU4PySCF installation matched
-to the CUDA environment. Confirm the active backend before a long run:
+GPU SCF and response runs require a CUDA-enabled JAX build. Molecular
+integrals use the private native CPU library. Confirm the active JAX backend
+before a long run:
 
 ```bash
 python - <<'PY'
@@ -81,8 +83,9 @@ jax.config.update("jax_enable_x64", True)
 `gradscf.integrals` is the canonical integral namespace. Existing matrix APIs
 such as `overlap_matrix`, `build_hcore`, and `eri_tensor` retain their numerical
 behavior through the JAX reference backend. Integral-input assembly now lives
-under `gradscf.integrals.assembly`; `scf.inputs` and `data.integrals` are temporary
-compatibility imports pointing to the same implementations.
+under `gradscf.integrals.assembly`. Basis loading and all retained basis assets live
+in `gradscf.integrals.basis_data`; numerical grids and AO grid evaluation live in
+`gradscf.integrals.grids`. Removed legacy import paths are listed in `MIGRATION.md`.
 
 The private CPU backend vendors pinned libcint/PySCF C sources and builds
 offline without importing PySCF at runtime:
@@ -114,22 +117,23 @@ and nuclei may move independently. Dipole plans default to the nuclear-charge
 center, matching the reference backend; pass `origin=` to choose another origin.
 
 Native evaluation supports CPU float64, Cartesian/spherical S/T/V/dipole/full
-ERI, and `jax.jit`. **Native JVP/VJP is not yet implemented and explicitly
-raises**, without a hidden fallback. Use `backend="jax_reference"` for the
-current Cartesian basis-parameter derivative path. First derivatives of small
-systems are tested; higher derivatives are not advertised. Inspect
+ERI, and `jax.jit`. Integral plans support first-order coordinate JVP/VJP
+through native derivative kernels, including independent nuclear/basis centers
+and dipole origins. No PySCF runtime or bridge is used by this path. Exponent
+and contraction-coefficient derivatives still require `backend="jax_reference"`;
+unsupported native basis or higher derivatives raise rather than returning zero. Inspect
 `integrals.backend_capabilities(...)` for backend-specific contracts.
 
-This new native plan is opt-in. Existing SCF `integral_backend="cpu"` retains
-its previous PySCF/libcint path during migration. See the
+SCF `integral_backend="native"` (also accepted as `"cpu"`/`"libcint"`) uses
+the private native library. No external chemistry runtime is required. See the
 [native backend guide](src/gradscf/integrals/_native/README.md)
 for pinned sources, build requirements, ABI, and supported operators.
 
 Integral implementations and build resources are grouped under
 `src/gradscf/integrals/`: public APIs and assembly at the package root,
 backend adapters in `backends/`, and the private loader, C/C++ sources,
-vendored dependencies, and CMake files in `_native/`. The old
-`python -m gradscf._native.build` command remains a compatibility entry point.
+vendored dependencies, and CMake files in `_native/`. Build with
+`python -m gradscf.integrals._native.build`; the old `_native` alias is removed.
 
 ## Unrestricted Hartree-Fock
 
@@ -298,12 +302,12 @@ if not bool(full_result.converged):
 print("full-TDDFT / eV:", full.e_ev)
 ```
 
-Use `integral_backend="gpu"` and `execution_device="gpu"` in a configured
-GPU4PySCF environment. `integral_backend="cpu"` uses the CPU integral path;
-the resulting fixed molecular integrals are reused by SCF and response calls.
+Use `integral_backend="native"` for molecular CPU integrals and
+`execution_device="gpu"` for SCF/response in a CUDA-enabled JAX environment.
+The resulting fixed molecular integrals are reused by SCF and response calls.
 
 A complete PySCF-versus-GradSCF B3LYP comparison is provided in
-`examples/compare_pyscf_vs_jax_tddft_no_neural.py`.
+`tests/comparisons/compare_pyscf_vs_jax_tddft_no_neural.py`.
 
 ## Build a Neural XC Functional
 
@@ -354,26 +358,18 @@ Build these caches once when the molecular reference is prepared. They are not
 recomputed after each parameter update:
 
 ```python
-from pyscf import dft as pyscf_dft, gto as pyscf_gto
-from gradscf.data.reference import restricted_reference_from_pyscf
+from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
 
-pyscf_mol = pyscf_gto.M(
+reference = restricted_molecule_from_spec_with_jax_rks(
     atom="H 0 0 0; H 0 0 0.74",
     basis="def2-svp",
-    unit="Angstrom",
-    verbose=0,
-)
-pyscf_mf = pyscf_dft.RKS(pyscf_mol)
-pyscf_mf.xc = "b3lyp"
-pyscf_mf.grids.level = 2
-pyscf_mf.kernel()
-
-reference = restricted_reference_from_pyscf(
-    pyscf_mf,
+    xc_spec="b3lyp",
+    integral_backend="native",
+    init_guess="hcore",
+    grids_level=2,
     compute_local_hfx_features=True,
     compute_local_hfx_aux=False,
     compute_local_pt2_features=False,
-    jk_backend="full",
 )
 ```
 
@@ -443,7 +439,7 @@ excited_datum = training.MolecularTrainingDatum(
 ```
 
 The full paper-scale H2 example is
-`examples/h2_fci_self_consistent_train.py`. Production H2, H2+, N2, QM9, and
+`tests/comparisons/h2_fci_self_consistent_train.py`. Production H2, H2+, N2, QM9, and
 QM9GWBSE commands are listed below.
 
 ## Save, Restore, and Infer
@@ -518,27 +514,27 @@ Only manuscript-facing drivers are included in `tools/`:
 
 | Manuscript task | Entry point |
 | --- | --- |
-| Conventional PySCF validation | `tools/compare_pyscf_vs_jax_same_xc.py` |
-| Benzene Davidson convergence | `tools/trace_benzene_pbe_tddft_davidson.py` |
-| H2+ ground-state dissociation | `tools/h2plus_fci_ground_train5_dense100.py` |
-| H2 ground-state dissociation | `tools/h2_self_consistent_ground_train5_dense100_vs_fci.py` |
-| N2 ground-state dissociation | `tools/n2_ccsdt_ground_train5.py` |
-| H2/N2 S1 TDA dissociation | `tools/h2_s1_tda_train5_dense100_vs_fci.py` |
-| QM9 ground and QM9GWBSE S1 training | `tools/closed_shell_s1_self_consistent_train.py` |
-| Released checkpoint inference | `tools/evaluate_closed_shell_checkpoint.py` |
-| QM9/QM9GWBSE baselines and figures | `tools/compute_qm9_ground_classic_baselines.py`, `tools/compare_qm9_pyscf_vs_jax_tda.py`, `tools/plot_qm9_reference_structures.py`, `tools/plot_qm9_val_bars_with_structures.py` |
+| Conventional PySCF validation | `tests/comparisons/compare_pyscf_vs_jax_same_xc.py` |
+| Benzene Davidson convergence | `tests/comparisons/trace_benzene_pbe_tddft_davidson.py` |
+| H2+ ground-state dissociation | `tests/comparisons/h2plus_fci_ground_train5_dense100.py` |
+| H2 ground-state dissociation | `tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py` |
+| N2 ground-state dissociation | `tests/comparisons/n2_ccsdt_ground_train5.py` |
+| H2/N2 S1 TDA dissociation | `tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py` |
+| QM9 ground and QM9GWBSE S1 training | `tests/comparisons/closed_shell_s1_self_consistent_train.py` |
+| Released checkpoint inference | `tests/comparisons/evaluate_closed_shell_checkpoint.py` |
+| QM9/QM9GWBSE baselines and figures | `tests/comparisons/compute_qm9_ground_classic_baselines.py`, `tests/comparisons/compare_qm9_pyscf_vs_jax_tda.py`, `tools/plot_qm9_reference_structures.py`, `tools/plot_qm9_val_bars_with_structures.py` |
 
 Example paper commands:
 
 ```bash
-python tools/h2_self_consistent_ground_train5_dense100_vs_fci.py \
+python tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py \
   --basis def2-tzvp \
   --grids-level 2 \
   --ground-state-hf-mode nograd \
   --ground-state-pt2-mode off \
   --steps 2000
 
-python tools/h2_s1_tda_train5_dense100_vs_fci.py \
+python tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py \
   --basis def2-tzvp \
   --grids-level 2 \
   --include-pt2-channel \
@@ -599,8 +595,8 @@ pytest -q tests/test_molecular_training_api.py
 pytest -q tests/test_workflows_config.py
 ```
 
-Some reference comparisons require PySCF, GPU4PySCF, CUDA, or generated input
-data. Large integral/basis sweeps are not part of the compact release gate;
+Some reference comparisons require PySCF or generated input data; GPU
+validation requires CUDA-enabled JAX. Large integral/basis sweeps are not part of the compact release gate;
 the manuscript dissociation and QM9 artifacts provide the corresponding
 end-to-end evidence.
 
@@ -621,5 +617,308 @@ end-to-end evidence.
 ## License and Upstreams
 
 GradSCF is released under the MIT License. It interoperates with JAX, Flax,
-Optax, `jax-xc`, PySCF, and GPU4PySCF. Third-party data or source snapshots keep
-their original licenses and notices.
+Optax, and `jax-xc`; PySCF is an optional independent test reference.
+Third-party data and source snapshots retain their original licenses and notices.
+
+## Standalone runtime and optional comparisons
+
+PySCF and gpu4pyscf are not used by production GradSCF modules or computational
+tools. Build the private CPU library with
+`PYTHONPATH=src python -m gradscf.integrals._native.build`. JAX handles SCF, XC
+composition, grid evaluation and parameter transforms.
+
+Independent PySCF checks are confined to `tests/`; install
+`pip install -e ".[comparison-tests]"` only when running those comparisons.
+Their executable entry points live in `tests/comparisons/`. Native experiment
+CLIs in `tools/` retain finite-difference/invariance checks without PySCF.
+
+Default initialization is `hcore` (or `1e`); explicit density matrices are also
+supported. External MINAO/atomic/SAP/checkpoint guesses and the external GPU
+integral backend are removed and fail explicitly. Native `jk_backend="df"`
+factorizes native full AO ERIs; it is not an auxiliary-basis three-center DF
+calculation and does not avoid allocating full integrals. Native direct J/K
+remains unsupported; the explicit JAX reference direct mode remains available.
+
+All basis resources are preserved. Upstream Python-format basis files are
+packaged as inert `.pydata`; GradSCF reads literal data and aliases without
+executing upstream imports or parsing code. ECP/spinor resource availability
+does not imply support for those operators in the native backend.
+
+## Difficult open-shell SCF solutions
+
+UKS/UHF `energy_and_residual` convergence requires energy change, density RMS
+and the raw-Fock occupied-virtual gradient to pass. `conv_tol_grad` is exposed
+on UKS/UHF configurations and facades. DIIS uses relative Gram regularization;
+unrestricted level shifting uses the single-spin projector `S - S D_sigma S`.
+Removing a reporting shift does not refill occupations or silently change roots.
+
+For explicit multi-start calculations,
+`gradscf.scf.init_guess.orbital_rotation_guesses(C, amplitudes=(0., .1), seed=...)`
+generates metric-preserving rotations of a complete orbital matrix. Run each
+guess, reject unconverged candidates, and compare energies. This does not prove
+that the lowest sampled stationary state is the global ground state.
+
+The `gradscf.scf.orbital_optimization` module provides
+`minimize_uks_from_integrals`, `minimize_roks_from_integrals`, and
+`minimize_gks_from_integrals`, also exported from `gradscf.scf`. These use JAX
+and the existing Optax dependency; no separate SciPy optimizer extra is needed.
+They optimize fixed occupations with the unitary Cayley update
+`C = C0 (I - kappa/2)^(-1) (I + kappa/2)` for anti-Hermitian `kappa`, and support the existing
+HF/LDA/GGA/global-hybrid energy implementations. Results are array-valued PyTrees
+usable under JIT; `stationary` tests the true final tangent-gradient norm.
+
+## SCF backward modes
+
+One `SCFDifferentiationConfig` controls both the existing differentiable DFT
+solver and the orbital solver. The canonical modes are `implicit` and
+`unrolled`; historical `impl` and `expl` remain accepted aliases.
+
+```python
+from gradscf.scf import SCFDifferentiationConfig, DifferentiableSCFConfig
+
+backward = SCFDifferentiationConfig(
+    mode="implicit", tolerance=1e-9, max_iter=20, require_converged=True,
+)
+dft_config = DifferentiableSCFConfig(
+    mode="self_consistent", differentiation=backward,
+)
+# With prepared arrays and a fixed integer occupation topology:
+# result = minimize_uks_from_integrals(**inputs, differentiation=backward)
+# Switch only backward.mode to "unrolled" to differentiate the same forward solve.
+```
+
+- `implicit` differentiates the selected stationary branch through its residual
+  equation. It reuses the SCF GMRES adjoint solver and checks the actual linear
+  residual. An unconverged forward state or failed adjoint produces nonfinite
+  backward values instead of silently returning an approximate or zero gradient.
+  Forward diagnostics remain available. Nonzero adjoint `regularization`
+  explicitly changes the response; the default is zero.
+- `unrolled` differentiates the actual finite sequence of JAX updates, including
+  initial-orbital dependence. It can differentiate a truncated solve; its gradient
+  need not agree with a stationary implicit derivative before response convergence.
+  The fixed scans use checkpointing and a discrete backtracking search. This mode
+  generally uses more memory and differentiation work.
+
+Both orbital modes use identical forward iterations. Bounded residual corrections
+address soft modes; up to three differentiable local refinements also run at a converged
+state so a symmetry-preserving primal does not freeze an unfinished tangent
+response. Corrections must reduce the true gradient; refinements must keep it
+within the requested tolerance. All accepted steps obey a recorded energy-roundoff
+allowance and rotation bound. No automatic root selection or global stability
+claim is made; derivatives are local to a branch and piecewise iteration decisions.
+Spaces with at most 32 orbital coordinates use a directly assembled Hessian for
+these local corrections to keep higher-order JAX compilation manageable; larger
+spaces use matrix-free Hessian-vector products.
+The Cayley map has the same tangent at zero as an exponential rotation, while
+its linear-solve derivatives keep force-training compilation manageable.
+
+Orbital `mo_occ` is a static 0/1 topology: close over a NumPy array/tuple before
+JIT. Continuous inputs (integrals, overlap, AO/grid arrays, initial coefficients)
+remain differentiable. `orthonormalize_initial=True` transports a fixed seed
+when the overlap changes; Cholesky metric derivatives retain the AO constraint
+response. Native coordinate derivatives are supported; native contraction/exponent
+integral derivatives remain unsupported and raise explicitly. Their SCF composition
+is tested using the explicitly selected JAX reference integral backend.
+
+An explicit `DifferentiableSCFConfig.differentiation` object takes precedence over
+legacy backward fields. Without it, existing DFT defaults are preserved, including
+`require_converged_iterates=False`; use the shared policy for strict implicit
+convergence enforcement. Both `params` and differentiable `fixed_point_args`
+receive implicit derivatives. The default implicit rule uses a differentiable
+root and checked linear solve, so solution and adjoint dependence are retained
+under nested AD. JVP, mixed second derivatives, and an analytic scalar third
+derivative are regression-tested. Custom optimized VJP hooks remain available;
+higher-order use requires the hooks themselves to be differentiable, and direct
+forward mode is provided by the default root path.
+Training workflows honor `objective.scf_gradient_mode`. Their existing
+`recover_nonfinite_steps` option can retry a failed unrolled training step using
+implicit backward; disable this recovery option when the mode must remain fixed.
+
+Implementation boundaries are `scf/autodiff.py` (policy and residual interface),
+`scf/implicit.py` (adjoint algebra), `scf/_orbital_solver.py` (JAX iterations),
+`scf/orbital_optimization.py` (orbital constraints and integral inputs), and
+`scf/differentiable.py` (existing functional/molecule adapters). Full auxiliary-DF,
+MGGA, and generalized excited-state response support are not implied.
+Reproducible comparisons live in `tests/comparisons/multistart_open_shell.py`
+and `orbital_fallback_matrix.py`.
+
+## Force supervision
+
+The force API accepts a scalar `energy_fn(params, coordinates)` with explicit
+continuous inputs. Coordinates are Bohr; Hartree energies give Hartree/Bohr forces.
+
+```python
+import jax
+from gradscf.training import energy_and_forces, make_force_loss_and_grad
+
+# energy_fn closes over the chosen SCF method and differentiation policy.
+prediction = energy_and_forces(energy_fn, params, coordinates)
+loss_and_grad = jax.jit(make_force_loss_and_grad(energy_fn))
+loss, params_grad = loss_and_grad(params, coordinates, target_forces)
+```
+
+`force_matching_loss` is `0.5 * mean((forces - target_forces)**2)` over all
+atoms and Cartesian components. It retains the mixed parameter/coordinate
+derivative, which can be passed directly to an Optax update. The energy callback
+owns SCF convergence and must not detach quantities needed for the desired response.
+
+Native coordinate JVP/VJP operators are differentiable in their direction and
+cotangent at fixed geometry/basis. This supports force-loss gradients for model
+parameters that change the energy functional. Pure second-coordinate native
+integrals and native basis-parameter derivatives still raise explicitly; a
+complete nuclear Hessian or force training of a native basis predictor is not
+implied. The SCF eigensolver retains the existing near-degeneracy regularization;
+the high-order SCF validations use continuous, nondegenerate solution branches.
+Overlap inverse-square-root derivatives use a Sylvester solve and remain smooth
+at repeated positive overlap eigenvalues, including second derivatives. When
+overlap eigenvalue clipping is active, the previous regularized response is
+retained; exact smooth-response guarantees apply above the clipping cutoff.
+
+`examples/train_neural_scf_forces.py --mode implicit` (or `unrolled`) runs a
+complete H2/3-21g native-integral/tanh-network SCF regression, checks force and
+force-loss derivatives by finite differences, and performs an Adam update.
+Its small co-moving quadrature is a derivative test, not a production XC model.
+
+## Periodic HF, DFT and response
+
+`gradscf.pbc` provides neutral three-dimensional periodic Gaussian calculations.
+The first backend uses analytic Cartesian Gaussian Fourier coefficients and
+JAX FFT density fitting; it does not call PySCF or the molecular integral
+bridge. GTH data and provenance are packaged under `integrals/periodic/`.
+
+```python
+import jax
+import numpy as np
+from gradscf.pbc import gto, dft, tdscf
+
+jax.config.update("jax_enable_x64", True)
+cell = gto.M(
+    atom="H .2 .3 .4; H 1.6 .3 .4",
+    a=np.eye(3) * 6, unit="Bohr",
+    basis="gth-szv", pseudo="gth-pade", mesh=(41, 41, 41),
+)
+mf = dft.KRKS(cell, kpts=cell.make_kpts((2, 1, 1)), xc="pbe").run()
+td = tdscf.TDDFT(mf, nstates=1).run()
+print(mf.e_tot, td.e)  # Hartree per cell; excitation energies in Hartree
+```
+
+Ground-state classes are `RHF/UHF/RKS/UKS` at Gamma and
+`KRHF/KUHF/KRKS/KUKS` for complete uniform k meshes. LDA, GGA and global
+hybrids use the existing XC implementation. Occupied band counts are fixed
+at each k point: metals, smearing, charged cells and lower-dimensional
+electrostatics are not supported. Lattice vectors are rows; k vectors are
+Cartesian radians/Bohr. `Cell.spin` is Nalpha-Nbeta **per primitive cell**,
+independent of the k mesh. For PySCF KUHF/KUKS comparisons set reference `nelec`
+to `(nk*nalpha, nk*nbeta)` explicitly. Internal and returned matrices retain their k axis,
+including Gamma: restricted density `(nk,nao,nao)`, unrestricted density
+`(2,nk,nao,nao)`. Call `cell.build()` after changing cell specifications.
+
+Named initial assets include `gth-szv/dzvp/tzvp` and
+`gth-pade/pbe/blyp`; explicit GTH parameter and basis dictionaries are accepted.
+Existing molecular basis data remain available. This is a pseudopotential
+implementation, not an all-electron periodic backend. Use odd FFT meshes;
+converge `mesh` explicitly. `precision` controls Ewald truncation and does not
+certify FFT accuracy. The `exxdiv` options are `'ewald'` and `None`; comparisons
+must use the same choice, mesh, pseudopotential, basis and k sampling.
+
+`TDA`, `TDHF` and `TDDFT` implement spin-conserving q=0 response. TDA uses
+operator Davidson, and full Gamma response reuses the real TDHF solver.
+Complex k-mesh full response currently uses a bounded dense solve, limited to
+256 particle-hole transitions by default (`max_dense`). Excitation energies
+and X/Y amplitudes are available. Restricted Gamma references also expose
+`td.oscillator_strength(gauge="velocity")`, including the nonlocal GTH velocity
+correction. `pbc.optics.broaden_spectrum(td.e, strengths, grid_ev, fwhm_ev=0.3)`
+returns a unit-area Gaussian oscillator-strength density per eV. This is a
+Gamma-point per-cell convention; bulk k-integrated optical properties,
+macroscopic absorption coefficients, dielectric q->0 limits, finite-q response
+and spin-flip response are not implemented. Compare degenerate-state strengths
+as group sums, since individual eigenvectors inside a degenerate subspace are
+not uniquely defined.
+
+For pure LDA/GGA, `energies, coefficients = mf.get_bands(kpts_path)` evaluates
+arbitrary path k points using the converged SCF density. It preserves the
+reference and processes queries in chunks (`chunk_size=4` by default).
+Query k points have shape `(nquery,3)` in inverse Bohr; restricted band energies
+have shape `(nquery,nmo)`, unrestricted energies `(2,nquery,nmo)`. HF/hybrid
+band queries are explicitly unsupported until their exchange treatment at
+arbitrary query k points is implemented.
+
+`integrals.periodic.fft.build_inputs` accepts explicit dynamic basis parameters
+and lattice arrays on a fixed FFT topology. Functional SCF entry points use
+`SCFDifferentiationConfig` for implicit/unrolled response. First coordinate
+derivatives have been tested for Gamma and two-k-point HF; periodic stress,
+basis optimization and excited-state derivatives are not yet validated.
+Gamma caches AO-pair potentials, with memory proportional to `ngrid * nao**2`;
+k-mesh exchange processes k pairs separately. This initial backend has not been
+benchmarked for large cells or GPU performance.
+
+Run `PYTHONPATH=src JAX_PLATFORMS=cpu python examples/periodic_h2.py
+--xc pbe --kmesh 2 1 1 --response full --mesh 41` for a reproducible example.
+
+## UHF and UKS internal stability
+
+SCF convergence does not certify a local minimum. For real UHF orbitals, use
+`scf.uhf_stability(result, eri=eri)` to check an existing `UHFResult`, or
+`scf.stabilize_uhf_from_integrals(**inputs)` to run SCF and follow negative
+curvature with up to five directed restarts. `inputs` are the same arguments as
+`run_uhf_from_integrals`; `max_restarts=0` requests analysis without restarting.
+
+```python
+outcome = scf.stabilize_uhf_from_integrals(**inputs)
+print(outcome.result.total_energy, outcome.stable, outcome.restarts)
+print(outcome.minimum_curvature, outcome.stability.residual_norms)
+```
+
+The check reuses JAX orbital-energy HVPs and the Davidson solver, with no dense
+Hessian. Default internal curvature tolerance is `1e-5` Hartree per squared
+orbital angle; eigenpair residual tolerance is independently `1e-7`. `stable`
+is `None` when SCF or the eigenproblem did not converge, `False` when negative
+curvature remains, and `True` when the check passes. Accepted restarts must
+converge and lower the energy; the last accepted result is retained on failure.
+This is an explicit host-side branch selection, not a differentiable restart
+loop. Differentiate the selected branch with the existing SCF AD interfaces.
+Internal stability does not prove a global minimum or external stability
+against complex orbitals or UHF-to-GHF variations.
+
+For UKS, use `scf.uks_stability(result, eri=eri, ao=ao,
+ao_deriv1=ao_deriv1, grid_weights=weights, config=config)` or
+`scf.stabilize_uks_from_integrals(**inputs)`. The latter accepts the inputs of
+`run_uks_from_integrals` and uses one common stability/restart implementation
+with UHF. Analysis must receive the same grid and `UKSConfig` as the SCF run;
+XC density-floor settings are retained. HVPs include the XC spin response and
+the specified exact-exchange contribution. Current support is real orbitals,
+full ERIs and ordinary LDA/GGA/global-hybrid XC with unclipped potentials.
+Density fitting, bound/Neural XC and external stability are not supported by
+this entry point. A nonconverged UKS result returns an unknown stability status;
+this operation does not replace a convergence solver.
+
+## Shared SCF implementation boundaries
+
+- `scf/convergence.py` owns finite-value checks and energy/density/orbital-gradient
+  thresholds for RKS/UKS/ROKS/GKS. `conv_tol=0` explicitly disables early stopping.
+  RKS now honors `conv_tol_density` and exposes independent `conv_tol_grad`.
+- `scf/diis.py` owns the history ring, normalized Gram solve and extrapolation.
+  Method-specific residuals, history shapes, cadence, occupations and diagonalizers
+  remain separate; the existing RKS patch points are thin compatibility wrappers.
+- `scf/energy.py` owns shared restricted/unrestricted energy and Fock algebra.
+  `XCContribution` makes XC energy, potential, exchange fraction and extra Fock
+  terms explicit. Bound adapters whose energy already contains exact exchange
+  mark `energy_includes_exact_exchange` to prevent double counting.
+- RKS has one internal array-valued `RKSResult` PyTree. `TraceableRKSResult` is a
+  compatibility alias; only the eager public entry converts scalar fields to Python.
+- RKS facades retain their completed result and integral/grid inputs. Response
+  preparation supplements missing dipoles/features without rerunning SCF or S/H/ERI.
+  Ground-state input/configuration changes require a new `kernel()` call; response
+  feature changes reuse the same ground state. Cached inputs live until the next
+  kernel or the facade is released.
+- Former private `scf/features.py` helpers are test-only and now live in
+  `tests/reference_scf_features.py`.
+
+The XC adapter also preserves all three PW parameter sets when an upstream
+`jax_xc` factory uses the legacy `get_p` conversion. It reconstructs parameter
+vectors from the factory's actual arguments, retaining upstream formulas and
+user overrides without modifying the installed module globally.
+
+The recorded silicon/diamond band and silicon Gamma spectrum comparisons are
+available in [periodic validation artifacts](reproducibility/periodic/2026-09-13/README.md),
+including numerical arrays, figures, tolerances, and execution metadata.
