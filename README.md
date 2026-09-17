@@ -922,3 +922,57 @@ user overrides without modifying the installed module globally.
 The recorded silicon/diamond band and silicon Gamma spectrum comparisons are
 available in [periodic validation artifacts](reproducibility/periodic/2026-09-13/README.md),
 including numerical arrays, figures, tolerances, and execution metadata.
+
+## MACE-conditioned basis assembly
+
+The optional `nnao` package provides per-atom SZP3 templates for 34 main-group
+elements through Xe, including F/Cl/Br/I. MACE invariant features generate
+independent outer s/p contraction ratios, while 3-21G core shells and
+single-primitive polarization shells remain fixed. This is an unoptimized
+all-electron initialization and an assembly/AD foundation, not an SCF-trained
+basis or a claim of heavy-element relativistic accuracy.
+
+See [NNAO usage and scope](src/nnao/NNAO.md) and
+[the runnable example](examples/nnao_basis.py). Molecular parsing and DFT grid
+constants now cover Z=1–54; individual basis, ECP, response, and periodic
+capabilities retain their separate limits.
+
+### Direct Grimme-family coefficients
+
+`nnao.prepare_grimme_basis` and `MACEBasisModel(basis_family="qvszps")` use
+Grimme's official qavg-vSZPs primitive pool and scalar ECP. MACE directly
+predicts full signed s/p/d contraction vectors; reference coefficients only
+initialize a trainable bias, with no reference-plus-delta term in forward.
+The fixed upstream commit and CC-BY-4.0 license are recorded in
+[`src/nnao/data/qvszps/NOTICE.md`](src/nnao/data/qvszps/NOTICE.md).
+
+Rebuild the native library for scalar ECP support. macOS uses Accelerate;
+on Linux, if CMake cannot discover an existing LP64 BLAS runtime, specify
+`python -m gradscf.integrals._native.build --blas-library /path/to/libblas.so`.
+The new ECP operator supports values and JIT; coefficient gradients use JAX
+contraction of fixed primitive tensors. ECP coordinate/exponent derivatives
+and high-level SCF/grid ECP integration are not yet available.
+
+Run the explicit-integral methane example with
+`python tools/optimize_methane_nnao.py --basis-family qvszps`.
+All energies in that run use the matching ECP Hamiltonian; they cannot be
+compared directly with the earlier all-electron absolute totals.
+
+### All-electron direct-coefficient models
+
+The three-primitive `szp3_direct` comparison uses: three fixed 3-21G
+primitives for each inner radial shell, three primitives per single-zeta
+valence s/p function, and direct MACE coefficient outputs. No ECP potential
+or core-electron subtraction is used. The earlier Grimme/ECP experiment
+remains an explicitly selected comparison. Use `nnao.prepare_direct_basis`
+and `MACEBasisModel(basis_family="szp3_direct")`; select this mode explicitly for the three-primitive comparison. This is a custom all-electron basis, not q-vSZPs.
+
+The current default is `szp442_direct`: p-block valence/polarization shells
+expand to 4s4p2d with direct MACE outputs of shape (natom,3,4). Inner shells
+default to fixed six-primitive 6-31G contractions for Li–Ca; heavier elements
+require explicit `core_primitives=3` until six-primitive cores are validated.
+H/He valence and s-block valence retain their preceding structure. Added
+valence exponents are half the previous minimum; their coefficients start at
+zero. The new core changes the initial energy. Use `--core-primitives 3` in
+the methane CLI to reproduce the prior core-3 + 4s4p2d comparison.
+The contracted AO count stays fixed while primitive integral work increases.

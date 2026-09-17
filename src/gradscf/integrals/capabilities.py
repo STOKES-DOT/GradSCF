@@ -18,6 +18,8 @@ class BackendCapabilities:
     def supports(self, operator, *, variable=None, derivative_order=0):
         if operator not in self.operators or derivative_order < 0:
             return False
+        if operator == "ecp" and derivative_order > 0:
+            return False
         return derivative_order == 0 or (
             derivative_order <= self.max_derivative_order and variable in self.derivative_variables
         )
@@ -26,7 +28,7 @@ class BackendCapabilities:
 def backend_capabilities(name):
     operators = ("overlap", "kinetic", "nuclear", "dipole", "eri")
     if name == "native":
-        return BackendCapabilities(name, operators, ("cpu",), True,
+        return BackendCapabilities(name, operators+("ecp",), ("cpu",), True,
                                    ("centers", "nuclear_coords"), 1,
                                    representations=("cartesian", "spherical"),
                                    ad_modes=("jvp", "vjp"))

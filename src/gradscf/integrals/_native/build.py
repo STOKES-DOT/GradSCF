@@ -22,6 +22,7 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", type=Path)
+    parser.add_argument("--blas-library", type=Path, help="Existing LP64 BLAS runtime library (Linux override).")
     parser.add_argument("--jobs", type=int, default=2)
     args = parser.parse_args()
     if args.jobs < 1:
@@ -32,10 +33,15 @@ def main():
     verify_vendor(native)
     build_dir = (args.build_dir or native / "build").resolve()
     output_dir = Path(__file__).resolve().parent / "lib"
+    blas_args = []
+    if args.blas_library is not None:
+        if not args.blas_library.is_file():
+            parser.error("--blas-library must point to an existing LP64 BLAS library")
+        blas_args = [f"-DGRADSCF_BLAS_LIBRARY={args.blas_library.resolve()}"]
     subprocess.run([
         "cmake", "-S", str(native), "-B", str(build_dir),
         "-DCMAKE_BUILD_TYPE=Release", f"-DJAX_INCLUDE_DIR={jax.ffi.include_dir()}",
-        f"-DGRADSCF_OUTPUT_DIR={output_dir}",
+        f"-DGRADSCF_OUTPUT_DIR={output_dir}", *blas_args,
     ], check=True)
     subprocess.run(["cmake", "--build", str(build_dir), "--parallel", str(args.jobs)],
                    check=True)

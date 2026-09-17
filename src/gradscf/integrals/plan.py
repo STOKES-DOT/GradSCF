@@ -81,12 +81,17 @@ class IntegralPlan:
             env = env.at[ce:ce+c.size].set(coeff.T.ravel())
         return self.atm, self.bas, env
 
-    def evaluate(self, operator, parameters, *, origin=None):
+    def evaluate(self, operator, parameters, *, origin=None, ecps=None):
         """Bind current values and evaluate an operator.
 
         Reference one-electron calls skip ERI layouts. Reference eager ERI
         calls still rebuild their layouts when binding the current parameters.
         """
+        if operator == "ecp":
+            if origin is not None: raise ValueError("origin is not used for ECP integrals.")
+            from .ecp import evaluate_ecp
+            return evaluate_ecp(self, parameters, ecps)
+        if ecps is not None: raise ValueError("ecps is only used for the ecp operator.")
         caps = backend_capabilities(self.backend)
         if not caps.supports(operator):
             raise NotImplementedError(f"{operator!r} is not supported by {self.backend}.")

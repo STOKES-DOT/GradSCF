@@ -19,7 +19,7 @@ def register_integrals():
             "`python -m gradscf.integrals._native.build` (requires CMake and a C/C++ compiler)."
         )
     handle = ctypes.CDLL(str(library), mode=ctypes.RTLD_LOCAL)
-    targets = {"gradscf_integrals_cpu_v1": "GradSCFIntegrals",
+    targets = {"gradscf_ecp_cpu_v1": "GradSCFECP", "gradscf_integrals_cpu_v1": "GradSCFIntegrals",
                "gradscf_geometry_jvp_cpu_v1": "GradSCFGeometryJVP",
                "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP"}
     for target, symbol in targets.items():

@@ -29,11 +29,25 @@ list(TRANSFORM CINT_SOURCES APPEND ".c")
 add_library(gradscf_integrals SHARED
   ${CINT_SOURCES} vendor/libcint/src/autocode/intor1.c
   vendor/libcint/src/autocode/grad1.c vendor/libcint/src/autocode/grad2.c
-  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc)
+  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc
+  vendor/pyscf_ecp/gto/nr_ecp.c vendor/pyscf_ecp/np_helper/np_helper.c csrc/ecp.cc)
 target_include_directories(gradscf_integrals PRIVATE
   "${JAX_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated"
-  vendor/libcint/src vendor/libcint/include)
-target_link_libraries(gradscf_integrals PRIVATE m)
+  vendor/libcint/src vendor/libcint/include vendor/pyscf_ecp)
+if(APPLE)
+  find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+  target_link_libraries(gradscf_integrals PRIVATE m ${ACCELERATE_FRAMEWORK})
+else()
+  if(GRADSCF_BLAS_LIBRARY)
+    if(NOT EXISTS "${GRADSCF_BLAS_LIBRARY}")
+      message(FATAL_ERROR "GRADSCF_BLAS_LIBRARY does not exist")
+    endif()
+    set(BLAS_LIBRARIES "${GRADSCF_BLAS_LIBRARY}")
+  else()
+    find_package(BLAS REQUIRED)
+  endif()
+  target_link_libraries(gradscf_integrals PRIVATE m ${BLAS_LIBRARIES})
+endif()
 target_compile_options(gradscf_integrals PRIVATE
   $<$<COMPILE_LANGUAGE:C>:-Wno-deprecated-non-prototype>)
 # Link-local vendor symbols cannot interpose with a separately imported PySCF.

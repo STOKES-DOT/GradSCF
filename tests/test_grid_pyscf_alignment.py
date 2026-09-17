@@ -71,7 +71,7 @@ def test_bundled_lebedev_tables_cover_supported_pyscf_levels(npoints):
 def test_all_supported_element_level_counts_and_constants_match_pyscf():
     from pyscf.dft import gen_grid, radi
 
-    for charge in range(1, 37):
+    for charge in range(1, 55):
         assert BRAGG_RADII[charge] == pytest.approx(float(radi.BRAGG_RADII[charge]), abs=0.0)
         assert TREUTLER_XI[charge] == pytest.approx(
             float(radi._treutler_ahlrichs_xi[charge]), abs=0.0

@@ -147,7 +147,7 @@ def _parse_pople_basis_paths(basisname: str, symbol: str) -> tuple[Path, ...]:
         return (main,)
     if "," in extension:
         return tuple([main] + convert(extension.split(",")[0]))
-    return (main,)
+    return tuple([main] + convert(extension))
 
 
 def _search_basis_block(raw_text: str, symbol: str) -> list[str]:
