@@ -22,7 +22,7 @@ def _load_tool_module(path: str, name: str):
 
 def test_h2_s1_tool_imports_with_current_public_api():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_import",
     )
 
@@ -32,7 +32,7 @@ def test_h2_s1_tool_imports_with_current_public_api():
 
 def test_h2plus_cache_version_invalidates_pre_uks_derivative_references():
     module = _load_tool_module(
-        "tools/h2plus_fci_ground_train5_dense100.py",
+        "tests/comparisons/h2plus_fci_ground_train5_dense100.py",
         "h2plus_fci_ground_train5_dense100_test_cache_version",
     )
 
@@ -41,7 +41,7 @@ def test_h2plus_cache_version_invalidates_pre_uks_derivative_references():
 
 def test_h2_ground_tool_normalizes_legacy_cli_aliases():
     module = _load_tool_module(
-        "tools/h2_self_consistent_ground_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py",
         "h2_self_consistent_ground_train5_dense100_vs_fci_test_import",
     )
 
@@ -61,7 +61,7 @@ def test_h2_ground_tool_normalizes_legacy_cli_aliases():
 
 def test_h2_ground_training_data_uses_grid_density_target():
     module = _load_tool_module(
-        "tools/h2_self_consistent_ground_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py",
         "h2_self_consistent_ground_train5_dense100_vs_fci_test_density_target",
     )
     point = SimpleNamespace(
@@ -77,7 +77,7 @@ def test_h2_ground_training_data_uses_grid_density_target():
 
 
 def test_h2_ground_script_exposes_only_grid_density_weight():
-    source = Path("tools/h2_self_consistent_ground_train5_dense100_vs_fci.py").read_text(
+    source = Path("tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py").read_text(
         encoding="utf-8"
     )
 
@@ -92,7 +92,7 @@ def test_h2_ground_script_exposes_only_grid_density_weight():
 
 def test_h2_reference_builder_requests_pt2_features_when_pt2_channel_enabled(monkeypatch):
     module = _load_tool_module(
-        "tools/h2_self_consistent_ground_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_self_consistent_ground_train5_dense100_vs_fci.py",
         "h2_self_consistent_ground_train5_dense100_vs_fci_test_pt2",
     )
     captured: list[dict[str, object]] = []
@@ -137,7 +137,7 @@ def test_h2_reference_builder_requests_pt2_features_when_pt2_channel_enabled(mon
 
 def test_h2_s1_tool_defaults_to_explicit_s1_total_tda_objective():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_default_objective",
     )
 
@@ -154,7 +154,7 @@ def test_h2_s1_tool_defaults_to_explicit_s1_total_tda_objective():
 
 def test_h2_s1_training_checkpoint_writes_metadata_atomically(tmp_path):
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_checkpoint",
     )
     args = module.parse_args(
@@ -214,7 +214,7 @@ def test_h2_s1_training_checkpoint_writes_metadata_atomically(tmp_path):
 
 def test_h2_s1_tool_exposes_hfx_channel_controls():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_hfx_controls",
     )
 
@@ -235,7 +235,7 @@ def test_h2_s1_tool_exposes_hfx_channel_controls():
 
 def test_h2_s1_self_consistent_config_uses_current_implicit_diff_fields():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_implicit_diff_config",
     )
 
@@ -261,7 +261,7 @@ def test_h2_s1_self_consistent_config_uses_current_implicit_diff_fields():
 
 def test_h2_s1_reference_cache_writer_matches_current_reference_point(tmp_path, monkeypatch):
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_reference_cache_writer",
     )
     point = SimpleNamespace(
@@ -287,7 +287,7 @@ def test_h2_s1_reference_cache_writer_matches_current_reference_point(tmp_path, 
 
 def test_h2_s1_training_data_uses_grid_density_target():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_density_target",
     )
     point = SimpleNamespace(
@@ -307,7 +307,7 @@ def test_h2_s1_training_data_uses_grid_density_target():
 
 def test_h2_s1_tool_infers_e0_total_from_explicit_weights():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_e0_objective",
     )
 
@@ -328,7 +328,7 @@ def test_h2_s1_tool_infers_e0_total_from_explicit_weights():
 
 def test_h2_s1_tool_infers_joint_objective_without_mutating_weights():
     module = _load_tool_module(
-        "tools/h2_s1_tda_train5_dense100_vs_fci.py",
+        "tests/comparisons/h2_s1_tda_train5_dense100_vs_fci.py",
         "h2_s1_tda_train5_dense100_vs_fci_test_joint_objective",
     )
 

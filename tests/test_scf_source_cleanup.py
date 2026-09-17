@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_rks_does_not_keep_legacy_cuda_eri_cache_selectors():
-    text = Path("src/td_graddft/scf/rks.py").read_text()
+    text = Path("src/gradscf/scf/rks.py").read_text()
 
     assert "_should_cache_cuda_full_eri" not in text
     assert "_should_cache_cuda_pair_eri" not in text
@@ -11,7 +11,7 @@ def test_rks_does_not_keep_legacy_cuda_eri_cache_selectors():
 
 
 def test_scf_does_not_keep_unreferenced_private_helpers():
-    scf_text = "\n".join(path.read_text() for path in Path("src/td_graddft/scf").glob("*.py"))
+    scf_text = "\n".join(path.read_text() for path in Path("src/gradscf/scf").glob("*.py"))
 
     for helper in (
         "_cache_grid_ao_input_bundle",
@@ -39,7 +39,7 @@ def test_scf_does_not_keep_unreferenced_private_helpers():
 
 
 def test_rhf_reuses_the_shared_rks_scf_kernel():
-    rhf_text = Path("src/td_graddft/scf/rhf.py").read_text()
+    rhf_text = Path("src/gradscf/scf/rhf.py").read_text()
 
     assert "run_rks_from_integrals(" in rhf_text
     assert "def _diis_extrapolate" not in rhf_text
@@ -47,7 +47,7 @@ def test_rhf_reuses_the_shared_rks_scf_kernel():
 
 
 def test_scf_core_no_longer_contains_custom_cuda_direct_backend():
-    source_text = "\n".join(path.read_text() for path in Path("src/td_graddft").rglob("*.py"))
+    source_text = "\n".join(path.read_text() for path in Path("src/gradscf").rglob("*.py"))
 
     for token in (
         "CudaDirectJKBuilder",
@@ -62,14 +62,14 @@ def test_scf_core_no_longer_contains_custom_cuda_direct_backend():
 
 
 def test_custom_cuda_integral_modules_are_removed():
-    assert not Path("src/td_graddft/data/integrals/jax/cuda_direct_jk.py").exists()
-    assert not Path("src/td_graddft/data/integrals/jax/cuda_direct_jk_kernel.cu").exists()
-    assert not Path("src/td_graddft/data/integrals/jax/cuda_one_electron.py").exists()
-    assert not Path("src/td_graddft/data/integrals/jax/cuda_one_electron_kernel.cu").exists()
+    assert not Path("src/gradscf/data/integrals/jax/cuda_direct_jk.py").exists()
+    assert not Path("src/gradscf/data/integrals/jax/cuda_direct_jk_kernel.cu").exists()
+    assert not Path("src/gradscf/data/integrals/jax/cuda_one_electron.py").exists()
+    assert not Path("src/gradscf/data/integrals/jax/cuda_one_electron_kernel.cu").exists()
 
 
 def test_janak_constraint_code_is_removed_from_core_sources():
-    source_text = "\n".join(path.read_text() for path in Path("src/td_graddft").rglob("*.py"))
+    source_text = "\n".join(path.read_text() for path in Path("src/gradscf").rglob("*.py"))
 
     assert "janak" not in source_text.lower()
     assert "eta_autodiff" not in source_text

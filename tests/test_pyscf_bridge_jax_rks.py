@@ -6,12 +6,12 @@ from pyscf_reference import (
     restricted_reference_from_pyscf_spec_with_jax_rks,
     restricted_reference_from_pyscf_with_jax_rks,
 )
-from td_graddft.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from td_graddft.scf.features import _charge_center
-from td_graddft.scf import RKSConfig
-from td_graddft.scf.rks import TraceableRKSResult
-from td_graddft.workflows.core import run_reference
-from td_graddft.workflows.types import SimulationConfig
+from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
+from reference_scf_features import _charge_center
+from gradscf.scf import RKSConfig
+from gradscf.scf.rks import TraceableRKSResult
+from gradscf.workflows.core import run_reference
+from gradscf.workflows.types import SimulationConfig
 
 
 def _pyscf_or_skip():
@@ -96,7 +96,7 @@ def test_build_rks_integral_inputs_accepts_strict_jax_default_grid_level():
     _pyscf_or_skip()
     from pyscf import dft, gto
 
-    from td_graddft.scf.inputs import build_rks_integral_inputs
+    from gradscf.integrals.assembly import build_rks_integral_inputs
 
     atom = """
     H 0.0 0.0 -0.35
@@ -375,7 +375,7 @@ def test_restricted_molecule_from_spec_with_jax_rks_can_precompile_eri(monkeypat
         calls.append((basis.nao, str(engine), int(chunk_size)))
         return {"compiled_shell_signatures": 0, "compiled_batch_shapes": 0}
 
-    monkeypatch.setattr("td_graddft.scf.builders.precompile_eri_kernels", fake_precompile)
+    monkeypatch.setattr("gradscf.scf.builders.precompile_eri_kernels", fake_precompile)
 
     ref = restricted_molecule_from_spec_with_jax_rks(
         atom="""
@@ -523,7 +523,7 @@ def test_restricted_molecule_from_spec_with_jax_rks_libcint_skips_precompile(mon
         called["value"] = True
         return {}
 
-    monkeypatch.setattr("td_graddft.scf.builders.precompile_eri_kernels", fake_precompile)
+    monkeypatch.setattr("gradscf.scf.builders.precompile_eri_kernels", fake_precompile)
 
     with pytest.warns(RuntimeWarning, match="ignored when integral_backend='cpu'"):
         _ = restricted_molecule_from_spec_with_jax_rks(

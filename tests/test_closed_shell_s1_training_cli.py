@@ -10,7 +10,7 @@ import pytest
 
 
 def _load_training_tool():
-    path = Path("tools/closed_shell_s1_self_consistent_train.py")
+    path = Path("tests/comparisons/closed_shell_s1_self_consistent_train.py")
     spec = importlib.util.spec_from_file_location("closed_shell_s1_self_consistent_train", path)
     assert spec is not None
     assert spec.loader is not None
@@ -22,7 +22,7 @@ def _load_training_tool():
 
 def _load_evaluation_tool():
     _load_training_tool()
-    path = Path("tools/evaluate_closed_shell_checkpoint.py")
+    path = Path("tests/comparisons/evaluate_closed_shell_checkpoint.py")
     spec = importlib.util.spec_from_file_location("evaluate_closed_shell_checkpoint", path)
     assert spec is not None
     assert spec.loader is not None
@@ -359,11 +359,11 @@ def test_reference_jk_backend_is_switchable_and_part_of_cache_key():
 
 def test_hdf5_cache_can_read_restricted_molecule_on_host(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from td_graddft.data.hdf5_cache import (
+    from gradscf.data.hdf5_cache import (
         read_restricted_molecule,
         write_restricted_molecule,
     )
-    from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
+    from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
     molecule = RestrictedMolecule(
         ao=np.ones((2, 2)),
@@ -392,11 +392,11 @@ def test_hdf5_cache_can_read_restricted_molecule_on_host(tmp_path):
 
 def test_hdf5_cache_roundtrips_restricted_response_df_factors(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from td_graddft.data.hdf5_cache import (
+    from gradscf.data.hdf5_cache import (
         read_restricted_molecule,
         write_restricted_molecule,
     )
-    from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
+    from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
     response_j = np.arange(2 * 3 * 3, dtype=np.float64).reshape(2, 3, 3)
     response_k = np.arange(1 * 3 * 3, dtype=np.float64).reshape(1, 3, 3)
@@ -435,11 +435,11 @@ def test_hdf5_cache_roundtrips_restricted_response_df_factors(tmp_path):
 
 def test_hdf5_cache_can_read_restricted_hfx_nu_as_chunked_api(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from td_graddft.data.hdf5_cache import (
+    from gradscf.data.hdf5_cache import (
         read_restricted_molecule,
         write_restricted_molecule,
     )
-    from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
+    from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
     hfx_nu = np.arange(2 * 4 * 2 * 2, dtype=np.float64).reshape(2, 4, 2, 2)
     molecule = RestrictedMolecule(
@@ -478,7 +478,7 @@ def test_dense_chunked_hfx_nu_padded_reads_with_dynamic_scan_start_under_jit():
     import jax
     import jax.numpy as jnp
 
-    from td_graddft.neural_xc.inputs import ChunkedHFXNu, hfx_nu_grid_chunk_padded
+    from gradscf.neural_xc.inputs import ChunkedHFXNu, hfx_nu_grid_chunk_padded
 
     hfx_nu = np.arange(2 * 5 * 2 * 2, dtype=np.float64).reshape(2, 5, 2, 2)
     path = tmp_path / "refs.h5"
@@ -507,7 +507,7 @@ def test_dense_chunked_hfx_nu_padded_reads_with_dynamic_scan_start_under_jit():
     import jax
     import jax.numpy as jnp
 
-    from td_graddft.neural_xc.inputs import ChunkedHFXNu, hfx_nu_grid_chunk_padded
+    from gradscf.neural_xc.inputs import ChunkedHFXNu, hfx_nu_grid_chunk_padded
 
     hfx_nu = np.arange(2 * 5 * 2 * 2, dtype=np.float64).reshape(2, 5, 2, 2)
     api = ChunkedHFXNu.from_dense(hfx_nu, chunk_size=2)
@@ -527,12 +527,12 @@ def test_dense_chunked_hfx_nu_padded_reads_with_dynamic_scan_start_under_jit():
 
 def test_hdf5_cache_materializes_chunked_hfx_nu_api(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from td_graddft.data.hdf5_cache import (
+    from gradscf.data.hdf5_cache import (
         read_restricted_molecule,
         write_restricted_molecule,
     )
-    from td_graddft.neural_xc.inputs import ChunkedHFXNu
-    from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
+    from gradscf.neural_xc.inputs import ChunkedHFXNu
+    from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
     hfx_nu = np.arange(2 * 5 * 2 * 2, dtype=np.float64).reshape(2, 5, 2, 2)
     molecule = RestrictedMolecule(
@@ -572,9 +572,9 @@ def test_hdf5_cache_materializes_chunked_hfx_nu_api(tmp_path):
 
 def test_streaming_preserves_chunked_hfx_nu_api():
     module = _load_training_tool()
-    from td_graddft.neural_xc.inputs import ChunkedHFXNu
-    from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
-    from td_graddft.training import MolecularTrainingDatum
+    from gradscf.neural_xc.inputs import ChunkedHFXNu
+    from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
+    from gradscf.training import MolecularTrainingDatum
 
     hfx_nu = np.arange(2 * 5 * 2 * 2, dtype=np.float64).reshape(2, 5, 2, 2)
 
@@ -686,11 +686,11 @@ def test_training_cache_uses_chunked_hfx_nu_only_for_large_canonical_refs(tmp_pa
 
 def test_hdf5_cache_can_read_unrestricted_molecule_on_host(tmp_path):
     h5py = pytest.importorskip("h5py")
-    from td_graddft.data.hdf5_cache import (
+    from gradscf.data.hdf5_cache import (
         read_unrestricted_molecule,
         write_unrestricted_molecule,
     )
-    from td_graddft.scf.molecules import QuadratureGrid, UnrestrictedMolecule
+    from gradscf.scf.molecules import QuadratureGrid, UnrestrictedMolecule
 
     molecule = UnrestrictedMolecule(
         ao=np.ones((2, 2)),

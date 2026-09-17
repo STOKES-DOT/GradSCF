@@ -3,11 +3,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from td_graddft.scf import UKSConfig
-from td_graddft.scf.builders import unrestricted_molecule_from_spec_with_jax_uks
-from td_graddft.scf.differentiable import _is_unrestricted_reference
-from td_graddft.workflows.core import run_molecule_from_spec
-from td_graddft.workflows.types import MoleculeSpecConfig, SimulationConfig
+from gradscf.scf import UKSConfig
+from gradscf.scf.builders import unrestricted_molecule_from_spec_with_jax_uks
+from gradscf.scf.differentiable import _is_unrestricted_reference
+from gradscf.workflows.core import run_molecule_from_spec
+from gradscf.workflows.types import MoleculeSpecConfig, SimulationConfig
 
 
 def test_spin_resolved_charged_state_overrides_restricted_nocc_marker():

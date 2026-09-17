@@ -4,9 +4,9 @@ import optax
 
 pytestmark = []
 
-from td_graddft import neural_xc
+from gradscf import neural_xc
 from pyscf_reference import restricted_reference_from_pyscf
-from td_graddft.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
     create_train_state_from_molecule,

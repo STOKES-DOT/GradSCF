@@ -1,49 +1,49 @@
 import importlib
 
 
-def test_td_graddft_dir_lists_recommended_namespaces():
-    import td_graddft
+def test_gradscf_dir_lists_recommended_namespaces():
+    import gradscf
 
     for name in ("gto", "scf", "dft", "tdscf", "neural_xc", "training"):
-        assert name in td_graddft.__all__
-        assert name in dir(td_graddft)
-        assert getattr(td_graddft, name) is importlib.import_module(f"td_graddft.{name}")
+        assert name in gradscf.__all__
+        assert name in dir(gradscf)
+        assert getattr(gradscf, name) is importlib.import_module(f"gradscf.{name}")
 
 
-def test_td_graddft_exposes_pyscf_style_namespaces():
+def test_gradscf_exposes_pyscf_style_namespaces():
     for name in (
-        "td_graddft.gto",
-        "td_graddft.dft",
-        "td_graddft.scf",
-        "td_graddft.tdscf",
+        "gradscf.gto",
+        "gradscf.dft",
+        "gradscf.scf",
+        "gradscf.tdscf",
     ):
         module = importlib.import_module(name)
         assert module is not None
 
 
-def test_td_graddft_reference_module_is_removed():
+def test_gradscf_reference_module_is_removed():
     try:
-        importlib.import_module("td_graddft.reference")
+        importlib.import_module("gradscf.reference")
     except ModuleNotFoundError:
         return
-    raise AssertionError("td_graddft.reference should not import successfully")
+    raise AssertionError("gradscf.reference should not import successfully")
 
 
 def test_dft_namespace_exposes_ks_facades():
-    from td_graddft import dft, scf
+    from gradscf import dft, scf
 
     assert dft.RKS is scf.RKS
     assert dft.UKS is scf.UKS
 
 
 def test_top_level_exposes_recommended_neural_xc_facades():
-    import td_graddft
+    import gradscf
 
-    assert td_graddft.Functional is td_graddft.neural_xc.Functional
+    assert gradscf.Functional is gradscf.neural_xc.Functional
 
 
 def test_top_level_removes_legacy_neural_xc_exports():
-    import td_graddft
+    import gradscf
 
     removed = (
         "Density" "NeuralXCFunctional",
@@ -54,16 +54,16 @@ def test_top_level_removes_legacy_neural_xc_exports():
     )
 
     for name in removed:
-        assert not hasattr(td_graddft, name), f"{name} should not be exported at top level"
+        assert not hasattr(gradscf, name), f"{name} should not be exported at top level"
 
 
-def test_td_graddft_pyscf_style_submodules_import():
+def test_gradscf_pyscf_style_submodules_import():
     for name in (
-        "td_graddft.gto.basis",
-        "td_graddft.gto.grid",
-        "td_graddft.dft.rks",
-        "td_graddft.dft.uks",
-        "td_graddft.dft.xc",
+        "gradscf.gto.basis",
+        "gradscf.gto.grid",
+        "gradscf.dft.rks",
+        "gradscf.dft.uks",
+        "gradscf.dft.xc",
     ):
         module = importlib.import_module(name)
         assert module is not None

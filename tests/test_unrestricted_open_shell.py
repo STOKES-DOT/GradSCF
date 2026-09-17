@@ -3,11 +3,11 @@ import os
 import numpy as np
 import pytest
 
-from td_graddft.data.basis import basis_from_pyscf_mol_cart
-from td_graddft.data.integrals import eri_element, overlap_element
+from pyscf_adapters import basis_from_pyscf_mol_cart
+from gradscf.integrals import eri_element, overlap_element
 from pyscf_reference import unrestricted_reference_from_pyscf
-from td_graddft.spectra import oscillator_strengths
-from td_graddft.tddft import UnrestrictedTDA
+from gradscf.spectra import oscillator_strengths
+from gradscf.tddft import UnrestrictedTDA
 
 
 pytestmark = pytest.mark.skipif(

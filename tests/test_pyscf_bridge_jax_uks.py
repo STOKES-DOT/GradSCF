@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pyscf_reference import unrestricted_reference_from_pyscf_with_jax_uks
-from td_graddft.scf import UKSConfig
+from gradscf.scf import UKSConfig
 
 
 pytestmark = pytest.mark.skipif(

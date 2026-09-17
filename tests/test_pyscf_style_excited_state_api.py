@@ -4,8 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from td_graddft import gto, scf, tdscf
-from td_graddft.spectra import HARTREE_TO_EV
+from gradscf import gto, scf, tdscf
+from gradscf.spectra import HARTREE_TO_EV
 
 
 def test_tdscf_facade_defaults_match_pyscf_tda_solver_settings():
@@ -23,7 +23,7 @@ def test_tdscf_facade_defaults_match_pyscf_tda_solver_settings():
 
 
 def test_tdscf_tda_propagates_implicit_eigenvector_settings(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     captured = {}
 
@@ -58,7 +58,7 @@ def test_tdscf_tda_propagates_implicit_eigenvector_settings(monkeypatch):
 
 
 def test_tda_from_restricted_mf_stores_fields_and_spectra(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     captured = {}
 
@@ -117,7 +117,7 @@ def test_tda_from_restricted_mf_stores_fields_and_spectra(monkeypatch):
 
 
 def test_tda_facade_preserves_nonconverged_ritz_result(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     class FakeRestrictedCasidaTDDFT:
         def __init__(self, **kwargs):
@@ -148,7 +148,7 @@ def test_tda_facade_preserves_nonconverged_ritz_result(monkeypatch):
 
 
 def test_tddft_from_raw_restricted_reference_uses_kernel(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     captured = {}
     xc_functional = object()
@@ -190,7 +190,7 @@ def test_tddft_from_raw_restricted_reference_uses_kernel(monkeypatch):
 
 
 def test_explicit_string_xc_functional_uses_semilocal_response(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     captured = {}
 
@@ -216,7 +216,7 @@ def test_explicit_string_xc_functional_uses_semilocal_response(monkeypatch):
 
 
 def test_tda_and_tddft_dispatch_unrestricted_references(monkeypatch):
-    import td_graddft.tdscf.api as api
+    import gradscf.tdscf.api as api
 
     calls = []
 
@@ -269,8 +269,8 @@ def test_tda_and_tddft_dispatch_unrestricted_references(monkeypatch):
 
 
 def test_unrestricted_tda_string_xc_uses_unrestricted_response(monkeypatch):
-    import td_graddft.tdscf.api as api
-    from td_graddft.tddft._unrestricted_semilocal_response import (
+    import gradscf.tdscf.api as api
+    from gradscf.tddft._unrestricted_semilocal_response import (
         UnrestrictedSemilocalResponseFunctional,
     )
 

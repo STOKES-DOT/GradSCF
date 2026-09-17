@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
-import td_graddft.device as device_module
-from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule
+import gradscf.device as device_module
+from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
 
 def _restricted_molecule_with_packed_eri() -> RestrictedMolecule:

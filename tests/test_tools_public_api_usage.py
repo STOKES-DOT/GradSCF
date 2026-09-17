@@ -3,7 +3,7 @@ from pathlib import Path
 
 TOOLS = tuple(Path("tools").glob("*.py"))
 EXAMPLES = tuple(Path("examples").glob("*.py"))
-REMOVED_PYSCF_BRIDGE_MODULE = "td_graddft." + "pyscf_bridge"
+REMOVED_PYSCF_BRIDGE_MODULE = "gradscf." + "pyscf_bridge"
 
 
 def test_tools_use_tdscf_facade_for_restricted_response():
@@ -11,7 +11,7 @@ def test_tools_use_tdscf_facade_for_restricted_response():
     for path in TOOLS:
         text = path.read_text()
         if (
-            "from td_graddft.tddft import RestrictedCasidaTDDFT" in text
+            "from gradscf.tddft import RestrictedCasidaTDDFT" in text
             or "RestrictedCasidaTDDFT(" in text
         ):
             offenders.append(str(path))
@@ -24,7 +24,7 @@ def test_tools_use_neural_xc_facade_constructor():
     for path in TOOLS:
         text = path.read_text()
         if (
-            "from td_graddft.neural_xc import make_neural_xc_functional" in text
+            "from gradscf.neural_xc import make_neural_xc_functional" in text
             or "make_neural_xc_functional(" in text
         ):
             offenders.append(str(path))
@@ -50,7 +50,7 @@ def test_pyscf_bridge_module_is_removed_from_public_api():
     except ModuleNotFoundError:
         return
     except ImportError as exc:
-        assert "td_graddft.reference_legacy" in str(exc)
+        assert "gradscf.reference_legacy" in str(exc)
         return
 
     raise AssertionError(f"{REMOVED_PYSCF_BRIDGE_MODULE} should no longer import successfully")
@@ -66,4 +66,18 @@ def test_user_scripts_avoid_old_neural_xc_names():
         if legacy_class in text or legacy_snake in text or legacy_factory in text:
             offenders.append(str(path))
 
+    assert offenders == []
+
+
+def test_user_scripts_do_not_import_pyscf_or_test_helpers():
+    import ast
+
+    offenders = []
+    for path in TOOLS + EXAMPLES:
+        for node in ast.walk(ast.parse(path.read_text())):
+            modules = ([name.name for name in node.names] if isinstance(node, ast.Import)
+                       else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            for module in modules:
+                if module.split(".")[0] in {"pyscf", "gpu4pyscf", "pyscf_reference", "tests", "comparisons"}:
+                    offenders.append(f"{path}:{node.lineno}: {module}")
     assert offenders == []

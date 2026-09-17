@@ -5,9 +5,9 @@ import types
 
 import numpy as np
 
-from td_graddft.data import reference as reference_module
-from td_graddft.neural_xc.inputs import ChunkedHFXNu
-from td_graddft.scf.molecules import UnrestrictedMolecule
+import pyscf_data_reference as reference_module
+from gradscf.neural_xc.inputs import ChunkedHFXNu
+from gradscf.scf.molecules import UnrestrictedMolecule
 
 
 class _CommonOrigin:

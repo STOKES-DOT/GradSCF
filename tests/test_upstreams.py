@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import jax.numpy as jnp
 import pytest
 
-from td_graddft.upstreams import (
+from gradscf.upstreams import (
     ground_state_from_grad_dft_molecule,
     spin_summed_density_matrix,
 )

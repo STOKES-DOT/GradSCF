@@ -5,23 +5,23 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 
-import td_graddft.training.targets as training_targets
-import td_graddft.training.trainer as training_trainer
-import td_graddft.scf.differentiable as scf_differentiable
-import td_graddft.scf.rks as scf_rks
-from td_graddft.xc_backend.jax_libxc import b3lyp_component_basis
-from td_graddft.neural_xc import make_neural_xc_functional
-from td_graddft.neural_xc.inputs import ChunkedHFXNu
+import gradscf.training.targets as training_targets
+import gradscf.training.trainer as training_trainer
+import gradscf.scf.differentiable as scf_differentiable
+import gradscf.scf.rks as scf_rks
+from gradscf.xc_backend.jax_libxc import b3lyp_component_basis
+from gradscf.neural_xc import make_neural_xc_functional
+from gradscf.neural_xc.inputs import ChunkedHFXNu
 from pyscf_reference import restricted_reference_from_pyscf
-from td_graddft.scf import DifferentiableSCF, DifferentiableSCFConfig
-from td_graddft.scf.molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
-from td_graddft.scf.differentiable import (
+from gradscf.scf import DifferentiableSCF, DifferentiableSCFConfig
+from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
+from gradscf.scf.differentiable import (
     _replace_molecule,
     _restricted_iteration_molecule,
     _restricted_total_occupations,
     _unrestricted_channel,
 )
-from td_graddft.training import (
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     density_on_grid,
@@ -207,7 +207,8 @@ class _ToyRestrictedFunctional:
         strength = jnp.asarray(params["strength"], dtype=jnp.float32)
         v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
         v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-        return v_rho, v_grad, "LDA", jnp.asarray(0.0, dtype=jnp.float32)
+        return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
+                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
 
 class _ToyUnrestrictedFunctional:
@@ -906,9 +907,9 @@ def test_restricted_xc_fock_terms_prefers_density_energy_callback():
     molecule = _make_toy_restricted_reference()
 
     class _EnergyFunctional:
-        def scf_xc_energy_for_density(self, params, _molecule, density):
+        def scf_xc_energy_and_alpha_for_density(self, params, _molecule, density):
             scale = jnp.asarray(params["scale"], dtype=density.dtype)
-            return 0.5 * scale * jnp.sum(density * density)
+            return 0.5 * scale * jnp.sum(density * density), jnp.asarray(0.25)
 
         def scf_exact_exchange_fraction(self, params, _molecule, density):
             del params, density
@@ -941,9 +942,9 @@ def test_restricted_scf_problem_builder_returns_density_callback_energy():
     molecule = _make_toy_restricted_reference()
 
     class _EnergyFunctional:
-        def scf_xc_energy_for_density(self, params, _molecule, density):
+        def scf_xc_energy_and_alpha_for_density(self, params, _molecule, density):
             scale = jnp.asarray(params["scale"], dtype=density.dtype)
-            return 0.5 * scale * jnp.sum(density * density)
+            return 0.5 * scale * jnp.sum(density * density), jnp.asarray(0.0)
 
     solver = DifferentiableSCF(DifferentiableSCFConfig(mode="self_consistent"))
     problem = solver._restricted_scf_problem(
@@ -991,7 +992,8 @@ def test_restricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch):
             strength = jnp.asarray(params["strength"], dtype=jnp.float32)
             v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
             v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-            return v_rho, v_grad, "LDA", jnp.asarray(0.0, dtype=jnp.float32)
+            return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
+                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(
@@ -1013,7 +1015,7 @@ def test_restricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch):
 
 
 def test_training_config_builds_implicit_scf_without_forward_mode_switch():
-    import td_graddft.training.targets as targets_mod
+    import gradscf.training.targets as targets_mod
 
     cfg = MolecularTrainingConfig(
         mode="self_consistent",
@@ -1034,7 +1036,8 @@ def test_ground_state_loss_reuses_value_and_grad_transform(monkeypatch):
             strength = jnp.asarray(params["strength"], dtype=jnp.float32)
             v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
             v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-            return v_rho, v_grad, "LDA", jnp.asarray(0.0, dtype=jnp.float32)
+            return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
+                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
         def energy(self, params, density, weights):
             strength = jnp.asarray(params["strength"], dtype=jnp.float32)
@@ -1245,7 +1248,7 @@ def test_energy_and_residual_convergence_uses_pyscf_orbital_gradient_scale():
     h = jnp.diag(jnp.asarray([-1.0, 0.5], dtype=jnp.float64))
     s = jnp.eye(2, dtype=jnp.float64)
     x = jnp.eye(2, dtype=jnp.float64)
-    density0 = jnp.zeros((2, 2), dtype=jnp.float64)
+    density0 = jnp.diag(jnp.asarray([2.0, 0.0], dtype=jnp.float64))
     mo_occ = jnp.asarray([2.0, 0.0], dtype=jnp.float64)
     zero_mat = jnp.zeros((2, 2), dtype=jnp.float64)
     raw_fock = jnp.asarray(
@@ -1313,7 +1316,8 @@ def test_expl_restricted_scf_uses_shared_rks_diis_loop(monkeypatch):
             strength = jnp.asarray(params["strength"], dtype=jnp.float32)
             v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
             v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-            return v_rho, v_grad, "LDA", jnp.asarray(0.0, dtype=jnp.float32)
+            return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
+                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
     diis_calls = []
     original_diis = scf_rks._diis_extrapolate
@@ -1400,7 +1404,9 @@ def test_expl_unrestricted_scf_passes_level_shift_to_fixed_cycle_loop(monkeypatc
         {"strength": jnp.asarray(0.1, dtype=jnp.float32)},
     )
 
-    assert int(info.cycles) == 1
+    # A loose density threshold must not bypass the raw-Fock residual check.
+    assert int(info.cycles) == 3
+    assert not bool(info.converged)
     assert int(info.selected_cycle) == 3
     assert np.asarray(info.rms_density_history).shape == (3,)
     assert level_shift_calls == [0.7]
@@ -1487,7 +1493,8 @@ def test_implicit_restricted_scf_uses_df_factors_without_packed_eri():
             strength = jnp.asarray(params["strength"], dtype=jnp.float32)
             v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
             v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-            return v_rho, v_grad, "LDA", jnp.asarray(0.0, dtype=jnp.float32)
+            return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
+                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from td_graddft import features as features_mod
+from gradscf import features as features_mod
 
 
 def test_restricted_spin_channels_kernel_preserves_values():

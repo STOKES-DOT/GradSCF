@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from td_graddft.data import basis_from_pyscf_spec, basis_from_spec
-from td_graddft.data.basis import _normalize_raw_shell_coefficients
-from td_graddft.data.pyscf_basis_loader import load_basis_from_snapshot
-from td_graddft.data.integrals import build_hcore, eri_tensor, overlap_matrix
+from gradscf.integrals import basis_from_pyscf_spec, basis_from_spec
+from gradscf.integrals.basis import _normalize_raw_shell_coefficients
+from gradscf.integrals.basis_data import load_basis_from_snapshot
+from gradscf.integrals import build_hcore, eri_tensor, overlap_matrix
 
 
 def _pyscf_or_skip():

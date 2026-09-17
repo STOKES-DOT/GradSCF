@@ -5,14 +5,14 @@ import numpy as np
 import jax.numpy as jnp
 import pytest
 
-from td_graddft.tddft._utils import _symmetrize
-from td_graddft.tddft.unrestricted import (
+from gradscf.tddft._utils import _symmetrize
+from gradscf.tddft.unrestricted import (
     UnrestrictedTDA,
     build_unrestricted_tda_operator,
     build_unrestricted_tdhf_operator,
     solve_unrestricted_casida_from_tdhf_operator,
 )
-import td_graddft.tddft.unrestricted as unrestricted_module
+import gradscf.tddft.unrestricted as unrestricted_module
 
 
 def _toy_unrestricted_reference():

@@ -8,7 +8,7 @@ import pytest
 
 
 def _load_training_tool():
-    path = Path("tools/n2_ccsdt_ground_train5.py")
+    path = Path("tests/comparisons/n2_ccsdt_ground_train5.py")
     spec = importlib.util.spec_from_file_location("n2_ccsdt_ground_train5", path)
     assert spec is not None
     assert spec.loader is not None

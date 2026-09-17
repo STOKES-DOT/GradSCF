@@ -3,8 +3,8 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 
-import td_graddft.data.molecule as molecule_mod
-from td_graddft.data.molecule import ANGSTROM_TO_BOHR, parse_molecule_spec
+import gradscf.data.molecule as molecule_mod
+from gradscf.data.molecule import ANGSTROM_TO_BOHR, parse_molecule_spec
 
 
 def test_parse_molecule_spec_uses_numpy_for_literal_coordinates(monkeypatch):

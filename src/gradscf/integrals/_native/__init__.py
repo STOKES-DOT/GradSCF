@@ -1,0 +1,31 @@
+"""Private native library loading; public access is through integrals backends."""
+
+from functools import lru_cache
+import ctypes
+from pathlib import Path
+import sys
+
+
+@lru_cache(maxsize=1)
+def register_integrals():
+    """Load only GradSCF's own CPU library and keep its handle alive."""
+    import jax
+
+    suffix = ".dylib" if sys.platform == "darwin" else ".so"
+    library = Path(__file__).parent / "lib" / ("libgradscf_integrals" + suffix)
+    if not library.is_file():
+        raise RuntimeError(
+            "GradSCF native CPU integrals are not built. Run "
+            "`python -m gradscf.integrals._native.build` (requires CMake and a C/C++ compiler)."
+        )
+    handle = ctypes.CDLL(str(library), mode=ctypes.RTLD_LOCAL)
+    targets = {"gradscf_ecp_cpu_v1": "GradSCFECP", "gradscf_integrals_cpu_v1": "GradSCFIntegrals",
+               "gradscf_geometry_jvp_cpu_v1": "GradSCFGeometryJVP",
+               "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP"}
+    for target, symbol in targets.items():
+        if not hasattr(handle, symbol):
+            raise RuntimeError("Native integral library is stale; rebuild with "
+                               "python -m gradscf.integrals._native.build")
+        jax.ffi.register_ffi_target(target, jax.ffi.pycapsule(getattr(handle, symbol)),
+                                    platform="cpu", api_version=1)
+    return handle

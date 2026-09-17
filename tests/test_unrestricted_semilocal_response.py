@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from td_graddft.tddft._unrestricted_semilocal_response import (
+from gradscf.tddft._unrestricted_semilocal_response import (
     UnrestrictedSemilocalResponseFunctional,
     build_spin_transition_factors,
     project_grid_response_to_spin_transition,

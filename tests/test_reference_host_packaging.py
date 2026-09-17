@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from td_graddft.scf.builders import _restricted_reference_array_packaging
+from gradscf.scf.builders import _restricted_reference_array_packaging
 
 
 def test_restricted_reference_array_packaging_uses_numpy_for_nontraced_values(monkeypatch):
-    import td_graddft.scf.builders as reference_mod
+    import gradscf.scf.builders as reference_mod
 
     calls = {"stack": 0}
     original_stack = reference_mod.jnp.stack

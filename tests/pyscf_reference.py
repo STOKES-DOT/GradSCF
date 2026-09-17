@@ -6,32 +6,31 @@ from typing import Any, Literal
 import numpy as np
 import jax.numpy as jnp
 
-from td_graddft.data.basis import basis_from_pyscf_mol_cart
-from td_graddft.data.integrals import (
+from pyscf_adapters import basis_from_pyscf_mol_cart, _local_hfx_features_from_dm
+from gradscf.integrals import (
     build_hcore,
     dipole_matrix,
     eri_tensor,
     overlap_hcore_matrices,
     overlap_matrix,
 )
-from td_graddft.xc_backend.jax_libxc import parse_xc
-from td_graddft.neural_xc.inputs import (
+from gradscf.xc_backend.jax_libxc import parse_xc
+from gradscf.neural_xc.inputs import (
     _local_hfx_features_from_basis_dm,
-    _local_hfx_features_from_dm,
     _local_pt2_feature_from_restricted_orbitals,
 )
-from td_graddft.scf.builders import restricted_molecule_from_spec_with_jax_rks
-from td_graddft.scf.features import (
+from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
+from reference_scf_features import (
     _charge_center,
     _eval_grid_ao,
     _restricted_response_eri_slices_from_mo_tensor,
 )
-from td_graddft.scf.molecules import (
+from gradscf.scf.molecules import (
     QuadratureGrid,
     RestrictedMolecule,
     UnrestrictedMolecule,
 )
-from td_graddft.scf import (
+from gradscf.scf import (
     RHFConfig,
     RKSConfig,
     UKSConfig,
@@ -39,7 +38,7 @@ from td_graddft.scf import (
     run_rks_from_integrals,
     run_uks_from_integrals,
 )
-from td_graddft.data.integrals.jax.packed_eri import eri_pair_matrix_to_mo_eri_slices
+from gradscf.integrals.backends.jax_reference.packed_eri import eri_pair_matrix_to_mo_eri_slices
 
 
 def _hybrid_fraction_from_mf(mf: Any) -> float:
@@ -109,7 +108,7 @@ def restricted_reference_from_pyscf(
     hfx_omega_values: tuple[float, ...] = (0.0, 0.4),
     hfx_chunk_size: int = 512,
 ) -> RestrictedMolecule:
-    """Convert a restricted PySCF SCF/DFT object to a TD-GradDFT-ready reference."""
+    """Convert a restricted PySCF SCF/DFT object to a GradSCF-ready reference."""
 
     try:
         from pyscf.dft import numint
@@ -211,7 +210,7 @@ def restricted_reference_from_pyscf(
 
 
 def unrestricted_reference_from_pyscf(mf: Any) -> UnrestrictedMolecule:
-    """Convert an unrestricted PySCF SCF/DFT object to a TD-GradDFT-ready reference."""
+    """Convert an unrestricted PySCF SCF/DFT object to a GradSCF-ready reference."""
 
     try:
         from pyscf.dft import numint

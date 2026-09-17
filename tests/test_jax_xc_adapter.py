@@ -2,9 +2,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from td_graddft import upstreams
-from td_graddft.xc_backend.jax_libxc import RestrictedFeatureBundle
-from td_graddft.xc_backend.jax_xc_adapter import load_jax_xc
+from gradscf import upstreams
+from gradscf.xc_backend.jax_libxc import RestrictedFeatureBundle
+from gradscf.xc_backend.jax_xc_adapter import load_jax_xc
 
 
 def _features():
@@ -34,7 +34,7 @@ def _factory(value):
 
 
 def test_load_jax_xc_backend_exposes_installed_factory(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     original_import_module = jax_xc_adapter.importlib.import_module
 
@@ -58,7 +58,7 @@ def test_load_jax_xc_backend_exposes_installed_factory(monkeypatch):
 
 
 def test_load_jax_xc_raises_when_installed_backend_is_missing(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     def missing_import(name):
         if name == "jax_xc":
@@ -72,7 +72,7 @@ def test_load_jax_xc_raises_when_installed_backend_is_missing(monkeypatch):
 
 
 def test_has_jax_xc_false_when_adapter_cannot_load(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     monkeypatch.setattr(
         upstreams,
@@ -84,7 +84,7 @@ def test_has_jax_xc_false_when_adapter_cannot_load(monkeypatch):
 
 
 def test_load_jax_xc_wraps_known_hybrid_composites(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     original_import_module = jax_xc_adapter.importlib.import_module
 
@@ -114,7 +114,7 @@ def test_load_jax_xc_wraps_known_hybrid_composites(monkeypatch):
 
 
 def test_jax_xc_functional_info_classifies_strict_wrapped_and_experimental(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -143,7 +143,7 @@ def test_jax_xc_functional_info_classifies_strict_wrapped_and_experimental(monke
 
 
 def test_list_jax_xc_functionals_can_filter_by_status(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -162,7 +162,7 @@ def test_list_jax_xc_functionals_can_filter_by_status(monkeypatch):
 
 
 def test_jax_xc_functional_info_classifies_active_mgga_names_dynamically(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -188,7 +188,7 @@ def test_jax_xc_functional_info_classifies_active_mgga_names_dynamically(monkeyp
 
 
 def test_jax_xc_functional_info_discovers_active_lda_gga_names_dynamically(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -219,8 +219,8 @@ def test_jax_xc_functional_info_discovers_active_lda_gga_names_dynamically(monke
 
 
 def test_jax_libxc_and_adapter_share_functional_metadata_surface(monkeypatch):
-    import td_graddft.xc_backend.jax_libxc as jax_libxc
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_libxc as jax_libxc
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -248,7 +248,7 @@ def test_jax_libxc_and_adapter_share_functional_metadata_surface(monkeypatch):
 
 
 def test_eval_jax_xc_from_restricted_features_passes_runtime_omega(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     seen = []
 
@@ -283,7 +283,7 @@ def test_eval_jax_xc_from_restricted_features_passes_runtime_omega(monkeypatch):
 
 
 def test_eval_jax_xc_from_unrestricted_features_uses_polarized_density(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     seen = []
 
@@ -315,7 +315,7 @@ def test_eval_jax_xc_from_unrestricted_features_uses_polarized_density(monkeypat
 
 
 def test_unrestricted_zero_spin_gradient_has_finite_second_derivative(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -357,7 +357,7 @@ def test_unrestricted_zero_spin_gradient_has_finite_second_derivative(monkeypatc
 
 
 def test_eval_jax_xc_from_restricted_features_requires_experimental_opt_in(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"
@@ -388,7 +388,7 @@ def test_eval_jax_xc_from_restricted_features_requires_experimental_opt_in(monke
 
 
 def test_eval_jax_xc_from_restricted_features_passes_mgga_mo_fn_and_tau(monkeypatch):
-    import td_graddft.xc_backend.jax_xc_adapter as jax_xc_adapter
+    import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
 
     class FakeModule:
         __version__ = "fake"

@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — GradSCF
+
+- Rename the distribution and Python namespace from `td-graddft` / `td_graddft`
+  to `gradscf`; rename `td_graddft_tools` to `gradscf_tools`.
+- Update active imports, dynamic module paths, package-data declarations,
+  examples, command-line tools, and contributor documentation.
+- Retain scientific method names, upstream GradDFT names, historical
+  reproducibility artifacts, and the existing NPZ target-bundle format marker.
+- Retire the old import namespaces without a compatibility alias.
+
+### SCF and native integrals
+
+- Add RHF/UHF, ROHF/ROKS, and GHF/GKS workflows and opt-in UHF/UKS
+  internal-stability analysis with bounded lower-energy restarts.
+- Consolidate convergence, DIIS, and energy/Fock assembly; reuse converged
+  RKS results when preparing response references.
+- Unify implicit/unrolled SCF differentiation and force-training helpers;
+  retain only the current XC binding protocols.
+- Consolidate integral code, full basis assets, and vendored native sources
+  under `gradscf.integrals`; remove production PySCF/GPU4PySCF calls.
+- Add native coordinate JVP/VJP and mixed force/parameter differentiation.
+  Native basis derivatives and pure coordinate Hessians remain unsupported.
+
+### Periodic calculations
+
+- Add neutral 3D GTH Gaussian HF/DFT at Gamma and uniform k meshes, with
+  FFT density fitting and q=0 TDA/TDDFT. Complex k-point full TDDFT uses
+  a bounded dense solver; metals, finite-q response, and low-dimensional
+  electrostatics are not supported.
+- Reject cached periodic response results after cell or FFT mesh changes
+  until the SCF reference is recomputed.
+- Add fixed-density LDA/GGA band queries and restricted Gamma velocity-gauge
+  oscillator strengths including the nonlocal GTH commutator.
+- Add reproducible silicon/diamond band and silicon Gamma TDDFT spectrum
+  comparisons with PySCF. Gamma strengths are not macroscopic absorption
+  coefficients; basis and k-mesh convergence are not claimed.
+
 ## 1.0.0 - 2026-08-24
 
 ### Features

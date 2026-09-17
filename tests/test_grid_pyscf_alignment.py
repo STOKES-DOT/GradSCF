@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from td_graddft.data.grid import (
+from gradscf.integrals.grids import (
     BRAGG_RADII,
     BUNDLED_LEBEDEV_POINTS,
     TREUTLER_XI,
@@ -17,7 +17,7 @@ from td_graddft.data.grid import (
     _load_lebedev_table_np,
     build_molecular_grid,
 )
-from td_graddft.data.molecule import parse_molecule_spec
+from gradscf.data.molecule import parse_molecule_spec
 
 
 def _pyscf_grid(atom: str, *, level: int):
@@ -71,7 +71,7 @@ def test_bundled_lebedev_tables_cover_supported_pyscf_levels(npoints):
 def test_all_supported_element_level_counts_and_constants_match_pyscf():
     from pyscf.dft import gen_grid, radi
 
-    for charge in range(1, 37):
+    for charge in range(1, 55):
         assert BRAGG_RADII[charge] == pytest.approx(float(radi.BRAGG_RADII[charge]), abs=0.0)
         assert TREUTLER_XI[charge] == pytest.approx(
             float(radi._treutler_ahlrichs_xi[charge]), abs=0.0

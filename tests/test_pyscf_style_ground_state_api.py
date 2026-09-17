@@ -5,7 +5,7 @@ import types
 import jax.numpy as jnp
 import pytest
 
-from td_graddft import gto, scf
+from gradscf import gto, scf
 
 
 def test_gto_m_stores_pyscf_style_molecule_fields():
@@ -79,17 +79,17 @@ def test_rks_kernel_runs_ground_state_without_building_reference(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "td_graddft.scf.facade.restricted_molecule_from_spec_with_jax_rks",
+        "gradscf.scf.facade.restricted_molecule_from_spec_with_jax_rks",
         forbidden_reference_builder,
     )
-    monkeypatch.setattr("td_graddft.scf.facade.configure_jax_persistent_cache", fake_cache)
+    monkeypatch.setattr("gradscf.scf.facade.configure_jax_persistent_cache", fake_cache)
     monkeypatch.setattr(
-        "td_graddft.scf.facade.build_rks_integral_inputs",
+        "gradscf.scf.facade.build_rks_integral_inputs",
         fake_inputs,
         raising=False,
     )
     monkeypatch.setattr(
-        "td_graddft.scf.facade.run_rks_from_integrals",
+        "gradscf.scf.facade.run_rks_from_integrals",
         fake_runner,
         raising=False,
     )
@@ -108,7 +108,7 @@ def test_rks_kernel_runs_ground_state_without_building_reference(monkeypatch):
     assert captured["atom"].symbols == ("H", "H")
     assert captured["basis"] == "sto-3g"
     assert captured["xc_spec"] == "pbe"
-    assert captured["init_guess"] == "minao"
+    assert captured["init_guess"] == "hcore"
     assert captured["integral_backend"] == "cpu"
     assert captured["libcint_geometry_grad_policy"] == "analytic"
     assert captured["config"].jk_backend == "full"
@@ -129,7 +129,7 @@ def test_rks_lazy_reference_passes_hfx_feature_options(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "td_graddft.scf.facade.restricted_molecule_from_spec_with_jax_rks",
+        "gradscf.scf.facade.restricted_molecule_from_spec_with_jax_rks",
         fake_builder,
     )
 
@@ -158,7 +158,7 @@ def test_tdscf_builds_reference_lazily_after_ground_state_kernel(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "td_graddft.scf.facade.restricted_molecule_from_spec_with_jax_rks",
+        "gradscf.scf.facade.restricted_molecule_from_spec_with_jax_rks",
         fake_builder,
     )
 
@@ -190,10 +190,10 @@ def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
         return kwargs["cache_dir"]
 
     monkeypatch.setattr(
-        "td_graddft.scf.facade.unrestricted_molecule_from_spec_with_jax_uks",
+        "gradscf.scf.facade.unrestricted_molecule_from_spec_with_jax_uks",
         fake_builder,
     )
-    monkeypatch.setattr("td_graddft.scf.facade.configure_jax_persistent_cache", fake_cache)
+    monkeypatch.setattr("gradscf.scf.facade.configure_jax_persistent_cache", fake_cache)
 
     mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2)
     mf = scf.UKS(mol, xc="pbe")
@@ -211,7 +211,7 @@ def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
 
 def test_rks_run_and_backend_helpers(monkeypatch):
     monkeypatch.setattr(
-        "td_graddft.scf.facade.build_rks_integral_inputs",
+        "gradscf.scf.facade.build_rks_integral_inputs",
         lambda **kwargs: types.SimpleNamespace(
             geometry_is_traced=False,
             integral_backend=kwargs["integral_backend"],
@@ -220,7 +220,7 @@ def test_rks_run_and_backend_helpers(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "td_graddft.scf.facade.run_rks_from_integrals",
+        "gradscf.scf.facade.run_rks_from_integrals",
         lambda **kwargs: types.SimpleNamespace(
             total_energy=-1.0,
             mo_energy=None,
@@ -247,8 +247,8 @@ def test_nuc_grad_method_reports_explicit_scf_gradient_is_disabled():
 
 
 def test_top_level_import_exposes_gto_and_scf_modules():
-    assert importlib.import_module("td_graddft.gto") is gto
-    assert importlib.import_module("td_graddft.scf") is scf
+    assert importlib.import_module("gradscf.gto") is gto
+    assert importlib.import_module("gradscf.scf") is scf
 
 
 def test_real_rks_kernel_smoke_sto3g_h2():
