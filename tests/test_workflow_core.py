@@ -3,7 +3,7 @@ import math
 import pytest
 
 import jax.numpy as jnp
-from gradscf.training import MolecularTrainingConfig
+from gradscf.model.training import MolecularTrainingConfig
 
 from gradscf.workflows.core import (
     _canonicalize_graddft_ground_state_config,

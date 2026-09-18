@@ -6,7 +6,7 @@ from pathlib import Path
 import jax.numpy as jnp
 import numpy as np
 
-from gradscf.spectra import HARTREE_TO_EV
+from gradscf.tools.spectra import HARTREE_TO_EV
 
 from .types import (
     MoleculeRun,

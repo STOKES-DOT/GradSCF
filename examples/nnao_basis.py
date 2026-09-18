@@ -10,7 +10,7 @@ import numpy as np
 from flax import nnx
 from gradscf import integrals
 from gradscf.data.molecule import atomic_number
-from nnao import MACEBasisModel, build_graph, prepare_direct_basis, supported_elements
+from gradscf.model.nnao import MACEBasisModel, build_graph, prepare_direct_basis, supported_elements
 
 
 def main():

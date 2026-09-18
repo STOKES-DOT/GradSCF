@@ -9,16 +9,16 @@ from flax import linen as nn
 from jax.lax import Precision
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from ..features import (
+from ...tools.features import (
     grid_features_for_molecule,
     restricted_feature_bundle_from_response_variables,
     restricted_transition_response_features,
 )
-from ..tddft._unrestricted_semilocal_response import (
+from ...tddft._unrestricted_semilocal_response import (
     pack_spin_grid_tangents,
     unpack_spin_grid_response,
 )
-from ..xc_backend.jax_libxc import RestrictedFeatureBundle
+from ...dft.libxc_jax.jax_libxc import RestrictedFeatureBundle
 from .components import (
     SemilocalEnergyDensityFn,
     SemilocalEnergyDensityModule,

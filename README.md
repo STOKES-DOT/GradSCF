@@ -6,7 +6,8 @@ The Python package is `gradscf`; the import namespace
 is `gradscf`.
 
 ```python
-from gradscf import dft, gto, scf, neural_xc, tdscf, training
+from gradscf import dft, gto, scf, tdscf
+from gradscf.model import neural_xc, training
 ```
 
 GradSCF was previously named GradTDDFT. The canonical imports are now
@@ -63,7 +64,7 @@ before a long run:
 ```bash
 python - <<'PY'
 import jax
-from gradscf.xc_backend import jax_xc_backend_info
+from gradscf.dft.libxc_jax import jax_xc_backend_info
 
 print(jax.devices())
 print(jax_xc_backend_info())
@@ -320,11 +321,11 @@ e_xc^NN(r) = sum_k c_k(r) e_k^semilocal(r)
              + c_PT2(r) e_PT2(r)       # optional
 ```
 
-Construct the model through the public `neural_xc` namespace:
+Construct the model through the public `gradscf.model.neural_xc` namespace:
 
 ```python
-from gradscf import neural_xc
-from gradscf.xc_backend import b3lyp_component_basis
+from gradscf.model import neural_xc
+from gradscf.dft.libxc_jax import b3lyp_component_basis
 
 functional = neural_xc.Functional(
     architecture="graddft_residual",
@@ -553,7 +554,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## Traditional XC Support
 
-Conventional XC labels are parsed by `gradscf.xc_backend.jax_libxc` and
+Conventional XC labels are parsed by `gradscf.dft.libxc_jax.jax_libxc` and
 evaluated with `jax-xc`. Strict default components include:
 
 ```text
@@ -749,7 +750,7 @@ continuous inputs. Coordinates are Bohr; Hartree energies give Hartree/Bohr forc
 
 ```python
 import jax
-from gradscf.training import energy_and_forces, make_force_loss_and_grad
+from gradscf.model.training import energy_and_forces, make_force_loss_and_grad
 
 # energy_fn closes over the chosen SCF method and differentiation policy.
 prediction = energy_and_forces(energy_fn, params, coordinates)
@@ -925,26 +926,26 @@ including numerical arrays, figures, tolerances, and execution metadata.
 
 ## MACE-conditioned basis assembly
 
-The optional `nnao` package provides per-atom SZP3 templates for 34 main-group
+The optional `gradscf.model.nnao` package provides per-atom SZP3 templates for 34 main-group
 elements through Xe, including F/Cl/Br/I. MACE invariant features generate
 independent outer s/p contraction ratios, while 3-21G core shells and
 single-primitive polarization shells remain fixed. This is an unoptimized
 all-electron initialization and an assembly/AD foundation, not an SCF-trained
 basis or a claim of heavy-element relativistic accuracy.
 
-See [NNAO usage and scope](src/nnao/NNAO.md) and
+See [NNAO usage and scope](src/gradscf/model/nnao/NNAO.md) and
 [the runnable example](examples/nnao_basis.py). Molecular parsing and DFT grid
 constants now cover Z=1–54; individual basis, ECP, response, and periodic
 capabilities retain their separate limits.
 
 ### Direct Grimme-family coefficients
 
-`nnao.prepare_grimme_basis` and `MACEBasisModel(basis_family="qvszps")` use
+`gradscf.model.nnao.prepare_grimme_basis` and `MACEBasisModel(basis_family="qvszps")` use
 Grimme's official qavg-vSZPs primitive pool and scalar ECP. MACE directly
 predicts full signed s/p/d contraction vectors; reference coefficients only
 initialize a trainable bias, with no reference-plus-delta term in forward.
 The fixed upstream commit and CC-BY-4.0 license are recorded in
-[`src/nnao/data/qvszps/NOTICE.md`](src/nnao/data/qvszps/NOTICE.md).
+[`src/gradscf/model/nnao/data/qvszps/NOTICE.md`](src/gradscf/model/nnao/data/qvszps/NOTICE.md).
 
 Rebuild the native library for scalar ECP support. macOS uses Accelerate;
 on Linux, if CMake cannot discover an existing LP64 BLAS runtime, specify
@@ -964,7 +965,7 @@ The three-primitive `szp3_direct` comparison uses: three fixed 3-21G
 primitives for each inner radial shell, three primitives per single-zeta
 valence s/p function, and direct MACE coefficient outputs. No ECP potential
 or core-electron subtraction is used. The earlier Grimme/ECP experiment
-remains an explicitly selected comparison. Use `nnao.prepare_direct_basis`
+remains an explicitly selected comparison. Use `gradscf.model.nnao.prepare_direct_basis`
 and `MACEBasisModel(basis_family="szp3_direct")`; select this mode explicitly for the three-primitive comparison. This is a custom all-electron basis, not q-vSZPs.
 
 The current default is `szp442_direct`: p-block valence/polarization shells

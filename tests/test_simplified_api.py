@@ -4,7 +4,7 @@ from gradscf import (
     run_pipeline,
     run_spectrum_pipeline,
 )
-from gradscf.api import (
+from gradscf.tools.api import (
     MoleculeConfig as ApiMoleculeConfig,
     build_molecule as api_build_molecule,
     run_pipeline as api_run_pipeline,

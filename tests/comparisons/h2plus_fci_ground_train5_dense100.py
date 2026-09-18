@@ -34,14 +34,14 @@ import optax
 from pyscf import gto, scf
 
 from gradscf.data.hdf5_cache import read_unrestricted_molecule, write_unrestricted_molecule
-from gradscf import neural_xc
-from gradscf.neural_xc import (
+from gradscf.model import neural_xc
+from gradscf.model.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
 from gradscf.scf import UKSConfig, unrestricted_molecule_from_spec_with_jax_uks
-from gradscf.training import (
+from gradscf.model.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,

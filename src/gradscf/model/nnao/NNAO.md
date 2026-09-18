@@ -78,7 +78,7 @@ follows GradSCF/libcint conventions, including Cartesian angular factors.
 import jax
 jax.config.update('jax_enable_x64', True)
 import jax.numpy as jnp
-from nnao import prepare_basis
+from gradscf.model.nnao import prepare_basis
 from gradscf import integrals
 
 layout = prepare_basis('H 0 0 0; I 0 0 1.6', unit='Angstrom')
@@ -108,11 +108,11 @@ The extra pins MACE-JAX to the upstream commit. Upstream requires JAX >=0.10,
 Flax NNX, cuEquivariance, and e3nn/PyTorch for CG constants even though neural
 execution and differentiation use JAX. No dependency installation is performed
 by importing GradSCF or by the adapter. Developers may instead install the
-unchanged snapshot as `pip install -e src/nnao`.
+unchanged snapshot as `pip install -e src/gradscf/model/nnao`.
 
 ```python
 from flax import nnx
-from nnao import MACEBasisModel, build_graph
+from gradscf.model.nnao import MACEBasisModel, build_graph
 
 model = MACEBasisModel(elements=(1, 53), rngs=nnx.Rngs(0))
 graph = build_graph([1, 53], [[0, 0, 0], [0, 0, 1.6]],

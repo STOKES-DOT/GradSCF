@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from ..scf.autodiff import normalize_scf_gradient_mode
+from ...scf.autodiff import normalize_scf_gradient_mode
 
 
 def _pytree_dataclass(*, static_fields: tuple[str, ...] = ()):

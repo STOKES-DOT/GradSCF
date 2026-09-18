@@ -11,7 +11,7 @@ from jaxtyping import Array, PyTree
 
 from gradscf.integrals import eri_pair_matrix_to_mo_eri_slices
 from gradscf.integrals.layouts import _metadata_arrays, _mo_pair_products
-from ..features import (
+from ...tools.features import (
     grid_features_for_molecule,
     requires_unrestricted_spin_treatment,
 )
@@ -23,7 +23,7 @@ from .inputs import (
     hfx_nu_source,
     is_chunked_hfx_nu,
 )
-from ..xc_backend.jax_libxc import RestrictedFeatureBundle
+from ...dft.libxc_jax.jax_libxc import RestrictedFeatureBundle
 
 
 class NeuralXCProjectionMixin:

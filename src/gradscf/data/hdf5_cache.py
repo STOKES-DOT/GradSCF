@@ -189,7 +189,7 @@ def read_restricted_molecule(
             kwargs[field] = _read_array(group, field, array_backend=array_backend)
     hfx_nu_api = None
     if hfx_nu_storage == "chunked" and "hfx_nu" in group:
-        from gradscf.neural_xc.inputs import ChunkedHFXNu
+        from gradscf.model.neural_xc.inputs import ChunkedHFXNu
 
         hfx_nu_api = ChunkedHFXNu.from_hdf5_dataset(
             str(group.file.filename),
@@ -258,7 +258,7 @@ def read_unrestricted_molecule(
             kwargs[field] = _read_array(group, field, array_backend=array_backend)
     hfx_nu_api = None
     if hfx_nu_storage == "chunked" and "hfx_nu" in group:
-        from gradscf.neural_xc.inputs import ChunkedHFXNu
+        from gradscf.model.neural_xc.inputs import ChunkedHFXNu
 
         hfx_nu_api = ChunkedHFXNu.from_hdf5_dataset(
             str(group.file.filename),

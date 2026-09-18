@@ -12,17 +12,18 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from gradscf import neural_xc, tdscf
-from gradscf.device import put_molecule_on_device, resolve_execution_device
-from gradscf.jax_runtime import configure_jax_persistent_cache
+from gradscf import tdscf
+from gradscf.model import neural_xc
+from gradscf.tools.device import put_molecule_on_device, resolve_execution_device
+from gradscf.tools.jax_runtime import configure_jax_persistent_cache
 from gradscf.scf.builders import (
     restricted_molecule_from_spec_with_jax_rks,
     unrestricted_molecule_from_spec_with_jax_uks,
 )
 from gradscf.scf import RHFConfig, RKSConfig, UKSConfig
 from gradscf.scf.autodiff import normalize_scf_gradient_mode
-from gradscf.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
-from gradscf.training import (
+from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
+from gradscf.model.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
     create_train_state_from_molecule,

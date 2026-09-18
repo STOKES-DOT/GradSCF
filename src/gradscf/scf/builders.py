@@ -10,8 +10,8 @@ import numpy as np
 from gradscf.integrals import precompile_eri_kernels
 from gradscf.integrals.input_types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
-from ..xc_backend.jax_libxc import hybrid_coeff, parse_xc
-from ..neural_xc.inputs import (
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff, parse_xc
+from ..model.neural_xc.inputs import (
     _local_hfx_features_from_basis_dm,
     _local_pt2_feature_and_fock_response_from_restricted_orbitals,
     _local_pt2_feature_from_unrestricted_orbitals,

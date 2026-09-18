@@ -40,10 +40,10 @@ import numpy as np
 import optax
 from pyscf import dft, gto
 
-from gradscf import neural_xc
+from gradscf.model import neural_xc
 from gradscf.data.hdf5_cache import read_restricted_molecule, write_restricted_molecule
-from gradscf.xc_backend.jax_libxc import b3lyp_component_basis
-from gradscf.neural_xc import (
+from gradscf.dft.libxc_jax.jax_libxc import b3lyp_component_basis
+from gradscf.model.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
@@ -51,9 +51,9 @@ from gradscf.neural_xc import (
 )
 from pyscf_adapters import build_chunked_hfx_nu_from_mol
 from pyscf_data_reference import restricted_reference_from_pyscf
-from gradscf.neural_xc.inputs import ChunkedHFXNu
-from gradscf.spectra import HARTREE_TO_EV
-from gradscf.training import (
+from gradscf.model.neural_xc.inputs import ChunkedHFXNu
+from gradscf.tools.spectra import HARTREE_TO_EV
+from gradscf.model.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,

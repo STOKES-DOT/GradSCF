@@ -12,7 +12,7 @@ from gradscf.integrals.basis import BasisTopology, BasisParameters
 
 @lru_cache(maxsize=1)
 def _templates():
-    return json.loads(files('nnao').joinpath('data/szp3.json').read_text())['elements']
+    return json.loads(files('gradscf.model.nnao').joinpath('data/szp3.json').read_text())['elements']
 
 
 def supported_elements():

@@ -7,7 +7,7 @@ from gradscf import integrals
 
 
 def grimme():
-    m=importlib.import_module('nnao')
+    m=importlib.import_module('gradscf.model.nnao')
     assert hasattr(m,'prepare_grimme_basis'),'Direct Grimme basis API is missing'
     return m.prepare_grimme_basis
 
@@ -57,14 +57,14 @@ def test_native_ecp_matches_pyscf(symbol,cart):
 
 def test_mace_exposes_direct_basis_family():
     import inspect
-    from nnao.encoder import MACEBasisModel
+    from gradscf.model.nnao.encoder import MACEBasisModel
     assert 'basis_family' in inspect.signature(MACEBasisModel.__init__).parameters
 
 
 def test_real_mace_predicts_direct_coefficients():
     pytest.importorskip('cuequivariance');pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     b=grimme()('C 0 0 0; H 0 0 1.09')
     model=MACEBasisModel(elements=(1,6),channels=4,num_interactions=1,max_ell=1,
                          basis_family='qvszps',rngs=nnx.Rngs(1))
@@ -107,7 +107,7 @@ def test_direct_ecp_geometry_ad_is_explicitly_unsupported():
 
 
 def test_all_main_group_grimme_templates():
-    from nnao import supported_elements
+    from gradscf.model.nnao import supported_elements
     for symbol in supported_elements():
         b=grimme()(f'{symbol} 0 0 0')
         p=b.bind(b.reference_outputs())

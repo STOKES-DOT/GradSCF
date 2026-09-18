@@ -14,8 +14,8 @@ from gradscf.integrals import (
     overlap_hcore_matrices,
     overlap_matrix,
 )
-from gradscf.xc_backend.jax_libxc import parse_xc
-from gradscf.neural_xc.inputs import (
+from gradscf.dft.libxc_jax.jax_libxc import parse_xc
+from gradscf.model.neural_xc.inputs import (
     _local_hfx_features_from_basis_dm,
     _local_pt2_feature_from_restricted_orbitals,
 )

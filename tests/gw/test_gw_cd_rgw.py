@@ -39,6 +39,10 @@ def _pyscf_qp_energies():
     from pyscf.gw.gw_cd import GWCD
 
     mol = pgto.M(atom=_H2O_ATOM, basis=_BASIS, cart=True, verbose=0)
+    # The shared remote host can report high memory usage; PySCF's DF-GW
+    # ao2mo guard would then spuriously raise NotImplementedError.  Force
+    # incore behavior so the comparison is environment-independent.
+    mol.incore_anyway = True
     mf = pscf.RHF(mol).run()
     gw = GWCD(mf)
     gw.kernel(nw=_NW)

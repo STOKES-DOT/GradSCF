@@ -1,5 +1,5 @@
 import pytest
-from gradscf.training import MolecularTrainingConfig
+from gradscf.model.training import MolecularTrainingConfig
 
 from gradscf.workflows import (
     ExperimentConfig,
@@ -12,7 +12,7 @@ from gradscf.workflows import (
     water_experiment_config,
     water_strict_jax_experiment_config,
 )
-from gradscf.neural_xc import (
+from gradscf.model.neural_xc import (
     DEFAULT_NEURAL_XC_COEFFICIENT_PRIOR_MODE,
     DEFAULT_NEURAL_XC_SEMILOCAL_XC,
     DEFAULT_INPUT_FEATURE_MODE,

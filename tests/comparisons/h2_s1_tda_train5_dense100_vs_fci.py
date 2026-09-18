@@ -34,16 +34,16 @@ import numpy as np
 import optax
 from pyscf import ao2mo, fci, gto, scf
 
-from gradscf import neural_xc
+from gradscf.model import neural_xc
 from gradscf.data.hdf5_cache import read_restricted_molecule, write_restricted_molecule
-from gradscf.neural_xc import (
+from gradscf.model.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NEURAL_XC_RESPONSE_HF_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
-from gradscf.spectra import HARTREE_TO_EV
-from gradscf.training import (
+from gradscf.tools.spectra import HARTREE_TO_EV
+from gradscf.model.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,

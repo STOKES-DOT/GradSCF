@@ -6,7 +6,7 @@ import pytest
 from pyscf_adapters import basis_from_pyscf_mol_cart
 from gradscf.integrals import eri_element, overlap_element
 from pyscf_reference import unrestricted_reference_from_pyscf
-from gradscf.spectra import oscillator_strengths
+from gradscf.tools.spectra import oscillator_strengths
 from gradscf.tddft import UnrestrictedTDA
 
 

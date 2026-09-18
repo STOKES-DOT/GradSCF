@@ -13,7 +13,7 @@ from jaxtyping import Array, PyTree
 
 from gradscf.integrals import build_j_from_eri_pair_matrix
 from ..df import build_j_from_df, build_jk_from_df
-from ..neural_xc.inputs import (
+from ..model.neural_xc.inputs import (
     hfx_nu_source,
 )
 from .core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer

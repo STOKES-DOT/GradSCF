@@ -9,7 +9,7 @@ import numpy as np
 from jax.lax import Precision
 from jaxtyping import Array
 
-from ..features import (
+from ..tools.features import (
     infer_response_feature_kind,
     normalize_response_feature_kind,
 )

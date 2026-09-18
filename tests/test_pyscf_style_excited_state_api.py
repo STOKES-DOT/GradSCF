@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from gradscf import gto, scf, tdscf
-from gradscf.spectra import HARTREE_TO_EV
+from gradscf.tools.spectra import HARTREE_TO_EV
 
 
 def test_tdscf_facade_defaults_match_pyscf_tda_solver_settings():

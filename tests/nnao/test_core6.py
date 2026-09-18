@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from nnao import prepare_direct_basis
+from gradscf.model.nnao import prepare_direct_basis
 from gradscf.integrals.basis_data import load_basis_from_snapshot
 
 
@@ -74,7 +74,7 @@ def test_core6_integrals_match_independent_reference(symbol):
 def test_real_mace_assembles_default_core6_without_larger_head():
     pytest.importorskip('cuequivariance');pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     b=prepare_direct_basis('C 0 0 0; H 0 0 1.09')
     model=MACEBasisModel(elements=(1,6),channels=4,num_interactions=1,max_ell=1,rngs=nnx.Rngs(0))
     graph=build_graph([6,1],[[0,0,0],[0,0,1.09]],element_order=model.elements)

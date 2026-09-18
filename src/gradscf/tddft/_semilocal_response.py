@@ -4,8 +4,8 @@ from dataclasses import dataclass
 import weakref
 import jax.numpy as jnp
 
-from gradscf.features import _contains_tracer, restricted_grid_response_variables
-from gradscf.xc_backend.jax_libxc import eval_xc_response_tensor, hybrid_coeff, xc_type
+from gradscf.tools.features import _contains_tracer, restricted_grid_response_variables
+from gradscf.dft.libxc_jax.jax_libxc import eval_xc_response_tensor, hybrid_coeff, xc_type
 
 
 _GRID_RESPONSE_TENSOR_CACHE: dict[

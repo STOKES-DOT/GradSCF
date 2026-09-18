@@ -21,7 +21,7 @@ import numpy as np
 from gradscf import integrals, scf
 from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals
 from gradscf.scf.rks import RKSConfig,run_rks_from_integrals_traceable
-from nnao import prepare_basis
+from gradscf.model.nnao import prepare_basis
 
 
 class MethaneRHF:
@@ -43,10 +43,10 @@ class MethaneRHF:
                 raise ValueError('Invalid molecular geometry.')
             self.molecule=geometry['name'];self.bond=None
         if basis_family=='qvszps':
-            from nnao import prepare_grimme_basis
+            from gradscf.model.nnao import prepare_grimme_basis
             self.layout=prepare_grimme_basis(list(zip(self.symbols,self.coords)),unit='Angstrom')
         elif basis_family in {'szp3_direct','szp442_direct','szp663_direct'}:
-            from nnao import prepare_direct_basis
+            from gradscf.model.nnao import prepare_direct_basis
             self.layout=prepare_direct_basis(list(zip(self.symbols,self.coords)),unit='Angstrom',basis_family=basis_family,core_primitives=core_primitives)
         elif basis_family=='szp3':
             self.layout=prepare_basis(list(zip(self.symbols,self.coords)),unit='Angstrom')
@@ -134,7 +134,7 @@ def optimize(*,bond=1.09,maxiter=80,basis_family='szp442_direct',core_primitives
     from flax import nnx,serialization
     from jax.flatten_util import ravel_pytree
     from scipy.optimize import minimize
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     jax.config.update('jax_enable_x64',True)
     start=time.perf_counter();output_dir=Path(output_dir);output_dir.mkdir(parents=True,exist_ok=True)
     from gradscf.data.molecule import atomic_number

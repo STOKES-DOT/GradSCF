@@ -18,14 +18,14 @@ from gradscf.integrals import (
 )
 from gradscf.integrals.jk import _DIRECT_PACKED_JK_MAX_NAO
 from ..df import build_j_from_df, build_jk_from_df, build_jk_from_df_orbitals, eri_to_df_factors
-from ..features import (
+from ..tools.features import (
     MoleculeLikeState,
     _spin_density_and_gradient,
     _spin_tau,
     molecule_grid_view,
     restricted_grid_features_with_gradients,
 )
-from ..xc_backend.jax_libxc import (
+from ..dft.libxc_jax.jax_libxc import (
     eval_xc_energy_density,
     hybrid_coeff,
     parse_xc,

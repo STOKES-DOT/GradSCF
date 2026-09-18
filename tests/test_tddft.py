@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-import gradscf.features as features_module
+import gradscf.tools.features as features_module
 import gradscf.tddft.casida as casida_module
 import gradscf.tddft._semilocal_response as semilocal_response_module
 import gradscf.tddft.response as response_module

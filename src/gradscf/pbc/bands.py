@@ -3,7 +3,7 @@ import numpy as np
 import jax.numpy as jnp
 from ..integrals.periodic.fft import build_band_inputs
 from ..integrals.periodic.coulomb import coulomb_kernel
-from ..xc_backend.jax_libxc import hybrid_coeff,xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff,xc_type
 from ._kpoint import grid_xc_potential,project_xc_potential
 
 
