@@ -15,7 +15,7 @@ from ._pytree import pytree_dataclass
 from ._orbital_solver import solve_orbitals
 from .autodiff import SCFDifferentiationConfig, attach_scf_backward, normalize_scf_gradient_mode
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
-from ..xc_backend.jax_libxc import hybrid_coeff, xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type
 
 
 @pytree_dataclass(static_fields=('optimizer_message', 'polishing_status', 'gradient_mode'))

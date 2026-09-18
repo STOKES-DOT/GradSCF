@@ -9,8 +9,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from ..features import grid_features_with_spin_gradients_for_molecule
-from ..xc_backend.jax_libxc import (
+from ..tools.features import grid_features_with_spin_gradients_for_molecule
+from ..dft.libxc_jax.jax_libxc import (
     eval_xc_energy_density_unrestricted_from_density_gradients,
     hybrid_coeff,
     parse_xc,

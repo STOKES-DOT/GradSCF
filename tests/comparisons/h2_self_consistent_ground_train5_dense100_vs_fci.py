@@ -33,7 +33,7 @@ import numpy as np
 import optax
 from pyscf import ao2mo, dft, fci, gto, scf
 
-from gradscf.neural_xc import (
+from gradscf.model.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
@@ -95,8 +95,8 @@ def _load_runtime_dependencies(logger: "RunLogger | None" = None) -> None:
     if _RUNTIME_DEPENDENCIES_LOADED:
         return
 
-    _log("[bootstrap] import gradscf.neural_xc")
-    from gradscf import neural_xc as _neural_xc
+    _log("[bootstrap] import gradscf.model.neural_xc")
+    from gradscf.model import neural_xc as _neural_xc
     _log("[bootstrap] import pyscf_data_reference")
     from pyscf_data_reference import restricted_reference_from_pyscf as _restricted_reference_from_pyscf
     _log("[bootstrap] import gradscf.scf")
@@ -104,10 +104,10 @@ def _load_runtime_dependencies(logger: "RunLogger | None" = None) -> None:
         RKSConfig as _RKSConfig,
         restricted_molecule_from_spec_with_jax_rks as _restricted_molecule_from_spec_with_jax_rks,
     )
-    _log("[bootstrap] import gradscf.spectra")
-    from gradscf.spectra import HARTREE_TO_EV as _HARTREE_TO_EV
-    _log("[bootstrap] import gradscf.training")
-    from gradscf.training import (
+    _log("[bootstrap] import gradscf.tools.spectra")
+    from gradscf.tools.spectra import HARTREE_TO_EV as _HARTREE_TO_EV
+    _log("[bootstrap] import gradscf.model.training")
+    from gradscf.model.training import (
         MolecularTrainingDatum as _MolecularTrainingDatum,
         MolecularTrainingConfig as _MolecularTrainingConfig,
         create_train_state_from_molecule as _create_train_state_from_molecule,
@@ -118,8 +118,8 @@ def _load_runtime_dependencies(logger: "RunLogger | None" = None) -> None:
         make_ground_state_predictor as _make_ground_state_predictor,
         save_params_checkpoint as _save_params_checkpoint,
     )
-    _log("[bootstrap] import gradscf.training.targets")
-    from gradscf.training.targets import predict_excitation_energies as _predict_excitation_energies
+    _log("[bootstrap] import gradscf.model.training.targets")
+    from gradscf.model.training.targets import predict_excitation_energies as _predict_excitation_energies
 
     neural_xc = _neural_xc
     restricted_reference_from_pyscf = _restricted_reference_from_pyscf

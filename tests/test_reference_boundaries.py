@@ -39,7 +39,8 @@ def test_reference_legacy_and_pyscf_adapter_are_not_runtime_modules():
 
 def test_runtime_public_api_does_not_expose_pyscf_bridge_symbols():
     import gradscf
-    from gradscf import dft, upstreams
+    from gradscf import dft
+    from gradscf.tools import upstreams
 
     forbidden = {
         "PySCFRSHSpec",
@@ -118,7 +119,7 @@ def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
 
 def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
     import reference_scf_features as scf_features
-    from gradscf.neural_xc import inputs
+    from gradscf.model.neural_xc import inputs
 
     hidden = (
         "_local_hfx_features_from_basis_dm",
@@ -148,7 +149,7 @@ def test_restricted_response_hvp_uses_factorized_transition_features():
 
 def test_restricted_response_feature_kind_helpers_are_owned_by_features_module():
     import jax.numpy as jnp
-    from gradscf import features as features_module
+    from gradscf.tools import features as features_module
 
     text = Path("src/gradscf/tddft/response.py").read_text()
 

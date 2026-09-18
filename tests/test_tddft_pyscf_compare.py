@@ -6,12 +6,12 @@ import jax
 import jax.numpy as jnp
 
 from pyscf_reference import restricted_reference_from_pyscf
-from gradscf.spectra import oscillator_strengths, transition_dipoles
+from gradscf.tools.spectra import oscillator_strengths, transition_dipoles
 from gradscf.tddft._semilocal_response import SemilocalResponseFunctional
 from gradscf.tddft import RestrictedCasidaTDDFT
 from gradscf.tddft.casida import solve_casida_from_tdhf_operator
 from gradscf.tddft.types import TDDFTResult
-from gradscf.xc_backend.jax_xc_adapter import MissingJAXXCError, load_jax_xc
+from gradscf.dft.libxc_jax.jax_xc_adapter import MissingJAXXCError, load_jax_xc
 
 
 @dataclass(frozen=True)

@@ -8,14 +8,14 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array, PyTree
 
-from ..features import (
+from ...tools.features import (
     grid_features_for_molecule,
     grid_features_with_spin_gradients_for_molecule,
     grid_features_with_gradients_for_molecule,
     has_explicit_spin_axis,
     requires_unrestricted_spin_treatment,
 )
-from ..tddft.cisd import (
+from ...tddft.cisd import (
     restricted_cisd_second_order_correction,
     unrestricted_cisd_second_order_correction,
 )
@@ -26,7 +26,7 @@ from .inputs import (
     hfx_nu_source,
     is_chunked_hfx_nu,
 )
-from ..xc_backend.jax_libxc import RestrictedFeatureBundle
+from ...dft.libxc_jax.jax_libxc import RestrictedFeatureBundle
 
 
 def _pack_restricted_grid_payload(
@@ -690,7 +690,7 @@ class NeuralXCBindingMixin:
         else:
             ao_laplacian_arr = jnp.asarray(ao_laplacian, dtype=functional_dtype)
 
-        from ..scf.rks import _vxc_matrix_from_grid_potential
+        from ...scf.rks import _vxc_matrix_from_grid_potential
 
         vxc_matrix = _vxc_matrix_from_grid_potential(
             ao=ao,

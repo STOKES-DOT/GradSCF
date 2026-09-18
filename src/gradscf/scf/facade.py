@@ -6,7 +6,7 @@ from typing import Any, Literal
 import numpy as np
 
 from ..data.molecule import MoleculeSpec
-from ..jax_runtime import configure_jax_persistent_cache
+from ..tools.jax_runtime import configure_jax_persistent_cache
 from .builders import (
     build_restricted_reference_from_facade,
     build_restricted_scf_result_from_facade,
@@ -124,7 +124,7 @@ class _BaseKS:
     def _put_on_requested_device(self, reference: Any) -> Any:
         if self.execution_device == "auto":
             return reference
-        from ..device import put_molecule_on_device, resolve_execution_device
+        from ..tools.device import put_molecule_on_device, resolve_execution_device
 
         device = resolve_execution_device(self.execution_device)
         return put_molecule_on_device(reference, device=device)

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
 
-from ..features import (
+from ..tools.features import (
     MoleculeLikeState,
     _spin_density_and_gradient,
     molecule_grid_view,
@@ -33,7 +33,7 @@ from .rks import (
     _orthogonalizer,
     _vxc_matrix_from_grid_potential,
 )
-from ..xc_backend.jax_libxc import (
+from ..dft.libxc_jax.jax_libxc import (
     eval_xc_energy_density_unrestricted_from_density_gradients,
     hybrid_coeff,
     parse_xc,

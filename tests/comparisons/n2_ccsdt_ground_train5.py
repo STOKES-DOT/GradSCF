@@ -35,15 +35,15 @@ import numpy as np
 import optax
 from pyscf import cc, dft, gto, scf
 
-from gradscf import neural_xc
+from gradscf.model import neural_xc
 from gradscf.data.hdf5_cache import read_restricted_molecule, write_restricted_molecule
 from pyscf_data_reference import restricted_reference_from_pyscf
-from gradscf.neural_xc import (
+from gradscf.model.neural_xc import (
     DEFAULT_INPUT_FEATURE_MODE,
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
-from gradscf.training import (
+from gradscf.model.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,
@@ -54,7 +54,7 @@ from gradscf.training import (
     load_params_checkpoint,
     save_params_checkpoint,
 )
-from gradscf.training.targets import (
+from gradscf.model.training.targets import (
     _predict_ground_state_total_energy_from_molecule,
     _resolve_training_molecule_and_info_with_mode,
 )

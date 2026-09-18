@@ -1,4 +1,4 @@
-from gradscf import neural_xc
+from gradscf.model import neural_xc
 
 
 def test_functional_facade_builds_current_neural_xc_functional():

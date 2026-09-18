@@ -19,7 +19,7 @@ from .input_types import RKSIntegralInputs, UKSIntegralInputs
 from .input_spin import _unrestricted_spin_electron_counts
 from . import input_grid as _grid
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
-from ..xc_backend.jax_libxc import parse_xc, xc_type
+from ..dft.libxc_jax.jax_libxc import parse_xc, xc_type
 
 
 def _resolve_config(config, xc_spec, config_type):

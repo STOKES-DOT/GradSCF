@@ -1,6 +1,6 @@
 from gradscf import integrals
 from gradscf.integrals.backends.jax_reference import screening
-from gradscf import features
+from gradscf.tools import features
 from gradscf.scf import builders, differentiable, facade, molecules, rhf, rks, uks
 from gradscf.scf import core
 import jax

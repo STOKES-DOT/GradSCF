@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 
-import gradscf.xc_backend.jax_xc_adapter as jax_xc_adapter
-from gradscf.xc_backend.jax_libxc import RestrictedFeatureBundle, eval_xc_energy_density
-from gradscf.traditional_xc import (
+import gradscf.dft.libxc_jax.jax_xc_adapter as jax_xc_adapter
+from gradscf.dft.libxc_jax.jax_libxc import RestrictedFeatureBundle, eval_xc_energy_density
+from gradscf.dft import (
     TraditionalXCFunctional,
     make_b3lyp_functional,
     make_pbe0_functional,

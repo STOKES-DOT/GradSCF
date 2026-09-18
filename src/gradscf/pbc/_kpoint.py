@@ -6,7 +6,7 @@ from ..scf.diis import diis_extrapolate,DIIS_SPACE
 from ..scf.convergence import convergence_reached
 from ..scf.uks import _point_unrestricted_xc_value_and_grad_kernel
 from ..scf.autodiff import SCFDifferentiationConfig,attach_scf_backward
-from ..xc_backend.jax_libxc import hybrid_coeff,xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff,xc_type
 
 
 def energy_and_fock(density,inputs,*,mesh,xc='hf',exxdiv='ewald'):

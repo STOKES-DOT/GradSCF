@@ -21,7 +21,7 @@ from pyscf import dft, gto
 
 from gradscf import tdscf
 from pyscf_data_reference import restricted_reference_from_pyscf
-from gradscf.spectra import HARTREE_TO_EV, lorentzian_spectrum
+from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum
 
 
 jax.config.update("jax_enable_x64", True)

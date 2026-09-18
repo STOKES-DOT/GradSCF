@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from pyscf_reference import unrestricted_reference_from_pyscf
-from gradscf.spectra import oscillator_strengths
+from gradscf.tools.spectra import oscillator_strengths
 from gradscf.tddft import UnrestrictedCasidaTDDFT
 
 

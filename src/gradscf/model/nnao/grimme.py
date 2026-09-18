@@ -18,7 +18,7 @@ from .basis import supported_elements,DirectBasis
 
 @lru_cache(maxsize=1)
 def grimme_templates():
-    root=files('nnao').joinpath('data/qvszps')
+    root=files('gradscf.model.nnao').joinpath('data/qvszps')
     lines=root.joinpath('qavg-vszps_basis_ORCA').read_text().splitlines()
     bases={};symbol=None;i=0
     while i<len(lines):

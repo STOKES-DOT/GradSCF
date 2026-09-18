@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-import gradscf.device as device_module
+import gradscf.tools.device as device_module
 from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule
 
 

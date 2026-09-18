@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
 
-from ..xc_backend.jax_libxc import hybrid_coeff, xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type
 from .core import _contains_jax_tracer, _host_float_unless_traced
 from .facade import _BaseKS
 from gradscf.integrals.assembly import build_uks_integral_inputs
@@ -319,7 +319,7 @@ class GKS(_BaseKS):
                       nuclear_repulsion=inputs.nuclear_repulsion, ao=inputs.ao,
                       ao_deriv1=inputs.ao_deriv1, grid_weights=inputs.grid_weights, init_density=supplied)
         if self.execution_device != "auto":
-            from ..device import resolve_execution_device
+            from ..tools.device import resolve_execution_device
             device = resolve_execution_device(self.execution_device)
             kwargs = jax.tree_util.tree_map(lambda a: jax.device_put(a, device), kwargs)
         result = run_gks_from_integrals(**kwargs, nelectron=self.mol.nelectron, config=cfg)

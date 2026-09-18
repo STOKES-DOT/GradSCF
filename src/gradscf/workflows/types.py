@@ -6,11 +6,11 @@ from typing import Any, Literal
 
 from jaxtyping import Array
 
-from gradscf.jax_runtime import (
+from gradscf.tools.jax_runtime import (
     DEFAULT_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS,
     DEFAULT_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES,
 )
-from gradscf.neural_xc import (
+from gradscf.model.neural_xc import (
     DEFAULT_NEURAL_XC_COEFFICIENT_PRIOR_MODE,
     DEFAULT_NEURAL_XC_HF_INPUT_MODE,
     DEFAULT_NEURAL_XC_RESPONSE_PT2_MODE,
@@ -19,7 +19,7 @@ from gradscf.neural_xc import (
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
-from gradscf.training import MolecularTrainingConfig
+from gradscf.model.training import MolecularTrainingConfig
 
 
 @dataclass(frozen=True)

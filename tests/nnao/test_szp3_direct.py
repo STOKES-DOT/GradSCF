@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from gradscf import integrals
-from nnao import prepare_direct_basis as _prepare_direct_basis
+from gradscf.model.nnao import prepare_direct_basis as _prepare_direct_basis
 from functools import partial
 prepare_direct_basis=partial(_prepare_direct_basis,basis_family="szp3_direct")
 
@@ -62,7 +62,7 @@ def test_methane_all_electron_energy_and_gradient_without_ecp(monkeypatch):
 def test_real_mace_direct_three_primitive_head():
     pytest.importorskip('cuequivariance');pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     b=prepare_direct_basis('C 0 0 0; H 0 0 1.09')
     model=MACEBasisModel(elements=(1,6),channels=4,num_interactions=1,max_ell=1,
                          basis_family='szp3_direct',rngs=nnx.Rngs(0))

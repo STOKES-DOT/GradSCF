@@ -24,7 +24,7 @@ def test_tools_use_neural_xc_facade_constructor():
     for path in TOOLS:
         text = path.read_text()
         if (
-            "from gradscf.neural_xc import make_neural_xc_functional" in text
+            "from gradscf.model.neural_xc import make_neural_xc_functional" in text
             or "make_neural_xc_functional(" in text
         ):
             offenders.append(str(path))

@@ -1,4 +1,4 @@
-"""Traditional XC backend implementations."""
+"""JAX/libxc XC backend implementations (``gradscf.dft.libxc_jax``)."""
 
 from .jax_libxc import (
     JAXXCFunctionalInfo,

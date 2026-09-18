@@ -4,7 +4,7 @@
 
 GradSCF is a Python/JAX toolkit for Hartree-Fock/DFT, differentiable SCF, response theory, and Neural XC training. The distribution and import namespace are both `gradscf`.
 
-- `src/gradscf/`: public facades (`gto`, `dft`, `tdscf`), SCF kernels, response solvers, molecular data, XC models, and training. `src/gradscf/gw/`: differentiable GW — molecular G0W0-CD (R/U), evGW, qsGW, scGW, periodic Gamma/k-point KRGW with q->0 head/wing corrections (see module docstrings for staged AD coverage).
+- `src/gradscf/`: public facades (`gto`, `dft`, `tdscf`), SCF kernels, response solvers, molecular data, and XC (`dft.xc` for classic functionals, `dft/libxc_jax` for the JAX/libxc backends). `src/gradscf/gw/`: differentiable GW — molecular G0W0-CD (R/U), evGW, qsGW, scGW, periodic Gamma/k-point KRGW with q->0 head/wing corrections (see module docstrings for staged AD coverage). `src/gradscf/model/`: neural-network models — `neural_xc` (neural XC functionals), `neural_d` (dispersion), `training` (trainers), `nnao` (MACE-conditioned neural basis sets; vendored mace-jax remains a separate top-level package).
 - `src/gradscf/integrals/`: canonical integral API, basis parameters, execution plans, and input assembly. `backends/jax_reference/` preserves the JAX reference kernels.
 - `native/`: pinned upstream C sources, private C++ FFI, and offline CMake build. Keep vendor files unchanged; record adaptations in patches.
 - `src/gradscf_tools/`: reusable workflow helpers; `tools/` contains experiment and evaluation CLIs.

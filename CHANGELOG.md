@@ -2,6 +2,19 @@
 
 ## Unreleased — GradSCF
 
+- Remove the `gradscf.traditional_xc` compatibility namespace (use
+  `gradscf.dft` / `gradscf.dft.xc` directly), and move the XC backends from
+  `gradscf.xc_backend` to `gradscf.dft.libxc_jax`.
+
+- Move the neural-network model code into the new `gradscf.model` subpackage:
+  `gradscf.neural_xc` -> `gradscf.model.neural_xc`, `gradscf.neural_d` ->
+  `gradscf.model.neural_d`, `gradscf.training` -> `gradscf.model.training`,
+  and the top-level `nnao` package -> `gradscf.model.nnao`.  The vendored
+  mace-jax project remains a separate top-level package (sources unchanged).
+  Top-level `gradscf` symbols (e.g. `Functional`, `make_neural_xc_functional`,
+  `MolecularTrainingConfig`) are unchanged.  No compatibility aliases are
+  kept for the old import paths.
+
 - Rename the distribution and Python namespace from `td-graddft` / `td_graddft`
   to `gradscf`; rename `td_graddft_tools` to `gradscf_tools`.
 - Update active imports, dynamic module paths, package-data declarations,

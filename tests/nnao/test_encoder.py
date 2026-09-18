@@ -6,7 +6,7 @@ import pytest
 
 
 def test_graph_units_elements_and_disconnected_batch():
-    m=importlib.import_module('nnao')
+    m=importlib.import_module('gradscf.model.nnao')
     assert hasattr(m,'build_graph')
     order=(1,9,17,35,53)
     graph=m.build_graph([1,53,1],[[0,0,0],[0,0,2],[0,0,0]],element_order=order,batch=[0,0,1])
@@ -22,7 +22,7 @@ def test_real_mace_equivariance_basis_and_backward():
     pytest.importorskip('cuequivariance')
     pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph,prepare_basis
+    from gradscf.model.nnao import MACEBasisModel,build_graph,prepare_basis
     from gradscf.integrals.contraction import primitive_basis,contraction_matrix
     from gradscf import integrals
     z=[1,9,17,35,53]

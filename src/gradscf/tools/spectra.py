@@ -5,7 +5,7 @@ from typing import Any
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from .tddft import (
+from ..tddft import (
     TDAResult,
     TDDFTResult,
     UnrestrictedTDAResult,

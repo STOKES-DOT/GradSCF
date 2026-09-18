@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from ..xc_backend.jax_libxc import hybrid_coeff, xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type
 from .core import _build_density_from_occ, _contains_jax_tracer, _host_float_unless_traced
 from .core import _diagonalize_fock, _orthogonalizer, _validate_density_matrix
 from .facade import _BaseKS
@@ -255,7 +255,7 @@ class ROKS(_BaseKS):
                       init_density_alpha=inputs.init_density_alpha,
                       init_density_beta=inputs.init_density_beta)
         if self.execution_device != "auto":
-            from ..device import resolve_execution_device
+            from ..tools.device import resolve_execution_device
             device = resolve_execution_device(self.execution_device)
             kwargs = jax.tree_util.tree_map(
                 lambda a: jax.device_put(a, device), kwargs,

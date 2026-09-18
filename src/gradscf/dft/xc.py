@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from jaxtyping import Array
 
-from ..xc_backend.jax_libxc import (
+from ..dft.libxc_jax.jax_libxc import (
     RestrictedFeatureBundle,
     RSHFunctionalPreset,
     canonical_rsh_preset_name,

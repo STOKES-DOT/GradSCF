@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from nnao import prepare_direct_basis as _prepare_direct_basis
+from gradscf.model.nnao import prepare_direct_basis as _prepare_direct_basis
 from functools import partial
 prepare_direct_basis=partial(_prepare_direct_basis,core_primitives=3)
 from gradscf import integrals
@@ -57,7 +57,7 @@ def test_expanded_methane_energy_gradient_for_added_primitives():
 def test_real_mace_expanded_head_and_no_hidden_reference():
     pytest.importorskip('cuequivariance');pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     b=prepare_direct_basis('C 0 0 0; H 0 0 1.09')
     model=MACEBasisModel(elements=(1,6),channels=4,num_interactions=1,max_ell=1,rngs=nnx.Rngs(0))
     g=build_graph([6,1],[[0,0,0],[0,0,1.09]],element_order=model.elements)

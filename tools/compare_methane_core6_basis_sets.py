@@ -21,7 +21,7 @@ import numpy as np
 from gradscf import integrals
 from gradscf.scf import nuclear_repulsion_energy
 from gradscf.scf.rks import RKSConfig,run_rks_from_integrals_traceable
-from nnao import prepare_direct_basis
+from gradscf.model.nnao import prepare_direct_basis
 
 STANDARD_BASES=('sto-3g','3-21g','6-31g','6-31g(d)','6-31g(d,p)',
                 'def2-svp','cc-pvdz','def2-tzvp','cc-pvtz')

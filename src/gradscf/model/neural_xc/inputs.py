@@ -11,8 +11,8 @@ from jax.lax import Precision
 
 from gradscf.integrals import eri_pair_matrix_to_mo_eri_slices, rinv_matrices
 from gradscf.integrals.layouts import _metadata_arrays, _mo_pair_products
-from ..df import df_factors_to_mo_eri_slices
-from ..xc_backend.jax_libxc import RestrictedFeatureBundle
+from ...df import df_factors_to_mo_eri_slices
+from ...dft.libxc_jax.jax_libxc import RestrictedFeatureBundle
 
 _DM21_BETA = 1.0 / 1024.0
 

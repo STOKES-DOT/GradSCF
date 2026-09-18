@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .. import spectra
-from ..spectra import HARTREE_TO_EV
+from ..tools import spectra
+from ..tools.spectra import HARTREE_TO_EV
 from ..tddft.eigensolvers import PYSCF_TD_DAVIDSON_MAX_CYCLE
 from ..tddft.eigensolvers import FULL_TDDFT_DAVIDSON_MAX_CYCLE
 from ..tddft.eigensolvers import PYSCF_TD_DAVIDSON_TOL

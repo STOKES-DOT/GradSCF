@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 import jax
 
-from .scf.molecules import QuadratureGrid, RestrictedMolecule
+from ..scf.molecules import QuadratureGrid, RestrictedMolecule
 
 
 def put_restricted_molecule_on_device(

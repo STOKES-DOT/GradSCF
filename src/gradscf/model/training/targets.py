@@ -9,19 +9,19 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, PyTree
 
-from ..features import grid_features_for_molecule
-from .. import tdscf
-from ..scf import (
+from ...tools.features import grid_features_for_molecule
+from ... import tdscf
+from ...scf import (
     DifferentiableSCF,
     DifferentiableSCFConfig,
     UKSConfig,
     run_uks_from_integrals,
 )
 from gradscf.integrals import build_j_from_eri_pair_matrix, build_jk_from_eri_pair_matrix
-from ..df import build_j_from_df, build_jk_from_df
-from ..scf.rks import _vxc_matrix_from_grid_potential
-from ..spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
-from ..tddft.response_options import (
+from ...df import build_j_from_df, build_jk_from_df
+from ...scf.rks import _vxc_matrix_from_grid_potential
+from ...tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
+from ...tddft.response_options import (
     ResponseKernelOptions,
     normalize_response_kernel_options,
 )

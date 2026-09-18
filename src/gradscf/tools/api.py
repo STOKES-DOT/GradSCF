@@ -6,7 +6,7 @@ New scripts should prefer these helpers over legacy bridge-style imports.
 
 from __future__ import annotations
 
-from .workflows.types import (
+from ..workflows.types import (
     MoleculeSpecConfig,
     NeuralXCTrainingConfig,
     OutputConfig,
@@ -24,7 +24,7 @@ def build_molecule(
 ):
     """Build a strict-JAX ground-state molecule from molecule specs."""
 
-    from .workflows.core import run_molecule_from_spec
+    from ..workflows.core import run_molecule_from_spec
 
     return run_molecule_from_spec(molecule, simulation=simulation)
 
@@ -38,7 +38,7 @@ def run_pipeline(
 ):
     """Run strict-JAX molecule -> training -> TDDFT spectrum core pipeline."""
 
-    from .workflows.core import run_pipeline_core_from_molecule_spec
+    from ..workflows.core import run_pipeline_core_from_molecule_spec
 
     return run_pipeline_core_from_molecule_spec(
         molecule_spec=molecule,
@@ -59,7 +59,7 @@ def run_spectrum_pipeline(
 ):
     """Run the strict-JAX molecule spectrum pipeline and write outputs."""
 
-    from .workflows.pipeline import run_neural_xc_spectrum_pipeline_from_molecule_spec
+    from ..workflows.pipeline import run_neural_xc_spectrum_pipeline_from_molecule_spec
 
     return run_neural_xc_spectrum_pipeline_from_molecule_spec(
         system_label=system_label,

@@ -9,7 +9,7 @@ from ..scf.uks import run_unrestricted_scf_scan,_unrestricted_xc_energy_and_pote
 from ..scf.rks import _vxc_matrix_from_grid_potential
 from ..scf.energy import XCContribution,unrestricted_energy,unrestricted_fock
 from ..scf.autodiff import SCFDifferentiationConfig,attach_scf_backward
-from ..xc_backend.jax_libxc import hybrid_coeff,xc_type
+from ..dft.libxc_jax.jax_libxc import hybrid_coeff,xc_type
 
 
 class PeriodicSCFResult(NamedTuple):

@@ -168,3 +168,25 @@ Use `init_guess="hcore"` or explicit density matrices. Legacy external guesses
 are not silently approximated. Native full-ERI spectral factorization replaces
 external auxiliary DF in production. Basis resource bytes are unchanged, but
 Python-format resources now have the inert `.pydata` suffix.
+
+## 2026-09-18 — Neural model code moves to `gradscf.model`
+
+Hard switch, no compatibility aliases:
+
+| Old path | New path |
+|---|---|
+| `gradscf.neural_xc` | `gradscf.model.neural_xc` |
+| `gradscf.neural_d` | `gradscf.model.neural_d` |
+| `gradscf.training` | `gradscf.model.training` |
+| `nnao` (top level) | `gradscf.model.nnao` |
+
+Top-level `gradscf` symbols re-exported via `gradscf/__init__.py`
+(`Functional`, `make_neural_xc_functional`, `MolecularTrainingConfig`, ...)
+are unchanged.  The vendored mace-jax tree ships inside
+`src/gradscf/model/nnao/mace_jax` but remains a separate top-level `mace_jax`
+package at runtime (install via the `nnao` extra / git pin); its sources are
+untouched, and `UPSTREAM.json` hash keys stay valid relative to the moved
+`nnao` root.
+
+| `gradscf.traditional_xc` | removed — use `gradscf.dft` / `gradscf.dft.xc` |
+| `gradscf.xc_backend` | `gradscf.dft.libxc_jax` |

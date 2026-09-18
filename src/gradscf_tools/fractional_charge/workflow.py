@@ -8,7 +8,7 @@ from typing import Literal
 import matplotlib.pyplot as plt
 import numpy as np
 
-from gradscf.spectra import HARTREE_TO_EV
+from gradscf.tools.spectra import HARTREE_TO_EV
 
 from .analysis import (
     FractionalChargeAnalysisResult,

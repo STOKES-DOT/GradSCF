@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from nnao import prepare_direct_basis
+from gradscf.model.nnao import prepare_direct_basis
 from gradscf import integrals
 from gradscf.integrals.contraction import primitive_basis,contraction_matrix
 
@@ -46,7 +46,7 @@ def test_new_hydrogen_p_channel_is_differentiable_and_core_is_fixed():
 def test_real_mace_expanded_head_and_no_fixed_residual():
     pytest.importorskip('cuequivariance');pytest.importorskip('mace_jax')
     from flax import nnx
-    from nnao import MACEBasisModel,build_graph
+    from gradscf.model.nnao import MACEBasisModel,build_graph
     b=prepare_direct_basis('C 0 0 0; H 0 0 1.09',basis_family='szp663_direct')
     m=MACEBasisModel(elements=(1,6),channels=4,num_interactions=1,max_ell=1,basis_family='szp663_direct',rngs=nnx.Rngs(0))
     g=build_graph([6,1],[[0,0,0],[0,0,1.09]],element_order=m.elements)
