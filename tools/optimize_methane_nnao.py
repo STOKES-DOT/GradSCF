@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from gradscf import integrals, scf
-from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals
+from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals, exchange_matrix
 from gradscf.scf.rks import RKSConfig,run_rks_from_integrals_traceable
 from gradscf.model.nnao import prepare_basis
 
@@ -27,7 +27,10 @@ from gradscf.model.nnao import prepare_basis
 class MethaneRHF:
     """RHF experiment, defaulting to methane; geometry may specify another molecule."""
     def __init__(self,bond=1.09,basis_family="szp442_direct",core_primitives=None,
-                 geometry=None,max_primitive_eri_gib=2.):
+                 geometry=None,max_primitive_eri_gib=2.,eri_backend='full',auxbasis='def2-universal-jkfit'):
+        if eri_backend not in {'full','ri'}:raise ValueError('eri_backend must be full or ri.')
+        if eri_backend=='ri' and basis_family=='qvszps':raise NotImplementedError('RI experiment currently covers all-electron families.')
+        self.eri_backend=eri_backend;self.auxbasis=auxbasis
         if core_primitives is not None and basis_family not in {'szp3_direct','szp442_direct','szp663_direct'}:
             raise ValueError('core_primitives applies only to all-electron direct basis families.')
         if not np.isfinite(bond) or bond<=0:raise ValueError('bond must be positive.')
@@ -59,17 +62,51 @@ class MethaneRHF:
         self.primitive_eri_gib=8*pt.nao**4/2**30
         if not np.isfinite(max_primitive_eri_gib) or max_primitive_eri_gib<=0:
             raise ValueError('max_primitive_eri_gib must be finite and positive.')
-        if self.primitive_eri_gib>max_primitive_eri_gib:
+        if eri_backend=='full' and self.primitive_eri_gib>max_primitive_eri_gib:
             raise MemoryError(f'Primitive ERI alone requires {self.primitive_eri_gib:.2f} GiB; '
                               f'limit is {max_primitive_eri_gib:.2f} GiB. Training peak is larger.')
         plan=integrals.make_plan(pt,backend='native')
         self.ps=plan.evaluate('overlap',pp)
         self.ph=plan.evaluate('kinetic',pp)+plan.evaluate('nuclear',pp)
         if basis_family=='qvszps':self.ph=self.ph+plan.evaluate('ecp',pp,ecps=self.layout.ecps)
-        self.peri=plan.evaluate('eri',pp)
-        self.peri.block_until_ready()
+        if eri_backend=='ri':
+            from gradscf.integrals.density_fitting import make_auxiliary_plan
+            at,ap=integrals.prepare_basis(list(zip(self.symbols,self.coords)),auxbasis,cart=self.layout.topology.cart)
+            self.pfactors=make_auxiliary_plan(pt,at).factors(pp,ap)
+            self.rep=self.pfactors
+        else:
+            self.peri=plan.evaluate('eri',pp)
+            self.rep=self.peri
+        self.rep.block_until_ready()
         self.enuc=scf.nuclear_repulsion_energy(pp.nuclear_coords,jnp.asarray(pt.nuclear_charges))
-        self._value_grad=jax.jit(jax.value_and_grad(self._stationary_value,argnums=0,has_aux=True))
+        value=self._stationary_ri_value if eri_backend=='ri' else self._stationary_value
+        self._value_grad=jax.jit(jax.value_and_grad(value,argnums=0,has_aux=True))
+
+    def _stationary_ri_value(self,outputs,ps,ph,pfactors):
+        from gradscf.integrals.density_fitting import project_factors
+        t=contraction_matrix(self.layout.topology,self.layout.bind(outputs))
+        s=t.T@ps@t;h=t.T@ph@t
+        factors=project_factors(pfactors,t)
+        n=s.shape[0]
+        result=run_rks_from_integrals_traceable(overlap=s,hcore=h,eri=None,df_factors=factors,
+            nelectron=self.nelectron,nuclear_repulsion=self.enuc,ao=jnp.zeros((0,n)),
+            ao_deriv1=jnp.zeros((4,0,n)),grid_weights=jnp.zeros(0),
+            config=RKSConfig(xc_spec='hf',jk_backend='df',max_cycle=150,conv_tol=1e-12,conv_tol_density=1e-10,conv_tol_grad=1e-9))
+        d=jax.lax.stop_gradient(result.density_matrix)
+        w=jax.lax.stop_gradient((result.mo_coeff*(result.mo_occ*result.mo_energy)[None,:])@result.mo_coeff.T)
+        nocc=self.nelectron//2
+        occupied=jax.lax.stop_gradient(result.mo_coeff[:,:nocc]*jnp.sqrt(result.mo_occ[:nocc]))
+        # Reconstruct from primitive RI factors in the occupied space, which
+        # is independent of the contracted-AO J/K assembly and much smaller.
+        occupied_factors=project_factors(pfactors,t@occupied)
+        rho=jnp.trace(occupied_factors,axis1=1,axis2=2)
+        energy=jnp.sum((t@d@t.T)*ph)+.5*jnp.sum(rho*rho)-.25*jnp.sum(occupied_factors**2)+self.enuc
+        lagrangian=energy-jnp.sum((t@w@t.T)*ps)
+        value=lagrangian+jax.lax.stop_gradient(result.total_energy-lagrangian)
+        residual=result.fock_matrix@d@s-s@d@result.fock_matrix
+        return value,dict(converged=result.converged,scf_cycles=result.cycles,
+            orbital_residual=jnp.linalg.norm(residual),min_overlap_eigenvalue=jnp.linalg.eigvalsh(s)[0],
+            reconstruction_error=jnp.abs(energy-result.total_energy))
 
     def _stationary_value(self,outputs,ps,ph,peri):
         t=contraction_matrix(self.layout.topology,self.layout.bind(outputs))
@@ -83,7 +120,7 @@ class MethaneRHF:
         w=jax.lax.stop_gradient((result.mo_coeff*(result.mo_occ*result.mo_energy)[None,:])@result.mo_coeff.T)
         dp=t@d@t.T
         j=jnp.einsum('pqrs,rs->pq',peri,dp)
-        k=jnp.einsum('prqs,rs->pq',peri,dp)
+        k=exchange_matrix(peri,dp)
         energy=jnp.sum(dp*ph)+.5*jnp.sum(dp*j)-.25*jnp.sum(dp*k)+self.enuc
         lagrangian=energy-jnp.sum((t@w@t.T)*ps)
         # Preserve the actual energy as the value, and only the stationary
@@ -97,7 +134,7 @@ class MethaneRHF:
         return value,info
 
     def evaluate(self,outputs):
-        (energy,info),gradient=self._value_grad(jnp.asarray(outputs),self.ps,self.ph,self.peri)
+        (energy,info),gradient=self._value_grad(jnp.asarray(outputs),self.ps,self.ph,self.rep)
         row={key:bool(value) if key=='converged' else int(value) if key=='scf_cycles' else float(value)
              for key,value in info.items()}
         if not row['converged'] or row['orbital_residual']>1e-7:
@@ -130,6 +167,7 @@ def embedded_outputs(layout,atom_shells):
 
 def optimize(*,bond=1.09,maxiter=80,basis_family='szp442_direct',core_primitives=None,
              initial_summary=None,geometry=None,max_primitive_eri_gib=2.,
+             eri_backend='full',auxbasis='def2-universal-jkfit',
              output_dir=Path('artifacts/methane-nnao')):
     from flax import nnx,serialization
     from jax.flatten_util import ravel_pytree
@@ -138,7 +176,7 @@ def optimize(*,bond=1.09,maxiter=80,basis_family='szp442_direct',core_primitives
     jax.config.update('jax_enable_x64',True)
     start=time.perf_counter();output_dir=Path(output_dir);output_dir.mkdir(parents=True,exist_ok=True)
     from gradscf.data.molecule import atomic_number
-    experiment=MethaneRHF(bond,basis_family,core_primitives,geometry,max_primitive_eri_gib)
+    experiment=MethaneRHF(bond,basis_family,core_primitives,geometry,max_primitive_eri_gib,eri_backend,auxbasis)
     atomic_numbers=[atomic_number(s) for s in experiment.symbols]
     model_config=dict(elements=tuple(sorted(set(atomic_numbers))),channels=8,num_interactions=2,max_ell=1,correlation=2,zero_init=True,basis_family=basis_family)
     model=MACEBasisModel(**model_config,rngs=nnx.Rngs(0))
@@ -199,7 +237,10 @@ def optimize(*,bond=1.09,maxiter=80,basis_family='szp442_direct',core_primitives
     print(f'{experiment.molecule} RHF {basis_family}: AO={experiment.layout.topology.nao}, '
           f'primitive AO={experiment.primitive_topology.nao}, MACE parameters={initial.size}',flush=True)
     record(initial)
-    if warm is not None:np.testing.assert_allclose(history[0]['energy_hartree'],warm['final_energy_hartree'],atol=1e-9,rtol=0)
+    same_hamiltonian = (warm is not None and warm.get('eri_backend','full')==eri_backend
+                        and (eri_backend!='ri' or warm.get('auxbasis')==auxbasis))
+    if same_hamiltonian:
+        np.testing.assert_allclose(history[0]['energy_hartree'],warm['final_energy_hartree'],atol=1e-9,rtol=0)
     initial_fd=finite_difference(np.asarray(initial))
     print('Initial gradient check:',initial_fd,flush=True)
     result=minimize(lambda v:evaluate(v)[:2],np.asarray(initial),jac=True,method='L-BFGS-B',callback=record,
@@ -213,13 +254,15 @@ def optimize(*,bond=1.09,maxiter=80,basis_family='szp442_direct',core_primitives
     final_parameters=unravel(jnp.asarray(result.x))
     summary=dict(molecule=experiment.molecule,method='RHF',basis=basis_family,cartesian=experiment.layout.topology.cart,nelectron=experiment.nelectron,
         geometry_metadata=geometry,primitive_eri_gib=experiment.primitive_eri_gib,
+        eri_backend=eri_backend,auxbasis=auxbasis if eri_backend=='ri' else None,
+        rep_shape=experiment.rep.shape,rep_bytes=int(experiment.rep.size*experiment.rep.dtype.itemsize),
         initial_summary=str(initial_summary) if initial_summary is not None else None,
         initial_summary_sha256=hashlib.sha256(Path(initial_summary).read_bytes()).hexdigest() if initial_summary is not None else None,
         core_primitive_counts=[n for n,r in zip(experiment.layout.topology.primitive_counts,experiment.layout.roles) if r=='core'],
         ecp=[e.as_raw() if e else None for e in experiment.layout.ecps] if basis_family=='qvszps' else None,bond_angstrom=experiment.bond,
         symbols=experiment.symbols,coords_angstrom=experiment.coords.tolist(),charge=0,spin=0,
         optimized='all MACE and basis-head trainable parameters',fixed='geometry, primitive exponents and ECP' if basis_family=='qvszps' else 'geometry, primitive exponents, core and single-primitive polarization shells' if basis_family in {'szp442_direct','szp663_direct'} else 'geometry, primitive exponents, core and polarization shells',
-        gradient='native fixed primitive integrals + JAX contraction + stationary RHF Lagrangian with Pulay term',
+        gradient='native fixed primitive '+('RI factors' if eri_backend=='ri' else 'integrals')+' + JAX contraction + stationary RHF Lagrangian with Pulay term',
         optimizer='L-BFGS-B',optimizer_success=bool(result.success),message=str(result.message),
         iterations=int(result.nit),evaluations=int(result.nfev),parameter_count=int(initial.size),
         model_config=model_config,seed=0,initial_energy_hartree=history[0]['energy_hartree'],final_energy_hartree=final_e,
@@ -252,8 +295,10 @@ if __name__=='__main__':
     parser.add_argument('--initial-summary',type=Path,default=None,help='Initialize trainable output bias from saved nested contractions; backbone uses seed 0.')
     parser.add_argument('--geometry',type=Path,help='JSON with name, symbols and coords_angstrom; default is methane.')
     parser.add_argument('--max-primitive-eri-gib',type=float,default=2.,help='Allocation guard for the ERI tensor alone; training peak is larger.')
+    parser.add_argument('--eri-backend',choices=('full','ri'),default='full')
+    parser.add_argument('--auxbasis',default='def2-universal-jkfit')
     parser.add_argument('--output-dir',type=Path,default=Path('artifacts/methane-nnao'))
     args=parser.parse_args()
     optimize(bond=args.bond,maxiter=args.maxiter,basis_family=args.basis_family,core_primitives=args.core_primitives,
              initial_summary=args.initial_summary,geometry=json.loads(args.geometry.read_text()) if args.geometry else None,
-             max_primitive_eri_gib=args.max_primitive_eri_gib,output_dir=args.output_dir)
+             max_primitive_eri_gib=args.max_primitive_eri_gib,eri_backend=args.eri_backend,auxbasis=args.auxbasis,output_dir=args.output_dir)

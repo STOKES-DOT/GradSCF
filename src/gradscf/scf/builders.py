@@ -519,7 +519,9 @@ def unrestricted_molecule_from_spec_with_jax_uks(
             jnp.stack([uks.mo_coeff_alpha, uks.mo_coeff_beta], axis=0),
             jnp.stack([uks.mo_occ_alpha, uks.mo_occ_beta], axis=0),
             jnp.stack([uks.mo_energy_alpha, uks.mo_energy_beta], axis=0),
-            rep_tensor=jnp.asarray(eri),
+            rep_tensor=jnp.asarray(eri) if eri.ndim==4 else None,
+            eri_pair_matrix=jnp.asarray(eri) if eri.ndim==2 else None,
+            df_factors=scf_inputs.df_factors,
             density_floor=cfg.density_floor,
             return_fock_response=True,
         )

@@ -29,8 +29,9 @@ pole-dense regions the secant iteration can oscillate without meeting the
 step tolerance; the solver tracks the best (min |f|) iterate and reports
 per-orbital convergence flags explicitly -- never a silent fallback.
 
-Failure of the implicit rule (df/dw ~ 0, i.e. Z diverging near satellite
-structures) raises an explicit error, per the repository AD policy.
+The implicit backward rule rejects unconverged roots and singular/nonfinite
+df/dw (Z diverging near satellite structures), including under JIT. JAX
+wraps runtime callback errors in its backend exception when compiled.
 
 References
 ----------
@@ -44,8 +45,11 @@ References
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array
 
 from .self_energy import sigma_cd
@@ -167,7 +171,11 @@ def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
 
 
 def _secant_step(f, x_prev, x, f_prev, fx):
-    raw_step = fx * (x - x_prev) / (fx - f_prev)
+    denom = fx - f_prev
+    # A converged lane is still evaluated by the static scan / orbital
+    # batch. Keep 0/0 out of its primal and adjoint, even when masked later.
+    safe_denom = jnp.where(denom != 0.0, denom, 1.0)
+    raw_step = jnp.where(denom != 0.0, fx * (x - x_prev) / safe_denom, 0.0)
     step = jnp.clip(raw_step, -_STEP_CAP, _STEP_CAP)
     x_new = x - step
     return x_new, f(x_new)
@@ -187,7 +195,7 @@ def _secant_batch(f, x0, x1, *, tol: float, maxiter: int):
     def body(state):
         x_prev, x, f_prev, fx, i, done, best_x, best_f = state
         x_cand, f_cand = _secant_step(f, x_prev, x, f_prev, fx)
-        converged = jnp.abs(x_cand - x) < tol
+        converged = (jnp.abs(x_cand - x) < tol) & (jnp.abs(f_cand) < tol)
         take = ~done
         x_new = jnp.where(take, x_cand, x)
         f_new = jnp.where(take, f_cand, fx)
@@ -224,7 +232,7 @@ def _secant_batch_scan(f, x0, x1, *, tol: float, maxiter: int):
     def body(carry, _):
         x_prev, x, f_prev, fx, done, best_x, best_f = carry
         x_cand, f_cand = _secant_step(f, x_prev, x, f_prev, fx)
-        converged = jnp.abs(x_cand - x) < tol
+        converged = (jnp.abs(x_cand - x) < tol) & (jnp.abs(f_cand) < tol)
         take = ~done
         better = take & (jnp.abs(f_cand) < jnp.abs(best_f))
         carry_out = (
@@ -251,27 +259,59 @@ def _secant_batch_scan(f, x0, x1, *, tol: float, maxiter: int):
     return jnp.where(done, root, best_x), done
 
 
-@jax.custom_vjp
-def _qp_solve_implicit(x0: Array, e_mf: Array, delta_v: Array, shared: dict, stacked: dict) -> Array:
-    f = lambda w: qp_residual_batch(w, e_mf, delta_v, shared, stacked)
-    root, _ = _secant_batch(f, x0, x0 + 1e-4, tol=_TOL, maxiter=_MAXITER)
-    return root
+@partial(jax.custom_vjp, nondiff_argnums=(5, 6, 7))
+def _qp_solve_implicit(
+    x0: Array, e_mf: Array, delta_v: Array, shared: dict, stacked: dict,
+    conjugate: bool, tol: float, maxiter: int,
+) -> tuple[Array, Array]:
+    context = {**shared, "conjugate": conjugate}
+    f = lambda w: qp_residual_batch(w, e_mf, delta_v, context, stacked)
+    root, done = _secant_batch(f, x0, x0 + 1e-4, tol=tol, maxiter=maxiter)
+    # Encode auxiliary status as a real output inside custom_vjp. Boolean
+    # custom outputs can acquire active float0 tangents on some JAX versions.
+    return root, done.astype(root.dtype)
 
 
-def _qp_solve_implicit_fwd(x0, e_mf, delta_v, shared, stacked):
-    f = lambda w: qp_residual_batch(w, e_mf, delta_v, shared, stacked)
-    root, _ = _secant_batch(f, x0, x0 + 1e-4, tol=_TOL, maxiter=_MAXITER)
-    return root, (root, e_mf, delta_v, shared, stacked)
+def _qp_solve_implicit_fwd(x0, e_mf, delta_v, shared, stacked, conjugate, tol, maxiter):
+    context = {**shared, "conjugate": conjugate}
+    f = lambda w: qp_residual_batch(w, e_mf, delta_v, context, stacked)
+    root, done = _secant_batch(f, x0, x0 + 1e-4, tol=tol, maxiter=maxiter)
+    return (root, done.astype(root.dtype)), (root, done, e_mf, delta_v, shared, stacked)
 
 
-def _qp_solve_implicit_bwd(res, g):
-    root, e_mf, delta_v, shared, stacked = res
+def _raise_invalid_implicit_gradient(done, df_dw):
+    if not np.all(np.asarray(done)):
+        raise ArithmeticError("QP implicit differentiation requires converged roots; QP not converged.")
+    slopes = np.asarray(df_dw)
+    if np.any(~np.isfinite(slopes) | (np.abs(slopes) < _DFDW_MIN)):
+        raise ArithmeticError(
+            "QP implicit differentiation is singular or nonfinite: "
+            f"requires finite |df/dw| >= {_DFDW_MIN} (finite Z factors)."
+        )
+
+
+def _qp_solve_implicit_bwd(conjugate, tol, maxiter, res, cotangents):
+    root, done, e_mf, delta_v, shared, stacked = res
+    g, _ = cotangents  # Auxiliary convergence status has no derivative.
+    context = {**shared, "conjugate": conjugate}
     # df_p/dw at the converged roots (inverse Z factors), one per orbital.
-    df_dw = _df_dw_batch(root, e_mf, delta_v, shared, stacked)
+    df_dw = _df_dw_batch(root, e_mf, delta_v, context, stacked)
+    if isinstance(df_dw, jax.core.Tracer) or isinstance(done, jax.core.Tracer):
+        valid = jnp.all(done & jnp.isfinite(df_dw) & (jnp.abs(df_dw) >= _DFDW_MIN))
+        jax.lax.cond(
+            valid,
+            lambda: None,
+            lambda: jax.debug.callback(_raise_invalid_implicit_gradient, done, df_dw),
+        )
+    else:
+        _raise_invalid_implicit_gradient(done, df_dw)
     # Implicit function theorem per orbital; the VJP of the batched
     # residual accumulates shared-parameter cotangents across orbitals.
     _, pullback = jax.vjp(
-        lambda em, dv, sh, st: qp_residual_batch(root, em, dv, sh, st), e_mf, delta_v, shared, stacked
+        lambda em, dv, sh, st: qp_residual_batch(
+            root, em, dv, {**sh, "conjugate": conjugate}, st
+        ),
+        e_mf, delta_v, shared, stacked,
     )
     cot_e_mf, cot_delta_v, cot_shared, cot_stacked = pullback(-g / df_dw)
     return (None, cot_e_mf, cot_delta_v, cot_shared, cot_stacked)
@@ -287,8 +327,8 @@ def solve_qp_batch(
     stacked: dict,
     *,
     occupied: Array,
-    tol: float = 1e-6,
-    maxiter: int = 100,
+    tol: float = _TOL,
+    maxiter: int = _MAXITER,
     diff_mode: str = "implicit",
 ) -> tuple[Array, Array]:
     """Solve the quasiparticle equation for a batch of orbitals.
@@ -303,16 +343,17 @@ def solve_qp_batch(
         ``(norb,)`` boolean; selects the initial-guess offset sign
         (-1e-2 occupied, +1e-2 virtual, following PySCF ``gw_cd``).
     tol, maxiter:
-        Secant step tolerance and iteration cap.
+        Absolute step and residual tolerance (Ha), and iteration cap.
+        These and ``shared['conjugate']`` are static configuration under JIT.
     diff_mode:
         ``"implicit"`` (custom VJP via the implicit function theorem) or
         ``"unrolled"`` (AD through a static secant scan).
 
     Returns
     -------
-    (qp_energies, converged_mask), both shape ``(norb,)``.  Under a JAX
-    transformation the energies are traced and the mask is all-True (the
-    caller validates convergence eagerly).
+    (qp_energies, converged_mask), both shape ``(norb,)``. The actual mask
+    is preserved under JAX transformations. Unconverged forward calls
+    return the best-residual iterate; implicit backward calls reject it.
     """
     if diff_mode not in ("implicit", "unrolled"):
         raise ValueError(f"diff_mode must be 'implicit' or 'unrolled', got {diff_mode!r}")
@@ -322,37 +363,21 @@ def solve_qp_batch(
     x0 = e_mf + jnp.where(occupied, -1e-2, 1e-2)
     f = lambda w: qp_residual_batch(w, e_mf, delta_v, shared, stacked)
 
-    if isinstance(e_mf, jax.core.Tracer) or isinstance(delta_v, jax.core.Tracer):
-        if diff_mode == "implicit":
-            if float(tol) != _TOL or int(maxiter) != _MAXITER:
-                raise ValueError(
-                    "traced diff_mode='implicit' uses the module defaults "
-                    f"tol={_TOL}, maxiter={_MAXITER}; use diff_mode="
-                    "'unrolled' for custom solver tolerances."
-                )
-            root = _qp_solve_implicit(x0, e_mf, delta_v, shared, stacked)
-        else:
-            root, _ = _secant_batch_scan(f, x0, x0 + 1e-4, tol=float(tol), maxiter=int(maxiter))
-        return root, jnp.ones_like(e_mf, dtype=bool)
-
     if diff_mode == "implicit":
-        root, done = _secant_batch(f, x0, x0 + 1e-4, tol=float(tol), maxiter=int(maxiter))
+        # Keep configuration out of the differentiable pytree. Always use
+        # the same custom rule, including when only context leaves vary.
+        dynamic_shared = {key: value for key, value in shared.items() if key != "conjugate"}
+        root, status = _qp_solve_implicit(
+            x0, e_mf, delta_v, dynamic_shared, stacked,
+            shared.get("conjugate", False), float(tol), int(maxiter),
+        )
+        done = status > 0.5
     else:
         root, done = _secant_batch_scan(f, x0, x0 + 1e-4, tol=float(tol), maxiter=int(maxiter))
 
-    # Host-side singularity check per orbital (explicit errors only):
-    df_dw = _df_dw_batch(root, e_mf, delta_v, shared, stacked)
-    import numpy as _np
-
-    bad = _np.asarray(jax.device_get(df_dw))
-    if _np.any(_np.abs(bad) < _DFDW_MIN):
-        idx = int(_np.argmin(_np.abs(bad)))
-        raise ArithmeticError(
-            "QP implicit differentiation is singular: |df/dw| = "
-            f"{abs(bad[idx]):.3e} < {_DFDW_MIN} at batch index {idx} "
-            "(Z factor diverges; likely a satellite/multiple-root region). "
-            "Refusing to return a meaningless gradient."
-        )
+    # Status is an observable, not a differentiable output of the custom
+    # root rule. In particular, boolean reductions must not enter its AD chain.
+    done = jax.lax.stop_gradient(done)
     return root, done
 
 
@@ -397,7 +422,7 @@ def solve_qp_orbital(
         diff_mode=diff_mode,
     )
     if isinstance(root, jax.core.Tracer):
-        return root[0], True
+        return root[0], done[0]
     return float(root[0]), bool(done[0])
 
 

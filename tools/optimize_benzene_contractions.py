@@ -25,6 +25,7 @@ from scipy.optimize import minimize
 
 from gradscf import integrals, scf
 from gradscf.integrals.normalization import normalized_shell_coefficients, radial_primitive_norm
+from gradscf.integrals.contraction import exchange_matrix
 from gradscf.scf.core import _diagonalize_fock, _orthogonalizer
 from gradscf.scf.rks import RKSConfig, run_rks_from_integrals_traceable
 
@@ -112,7 +113,7 @@ class ContractionExperiment:
         t = self.transform(x)
         dp = t@dm@t.T
         j = jnp.einsum("pqrs,rs->pq", peri, dp)
-        k = jnp.einsum("prqs,rs->pq", peri, dp)
+        k = exchange_matrix(peri, dp)
         e = jnp.sum(dp*ph)+.5*jnp.sum(dp*j)-.25*jnp.sum(dp*k)+self.enuc
         lagrangian = e-jnp.sum((t@w@t.T)*ps)
         return lagrangian, e
@@ -134,7 +135,7 @@ class ContractionExperiment:
             eps, c = _diagonalize_fock(fock, x)
             dm = (c*result.mo_occ[None, :])@c.T
             j = jnp.einsum("pqrs,rs->pq", eri, dm)
-            k = jnp.einsum("prqs,rs->pq", eri, dm)
+            k = exchange_matrix(eri, dm)
             fock = h+j-.5*k
             residual = jnp.max(jnp.abs(fock@c[:, :nocc]-(s@c[:, :nocc])*eps[None, :nocc]))
             return count+1, dm, c, eps, fock, residual

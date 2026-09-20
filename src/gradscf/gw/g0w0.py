@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import jax
 import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
@@ -42,7 +41,7 @@ from jaxtyping import Array
 from ..df import build_j_from_df, build_jk_from_df
 from .freq import scaled_legendre_grid
 from .polarizability import rho_response_iw
-from .qp import solve_qp_batch
+from .qp import _df_dw_batch, sigma_cd_batch, solve_qp_batch
 from .screened import screened_w_imag_axis
 from .types import GWResult
 
@@ -85,7 +84,8 @@ def _qp_loop(
     q0: dict | None = None,
     e_mf: Array | None = None,
     linearized: bool = False,
-) -> tuple[Array, Array, Array, bool]:
+    evaluate_only: bool = False,
+) -> tuple[Array, Array, Array, Array, Array]:
     """Solve the QP equation for every orbital in ``orbs`` (one spin channel).
 
     All orbitals are solved simultaneously in one vectorized secant loop
@@ -93,10 +93,9 @@ def _qp_loop(
     spectrum inside G0/W; ``e_mf`` is the base of the QP equation
     (defaults to ``mo_energy``; the two differ under evGW iterations).
     """
-    from .qp import solve_qp_batch
-    from .self_energy import sigma_cd
-
     mo_energy = jnp.asarray(mo_energy)
+    if linearized and evaluate_only:
+        raise ValueError("linearized and evaluate_only are mutually exclusive.")
     e_mf = mo_energy if e_mf is None else jnp.asarray(e_mf)
     orbs = [int(p) for p in orbs]
     shared = {
@@ -115,72 +114,56 @@ def _qp_loop(
         "b_pm": b_mn[:, jnp.asarray(orbs), :].transpose(1, 0, 2),  # (norb, naux, nmo)
         "b_mp": b_mn[:, :, jnp.asarray(orbs)].transpose(2, 0, 1),  # (norb, naux, nmo)
     }
+    if conjugate:
+        # Periodic factors are ordered (intermediate m, external p).
+        # The two vertices must be the same pair, contracted as b^dagger W b.
+        stacked["b_pm"] = stacked["b_mp"]
     if del00 is not None:
         stacked["del_w"] = del00[None, :] + delP0[jnp.asarray(orbs)]  # (norb, nw)
         stacked["p_index"] = jnp.asarray(orbs)
     occupied = jnp.asarray([p < nocc for p in orbs])
-    if linearized:
-        # Z-factor linearized QP update (evGW iterations; smooth in the
-        # pole spectrum, unlike the graphical solve in pole-dense regions):
-        #   e_qp = e_mf + Z [Re Sigma(w0) + delta_v],  Z = 1/(1 - dSigma/dw)
+    omega0 = mo_energy[jnp.asarray(orbs)]
+    e_base = e_mf[jnp.asarray(orbs)]
+    dv = delta_v[jnp.asarray(orbs)]
+    if evaluate_only:
+        roots = omega0
+    elif linearized:
+        # Linearize the Dyson equation at fixed G/W and active residue set:
+        #   e_qp = w0 + Z [e_mf + Re Sigma(w0) + delta_v - w0]
+        #   Z = 1/(1 - dSigma/dw)
         # evaluated at the current pole energies w0 = mo_energy[p].
-        from .qp import sigma_cd_batch
-
-        omega0 = mo_energy[jnp.asarray(orbs)]
-        e_base = e_mf[jnp.asarray(orbs)]
-        dv = delta_v[jnp.asarray(orbs)]
         sig0 = sigma_cd_batch(omega0, shared, stacked)
-        dw = 1e-4
-        sig_p = sigma_cd_batch(omega0 + dw, shared, stacked)
-        sig_m = sigma_cd_batch(omega0 - dw, shared, stacked)
-        dsig = jnp.real(sig_p - sig_m) / (2.0 * dw)
-        zfac = 1.0 / (1.0 - dsig)
-        roots = e_base + zfac * (jnp.real(sig0) + dv)
-        qp_energy = e_mf.copy()
-        qp_energy = qp_energy.at[jnp.asarray(orbs)].set(roots)
-        sigma_qp = jnp.zeros_like(qp_energy, dtype=jnp.complex128)
-        sigma_qp = sigma_qp.at[jnp.asarray(orbs)].set(sig0)
-        converged_mask = jnp.ones_like(qp_energy, dtype=bool)
-        return qp_energy, sigma_qp, converged_mask, True
-    roots, done = solve_qp_batch(
-        e_mf[jnp.asarray(orbs)],
-        delta_v[jnp.asarray(orbs)],
-        shared,
-        stacked,
-        occupied=occupied,
-        diff_mode=diff_mode,
-    )
+        # Differentiate at fixed G/W and active pole set. A central
+        # difference can cross a residue-selection boundary at omega0.
+        zfac = 1.0 / _df_dw_batch(omega0, e_base, dv, shared, stacked)
+        roots = omega0 + zfac * (e_base + jnp.real(sig0) + dv - omega0)
+    else:
+        roots, done = solve_qp_batch(
+            e_mf[jnp.asarray(orbs)],
+            delta_v[jnp.asarray(orbs)],
+            shared,
+            stacked,
+            occupied=occupied,
+            diff_mode=diff_mode,
+        )
 
+    # Compute the same observables and status eagerly and under transforms.
+    # In particular, sigma_qp is evaluated at the returned QP energies,
+    # including when a linearized update moves away from its expansion point.
+    sig_roots = sigma_cd_batch(roots, shared, stacked)
+    residual = roots - e_base - jnp.real(sig_roots) - dv
+    if linearized or evaluate_only:
+        done = jnp.isfinite(roots) & (jnp.abs(residual) < 1e-6)
+        if linearized:
+            done = done & jnp.isfinite(zfac)
     qp_energy = e_mf.copy()
     sigma_qp = jnp.zeros_like(qp_energy, dtype=jnp.complex128)
     converged_mask = jnp.ones_like(qp_energy, dtype=bool)
-    if isinstance(roots, jax.core.Tracer):
-        qp_energy = qp_energy.at[jnp.asarray(orbs)].set(roots)
-        return qp_energy, sigma_qp, converged_mask, True
-    converged = True
-    for i, p in enumerate(orbs):
-        converged = converged and bool(done[i])
-        converged_mask = converged_mask.at[p].set(bool(done[i]))
-        qp_energy = qp_energy.at[p].set(roots[i])
-        ctx = {
-            "mo_energy": mo_energy,
-            "wmn_p": stacked["wmn_p"][i],
-            "b_pm": stacked["b_pm"][i],
-            "b_mp": stacked["b_mp"][i],
-            "channels": channels,
-            "ef": ef,
-            "eta": jnp.asarray(eta, dtype=jnp.float64),
-            "freqs": freqs,
-            "wts": wts,
-            "conjugate": conjugate,
-        }
-        if del00 is not None:
-            ctx["del_w"] = stacked["del_w"][i]
-            ctx["p_index"] = stacked["p_index"][i]
-        if q0 is not None:
-            ctx["q0"] = {**q0, "p_index": stacked["p_index"][i]}
-        sigma_qp = sigma_qp.at[p].set(sigma_cd(roots[i], ctx))
-    return qp_energy, sigma_qp, converged_mask, converged
+    qp_energy = qp_energy.at[jnp.asarray(orbs)].set(roots)
+    sigma_qp = sigma_qp.at[jnp.asarray(orbs)].set(sig_roots)
+    converged_mask = converged_mask.at[jnp.asarray(orbs)].set(done)
+    qp_residual = jnp.zeros_like(qp_energy).at[jnp.asarray(orbs)].set(residual)
+    return qp_energy, sigma_qp, converged_mask, jnp.all(done), qp_residual
 
 
 def g0w0_cd_restricted(
@@ -198,6 +181,7 @@ def g0w0_cd_restricted(
     diff_mode: str = "implicit",
     mo_energy_poles: Array | None = None,
     linearized: bool = False,
+    evaluate_only: bool = False,
 ) -> GWResult:
     """Spin-restricted G0W0 with contour deformation.
 
@@ -226,6 +210,14 @@ def g0w0_cd_restricted(
     diff_mode:
         ``"implicit"`` or ``"unrolled"``; see
         :func:`gradscf.gw.qp.solve_qp_orbital`.
+    linearized:
+        Take one Newton update about the pole energies, with G/W fixed.
+        The frequency derivative holds the active residue set fixed; this
+        update is not an outer self-consistency solver.
+    evaluate_only:
+        Evaluate self-energy and Dyson residual at the supplied pole
+        spectrum without solving or updating QP energies. Used by evGW;
+        mutually exclusive with ``linearized``.
 
     Returns
     -------
@@ -260,7 +252,7 @@ def g0w0_cd_restricted(
 
     wmn = screened_w_imag_axis(b_mn, response_fn, freqs)
 
-    qp_energy, sigma_qp, converged_mask, converged = _qp_loop(
+    qp_energy, sigma_qp, converged_mask, converged, residual = _qp_loop(
         mo_energy=poles,
         b_mn=b_mn,
         channels=((poles, b_ov, 2.0),),
@@ -275,6 +267,7 @@ def g0w0_cd_restricted(
         diff_mode=diff_mode,
         e_mf=mo_energy,
         linearized=linearized,
+        evaluate_only=evaluate_only,
     )
     return GWResult(
         mo_energy=qp_energy,
@@ -283,6 +276,7 @@ def g0w0_cd_restricted(
         sigma_qp=sigma_qp,
         converged_mask=converged_mask,
         nw=int(nw),
+        qp_residual=residual,
     )
 
 
@@ -301,6 +295,7 @@ def g0w0_cd_unrestricted(
     diff_mode: str = "implicit",
     mo_energy_poles: tuple[Array, Array] | None = None,
     linearized: bool = False,
+    evaluate_only: bool = False,
 ) -> GWResult:
     """Spin-unrestricted G0W0 with contour deformation.
 
@@ -380,7 +375,7 @@ def g0w0_cd_unrestricted(
     wmn = screened_w_imag_axis(b_a, response_fn, freqs)
     channels = ((p_a, b_ov_a, 1.0), (p_b, b_ov_b, 1.0))
 
-    qp_a, sig_a, mask_a, conv_a = _qp_loop(
+    qp_a, sig_a, mask_a, conv_a, residual_a = _qp_loop(
         mo_energy=p_a,
         b_mn=b_a,
         channels=channels,
@@ -395,9 +390,10 @@ def g0w0_cd_unrestricted(
         diff_mode=diff_mode,
         e_mf=e_a,
         linearized=linearized,
+        evaluate_only=evaluate_only,
     )
     wmn_b = screened_w_imag_axis(b_b, response_fn, freqs)
-    qp_b, sig_b, mask_b, conv_b = _qp_loop(
+    qp_b, sig_b, mask_b, conv_b, residual_b = _qp_loop(
         mo_energy=p_b,
         b_mn=b_b,
         channels=channels,
@@ -412,14 +408,16 @@ def g0w0_cd_unrestricted(
         diff_mode=diff_mode,
         e_mf=e_b,
         linearized=linearized,
+        evaluate_only=evaluate_only,
     )
     return GWResult(
         mo_energy=jnp.stack([qp_a, qp_b]),
         mo_coeff=jnp.stack([c_a, c_b]),
-        converged=conv_a and conv_b,
+        converged=conv_a & conv_b,
         sigma_qp=jnp.stack([sig_a, sig_b]),
         converged_mask=jnp.stack([mask_a, mask_b]),
         nw=int(nw),
+        qp_residual=jnp.stack([residual_a, residual_b]),
     )
 
 

@@ -61,8 +61,6 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         raise NotImplementedError("External checkpoint/SAP guess options were removed; supply an initial density matrix")
     if mol_kwargs:
         raise TypeError(f"Unsupported molecular options: {', '.join(sorted(mol_kwargs))}")
-    if mode == "native" and cfg.jk_backend == "direct":
-        raise NotImplementedError("Native direct J/K is not implemented; use full/df, or select the JAX reference direct backend")
     spec = atom if isinstance(atom, MoleculeSpec) else parse_molecule_spec(atom, unit=unit, charge=charge, spin=spin)
     laplacian = xc_type(xc_spec) == "MGGA"
     context = _prepare_basis_grid_context(spec=spec, basis=basis, max_l=max_l,
@@ -77,10 +75,25 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         plan = make_plan(top, backend="native")
         s = plan.evaluate("overlap", params)
         h = plan.evaluate("kinetic", params)+plan.evaluate("nuclear", params)
-        full_eri = plan.evaluate("eri", params)
+        full_eri=pair=factors=None
+        auxiliary=getattr(cfg,'auxbasis',None)
+        if cfg.jk_backend=='direct':
+            if context.geometry_is_traced:raise NotImplementedError('Native direct-SCF geometry AD is not implemented.')
+        elif cfg.jk_backend=='df' and auxiliary is not None:
+            if context.geometry_is_traced:raise NotImplementedError('Native auxiliary-integral geometry AD is not implemented.')
+            from .density_fitting import make_auxiliary_plan,unpack_factors
+            aux_top,aux_params=prepare_basis(spec,auxiliary,cart=True)
+            packed_factors=make_auxiliary_plan(top,aux_top).factors(params,aux_params,lindep=cfg.df_tol)
+            factors=unpack_factors(packed_factors,top.nao)
+        elif context.geometry_is_traced:
+            # Preserve the existing native coordinate AD rule. The compact
+            # output API is currently forward-only for integral parameters.
+            full_eri=plan.evaluate('eri',params)
+            rows,cols=np.tril_indices(top.nao)
+            pair=full_eri[rows[:,None],cols[:,None],rows[None,:],cols[None,:]]
+        else:
+            pair=plan.evaluate('eri',params,aosym='s4')
         dipole = plan.evaluate("dipole", params) if include_dipole else None
-        rows, cols = np.tril_indices(top.nao)
-        pair = full_eri[rows[:,None], cols[:,None], rows[None,:], cols[None,:]]
     else:
         b = context.basis
         if precompile_eri:
@@ -89,8 +102,8 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         dipole = dipole_matrix(b) if include_dipole else None
         full_eri = None
         pair = None if cfg.jk_backend == "direct" else eri_pair_matrix_packed(b)
-    factors = None
-    if cfg.jk_backend == "df":
+        factors=None
+    if cfg.jk_backend == "df" and factors is None:
         from ..df import eri_pair_matrix_to_df_factors, eri_pair_matrix_to_df_factors_traceable
         factorize = eri_pair_matrix_to_df_factors_traceable if context.geometry_is_traced else eri_pair_matrix_to_df_factors
         factors = factorize(pair, nao=s.shape[0], tol=cfg.df_tol, max_rank=cfg.df_max_rank)
@@ -119,9 +132,16 @@ def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode=values
     initial = restricted_initial_guess(init_guess=init_guess,dtype=h.dtype)
     nelectron = int(np.asarray(spec.charges).sum())-int(spec.charge)
+    direct=None
+    if cfg.jk_backend=='direct':
+        direct=ctx.basis
+        if mode=='native':
+            from .backends.native_compact import NativeDirectBasis
+            top,parameters=prepare_basis(spec,basis,cart=True)
+            direct=NativeDirectBasis(make_plan(top),parameters)
     return RKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=None,
         eri_pair_matrix=pair if cfg.jk_backend == "full" else None,df_factors=factors,
-        direct_basis=ctx.basis if cfg.jk_backend == "direct" else None,nelectron=nelectron,
+        direct_basis=direct,nelectron=nelectron,
         nuclear_repulsion=spec.nuclear_repulsion,coords=ctx.coords,grid_weights=ctx.grid_weights,
         ao=ao,ao_deriv1=dao,ao_laplacian=lap,dipole_integrals=dipole,init_density=initial.density,
         molecule_charge=int(spec.charge),geometry_is_traced=ctx.geometry_is_traced,
@@ -137,6 +157,7 @@ def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     from ..scf.uks import UKSConfig
     from ..scf.init_guess import unrestricted_initial_guess
     cfg, name = _resolve_config(config, xc_spec, UKSConfig)
+    if cfg.jk_backend=='direct':raise NotImplementedError('UKS assembly supports full/df; native direct J/K is available through IntegralPlan.get_jk.')
     values = _build_common(atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
         cart=cart,grids_level=grids_level,max_l=max_l,grid_ao_backend=grid_ao_backend,
         integral_backend=integral_backend,geometry_grad_policy=libcint_geometry_grad_policy,
@@ -149,6 +170,8 @@ def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     nalpha,nbeta=_unrestricted_spin_electron_counts(total,int(spec.spin))
     if cfg.jk_backend == "df":
         eri=jnp.zeros((0,0,0,0),dtype=h.dtype)
+    elif mode=='native':
+        eri=pair
     elif eri is None:
         eri=eri_tensor(ctx.basis)
     return UKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=eri,df_factors=factors,

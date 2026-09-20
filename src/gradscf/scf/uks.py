@@ -62,6 +62,7 @@ class UKSConfig:
     jk_backend: Literal["full", "df"] = "full"
     df_tol: float = 1e-10
     df_max_rank: int | None = None
+    auxbasis: str | None = None
 
 
 @dataclass(frozen=True)

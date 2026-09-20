@@ -2,6 +2,8 @@
 from importlib import import_module
 
 _EXPORTS = {'DirectJKResult': 'gradscf.integrals.jk',
+ 'build_jk_from_packed': 'gradscf.integrals.layouts',
+ 'make_auxiliary_plan': 'gradscf.integrals.density_fitting',
  'build_direct_jk_from_basis': 'gradscf.integrals.jk',
  'build_direct_jk_incremental': 'gradscf.integrals.jk',
  'build_hcore': 'gradscf.integrals.one_electron',

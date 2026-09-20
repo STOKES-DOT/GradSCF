@@ -158,6 +158,7 @@ class RKS(_BaseKS):
     jk_backend: Literal["full", "df", "direct"] = "full"
     df_tol: float = 1e-10
     df_max_rank: int | None = None
+    auxbasis: str | None = None
     direct_scf_tol: float = 0.0
     compute_local_hfx_features: bool = False
     compute_local_hfx_aux: bool = False
@@ -176,6 +177,7 @@ class RKS(_BaseKS):
             jk_backend=self.jk_backend,
             df_tol=self.df_tol,
             df_max_rank=self.df_max_rank,
+            auxbasis=self.auxbasis,
             direct_scf_tol=self.direct_scf_tol,
         )
 
@@ -232,8 +234,9 @@ class RKS(_BaseKS):
         self._cached_scf_key = self._scf_signature()
         return self.e_tot
 
-    def density_fit(self) -> "RKS":
+    def density_fit(self, auxbasis: str | None = None) -> "RKS":
         self.jk_backend = "df"
+        self.auxbasis = auxbasis or 'def2-universal-jkfit'
         return self
 
     def direct_scf(self) -> "RKS":
@@ -244,6 +247,8 @@ class RKS(_BaseKS):
 @dataclass
 class UKS(_BaseKS):
     conv_tol_grad: float = 1e-7
+    jk_backend: Literal['full','df'] = 'full'
+    auxbasis: str | None = None
 
     def _config(self) -> UKSConfig:
         return UKSConfig(
@@ -254,6 +259,8 @@ class UKS(_BaseKS):
             conv_tol_grad=self.conv_tol_grad,
             damping=self.damp,
             level_shift=self.level_shift,
+            jk_backend=self.jk_backend,
+            auxbasis=self.auxbasis,
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
@@ -281,8 +288,10 @@ class UKS(_BaseKS):
         self._sync_from_reference(reference)
         return self.e_tot
 
-    def density_fit(self) -> "UKS":
-        raise NotImplementedError("UKS density fitting is not exposed by the current core solver.")
+    def density_fit(self, auxbasis: str | None = None) -> "UKS":
+        self.jk_backend='df'
+        self.auxbasis=auxbasis or 'def2-universal-jkfit'
+        return self
 
     def direct_scf(self) -> "UKS":
         raise NotImplementedError("UKS direct SCF is not exposed by the current core solver.")

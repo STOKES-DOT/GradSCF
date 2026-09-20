@@ -22,14 +22,15 @@ configure_file(vendor/libcint/src/cint_config.h.in generated/cint_config.h)
 configure_file(include/config.h generated/config.h COPYONLY)
 
 set(CINT_SOURCES
-  cart2sph cint1e cint2e cint_bas fblas g1e g2e misc optimizer fmt
+  cart2sph cint1e cint2e cint2c2e cint3c2e cint_bas fblas g1e g2e misc optimizer fmt
   rys_wheeler eigh rys_roots find_roots g1e_grids g3c1e g2c2e g3c2e)
 list(TRANSFORM CINT_SOURCES PREPEND "vendor/libcint/src/")
 list(TRANSFORM CINT_SOURCES APPEND ".c")
 add_library(gradscf_integrals SHARED
   ${CINT_SOURCES} vendor/libcint/src/autocode/intor1.c
+  vendor/libcint/src/autocode/int3c2e.c
   vendor/libcint/src/autocode/grad1.c vendor/libcint/src/autocode/grad2.c
-  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc
+  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc csrc/compact.cc
   vendor/pyscf_ecp/gto/nr_ecp.c vendor/pyscf_ecp/np_helper/np_helper.c csrc/ecp.cc)
 target_include_directories(gradscf_integrals PRIVATE
   "${JAX_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated"

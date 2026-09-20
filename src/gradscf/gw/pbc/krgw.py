@@ -12,9 +12,9 @@ Consistency notes
 - The exact-exchange potential uses the same Ewald-corrected FFT exchange
   as the SCF (``get_jk(exxdiv='ewald')``), so ``v^x - v^mf = 0`` for an HF
   starting point, mirroring the molecular driver.
-- The screened interaction carries ``v(G=0) = 0``; the q -> 0 head/wing
-  corrections of the inverse dielectric matrix (PRB 83, 245122 (2011)) are
-  the next Stage-2 slice (``gradscf.gw.pbc.q0``) and are not included here.
+- The body screened interaction carries ``v(G=0) = 0``. With ``fc=True``,
+  the q -> 0 head/wing corrections of the inverse dielectric matrix
+  (PRB 83, 245122 (2011)) are added via ``gradscf.gw.pbc.q0``.
 
 References
 ----------
@@ -62,6 +62,7 @@ def g0w0_cd_gamma(
     fc: bool = True,
     mo_energy_poles: Array | None = None,
     linearized: bool = False,
+    evaluate_only: bool = False,
 ) -> GWResult:
     """Gamma-point periodic G0W0-CD (spin-restricted).
 
@@ -80,7 +81,7 @@ def g0w0_cd_gamma(
         Converged spin densities, shape ``(2, nao, nao)``.
     mesh:
         FFT grid shape the inputs were built with (``cell.mesh``).
-    nw, eta, orbs, diff_mode:
+    nw, eta, orbs, diff_mode, linearized, evaluate_only:
         As in :func:`gradscf.gw.g0w0_cd_restricted`.
 
     Returns
@@ -93,7 +94,7 @@ def g0w0_cd_gamma(
         if mo_energy_poles is None
         else jnp.asarray(mo_energy_poles, dtype=jnp.float64)
     )
-    mo_coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
+    mo_coeff = jnp.asarray(mo_coeff, dtype=jnp.complex128)
     nocc = int(nocc)
     nmo = mo_energy.shape[0]
     if orbs is None:
@@ -105,7 +106,7 @@ def g0w0_cd_gamma(
     density_spin = jnp.asarray(density_spin)
     j_mat, k_ewald = get_jk(inputs, density_spin, exxdiv="ewald", with_k=True)
     k_ewald = k_ewald[0]  # restricted: K_alpha == K_beta
-    coeff_t = mo_coeff.T.astype(jnp.complex128)
+    coeff_t = mo_coeff.conj().T
     v_mf_mo = coeff_t @ (jnp.asarray(fock_matrix) - jnp.asarray(hcore_matrix) - j_mat) @ mo_coeff
     vk_mo = coeff_t @ k_ewald @ mo_coeff  # note: F = h + J - K, so v^x = -K
     delta_v = jnp.diag(-(vk_mo + v_mf_mo)).real
@@ -130,7 +131,7 @@ def g0w0_cd_gamma(
         wmn = screened_w_imag_axis(b, response_fn, freqs, conjugate=True)
         del00 = delP0 = q0 = None
 
-    qp_energy, sigma_qp, converged_mask, converged = _qp_loop(
+    qp_energy, sigma_qp, converged_mask, converged, residual = _qp_loop(
         mo_energy=poles,
         b_mn=b,
         channels=((poles, b_ov, 2.0),),
@@ -145,6 +146,7 @@ def g0w0_cd_gamma(
         diff_mode=diff_mode,
         conjugate=True,
         linearized=linearized,
+        evaluate_only=evaluate_only,
         del00=del00,
         delP0=delP0,
         q0=q0,
@@ -157,6 +159,7 @@ def g0w0_cd_gamma(
         sigma_qp=sigma_qp,
         converged_mask=converged_mask,
         nw=int(nw),
+        qp_residual=residual,
     )
 
 

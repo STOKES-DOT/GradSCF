@@ -81,12 +81,34 @@ class IntegralPlan:
             env = env.at[ce:ce+c.size].set(coeff.T.ravel())
         return self.atm, self.bas, env
 
-    def evaluate(self, operator, parameters, *, origin=None, ecps=None):
+    def get_jk(self, parameters, density, *, screening_threshold=0.):
+        """Native shell-direct J/K, with JVP/VJP in density at fixed basis.
+
+        The Schwarz cutoff depends only on the basis, so the density map
+        stays linear. Basis/geometry AD is explicitly unsupported here.
+        """
+        if self.backend!='native':raise NotImplementedError('get_jk requires the native backend.')
+        from .backends.native_compact import direct_jk
+        atm,bas,env=self.pack(parameters)
+        if density.shape[-2:]!=(self.topology.nao,)*2:raise ValueError('Density AO dimensions do not match the plan.')
+        return direct_jk(atm,bas,env,density,cart=self.topology.cart,cutoff=screening_threshold)
+
+    def evaluate(self, operator, parameters, *, origin=None, ecps=None, aosym='s1'):
         """Bind current values and evaluate an operator.
 
         Reference one-electron calls skip ERI layouts. Reference eager ERI
         calls still rebuild their layouts when binding the current parameters.
         """
+        if aosym not in {'s1','s4','s8'}:raise ValueError('aosym must be s1, s4 or s8.')
+        if aosym!='s1':
+            if operator!='eri' or origin is not None or ecps is not None:
+                raise ValueError('Packed layouts apply only to ordinary ERI.')
+            if self.backend!='native':raise NotImplementedError('Packed plans require the native backend.')
+            from .backends.native_compact import evaluate
+            atm,bas,env=self.pack(parameters)
+            npair=self.topology.nao*(self.topology.nao+1)//2
+            shape=(npair,npair) if aosym=='s4' else (npair*(npair+1)//2,)
+            return evaluate(atm,bas,env,shape,layout=0 if aosym=='s4' else 1,cart=self.topology.cart)
         if operator == "ecp":
             if origin is not None: raise ValueError("origin is not used for ECP integrals.")
             from .ecp import evaluate_ecp

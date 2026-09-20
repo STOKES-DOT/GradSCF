@@ -15,7 +15,10 @@ class BackendCapabilities:
     dtypes: tuple[str, ...] = ("float64",)
     ad_modes: tuple[str, ...] = ()
 
-    def supports(self, operator, *, variable=None, derivative_order=0):
+    def supports(self, operator, *, variable=None, derivative_order=0, layout='full'):
+        if layout not in self.layouts:return False
+        if layout!='full' and operator!='eri':return False
+        if self.name=='native' and layout!='full' and derivative_order>0:return False
         if operator not in self.operators or derivative_order < 0:
             return False
         if operator == "ecp" and derivative_order > 0:
@@ -31,6 +34,7 @@ def backend_capabilities(name):
         return BackendCapabilities(name, operators+("ecp",), ("cpu",), True,
                                    ("centers", "nuclear_coords"), 1,
                                    representations=("cartesian", "spherical"),
+                                   layouts=("full", "s4", "s8"),
                                    ad_modes=("jvp", "vjp"))
     if name == "jax_reference":
         return BackendCapabilities(name, operators, ("cpu", "gpu"), True,

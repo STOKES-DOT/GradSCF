@@ -75,11 +75,18 @@ def generalized_jk(eri: Array, density: Array) -> tuple[Array, Array]:
     """
 
     eri, density = jnp.asarray(eri), jnp.asarray(density)
-    n = eri.shape[0]
+    n = density.shape[0]//2
     total = density[:n, :n] + density[n:, n:]
+    if eri.ndim in (1,2):
+        from ..integrals.layouts import build_jk_from_packed
+        coulomb,_=build_jk_from_packed(eri,total.T)
+        _,exchange=build_jk_from_packed(eri,density.reshape(2,n,2,n).transpose(0,2,1,3))
+        exchange=exchange.transpose(0,2,1,3).reshape(2*n,2*n)
+        return _hermitian(_spin_diagonal(coulomb)),_hermitian(exchange)
     coulomb = jnp.einsum("pqrs,sr->pq", eri, total, precision=Precision.HIGHEST)
     blocks = density.reshape(2, n, 2, n)
-    exchange = jnp.einsum("prqs,arbs->apbq", eri, blocks, precision=Precision.HIGHEST)
+    from ..integrals.contraction import exchange_matrix
+    exchange = exchange_matrix(eri, blocks.transpose(0,2,1,3)).transpose(0,2,1,3)
     return _hermitian(_spin_diagonal(coulomb)), _hermitian(exchange.reshape(2*n, 2*n))
 
 
@@ -182,8 +189,9 @@ def run_gks_from_integrals(
     _validate_mode(cfg)
     s, h, eri = map(jnp.asarray, (overlap, hcore, eri))
     n = s.shape[0]
-    if s.shape != (n, n) or eri.shape != (n, n, n, n):
-        raise ValueError("Generalized SCF requires spatial overlap and full (nao,nao,nao,nao) ERIs.")
+    from ..integrals.layouts import packed_eri_shape
+    if s.shape != (n,n) or eri.shape not in {(n,n,n,n),packed_eri_shape(n,1),packed_eri_shape(n,2)}:
+        raise ValueError("Generalized SCF requires spatial overlap and full/s4/s8 ERIs.")
     if jnp.iscomplexobj(s) or jnp.iscomplexobj(eri) or jnp.iscomplexobj(ao) or jnp.iscomplexobj(ao_deriv1):
         raise ValueError("Generalized SCF currently requires real spatial AOs and integrals.")
     if not isinstance(nelectron, Integral) or not 0 < nelectron <= 2*n:

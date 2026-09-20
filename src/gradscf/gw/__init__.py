@@ -1,9 +1,14 @@
 """Differentiable GW (Hedin) module for molecular and periodic systems.
 
-Current functionality: spin-restricted and spin-unrestricted G0W0 with the
-contour-deformation (CD) self-energy, implemented in pure JAX with
-implicit/unrolled differentiation of the quasiparticle equation.  evGW,
-qsGW, scGW and the periodic (k-point) extensions are staged placeholders.
+Molecular restricted/unrestricted G0W0 uses contour-deformation (CD)
+self-energies and implicit/unrolled quasiparticle differentiation. evGW
+and real restricted qsGW provide eager self-consistency loops; their outer
+fixed points do not yet have AD rules. Periodic Gamma/k-point drivers are
+available with the staged AD coverage documented in their modules.
+Restricted scGW provides an eager full-matrix finite-temperature Matsubara
+loop with explicit beta and grid controls and opt-in implicit differentiation
+of the coupled matrix/charge equations. Analytic continuation is not implemented.
+See SCGW.md in this source directory for validation and response-conditioning limits.
 
 References
 ----------
@@ -38,7 +43,7 @@ from .polarizability import rho_response_iw, rho_response_real
 from .qp import qp_residual, solve_qp_orbital
 from .qsgw import qsgw_cd_restricted
 from .rgw import GW
-from .scgw import SCGWResult, scgw_cd_restricted
+from .scgw import SCGWResult, scgw_cd_restricted, scgw_matsubara_restricted
 from .screened import screened_w_imag_axis
 from .self_energy import sigma_cd, sigma_imag_part, sigma_residue_part
 from .types import GWResult
@@ -54,6 +59,7 @@ __all__ = [
     "evgw_cd_unrestricted",
     "qsgw_cd_restricted",
     "scgw_cd_restricted",
+    "scgw_matsubara_restricted",
     "SCGWResult",
     "scaled_legendre_grid",
     "rho_response_iw",
