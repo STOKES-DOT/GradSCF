@@ -5,7 +5,7 @@ Momentum-resolved G0W0 with contour deformation.  For orbital (kn, p),
     Sigma_p(kn, w) = -(1/pi)(1/nk) sum_q sum_m int dw' W_q[w', m, p]
                      g0[km, m](w, w')  +  (1/nk) sum_q residue(km poles)
 
-with km = kn - q on the mesh (momentum_table), the pair factors
+with km = kn + q on the mesh (the inverse momentum_table), the pair factors
 ``B_q[ki]`` of :func:`gradscf.gw.pbc.product_basis.kpoint_product_factors`,
 and the q = 0 head/wing correction (fc=True, PRB 83, 245122 (2011)).
 
@@ -14,8 +14,7 @@ space with :func:`gradscf.gw.self_energy.sigma_imag_part`; each q-block
 of the residue reuses :func:`gradscf.gw.self_energy.sigma_residue_part`
 with momentum-pair channels.
 
-AD: eager path only; the traced implicit/unrolled modes raise
-NotImplementedError explicitly.
+AD: eager path only; JAX transformations raise NotImplementedError explicitly.
 
 References
 ----------
@@ -65,11 +64,14 @@ def _screened_w_kpoint(b_q, e_k, nocc, table, freqs, nk, fc_q0=None):
     """Screened W per momentum transfer.
 
     Returns (w_q, del00, delP0): w_q[q] has shape (nw, nk, nmo, nmo) with
-    W_q(kn)[w, m, p]; del00 (nw,) / delP0 (nw, nk, nmo) are the q=0
-    head/wing terms when fc_q0 is given, else None.
+    W_q(kn)[w, m, p], including the 1/nk self-energy weight; del00 (nw,) /
+    delP0 (nw, nk, nmo) are the separately scaled q=0 head/wing terms
+    when fc_q0 is given, else None.
     """
     w_all = []
     del00 = delP0 = None
+    inverse_table = np.argsort(table, axis=0)
+    zero_q = int(np.flatnonzero(np.all(table == np.arange(nk)[:, None], axis=0))[0])
     for q in range(nk):
         def at_frequency(omega, q=q):
             pi = _response_iw_kpoint(omega, q, b_q, e_k, nocc, table, nk)
@@ -79,11 +81,12 @@ def _screened_w_kpoint(b_q, e_k, nocc, table, freqs, nk, fc_q0=None):
             screened = eps_inv - eye
             w_kn = []
             for kn in range(nk):
-                b = b_q[q][kn]
+                km = int(inverse_table[kn, q])
+                b = b_q[q][km]
                 w_kn.append(
-                    jnp.einsum("Gmp,GH,Hmp->mp", b, screened, b.conj(), precision=Precision.HIGHEST)
+                    jnp.einsum("Gmp,GH,Hmp->mp", b.conj(), screened, b, precision=Precision.HIGHEST) / nk
                 )
-            if fc_q0 is None or q != 0:
+            if fc_q0 is None or q != zero_q:
                 return jnp.stack(w_kn), None, None
             # q -> 0 head/wing (PRB 83, 245122): k-summed responses
             qij, q_abs, volume = fc_q0
@@ -98,7 +101,7 @@ def _screened_w_kpoint(b_q, e_k, nocc, table, freqs, nk, fc_q0=None):
                 pi_00 = pi_00 + 4.0 * jnp.sum(qij[ki].conj() * qij[ki] * chi)
                 b_ov = b_q[q][ki][:, :nocc, nocc:]
                 pi_p0 = pi_p0 + 4.0 * jnp.einsum(
-                    "Pia,ia->P", b_ov.conj(), chi * qij[ki].conj(), precision=Precision.HIGHEST
+                    "Pia,ia->P", b_ov, chi * qij[ki].conj(), precision=Precision.HIGHEST
                 )
             pi_00 = pi_00 / nk
             pi_p0 = pi_p0 / nk
@@ -114,7 +117,7 @@ def _screened_w_kpoint(b_q, e_k, nocc, table, freqs, nk, fc_q0=None):
             d00 = head_scale * (eps_inv_00 - 1.0)
             dp0 = []
             for kn in range(nk):
-                wn_p0 = jnp.einsum("Pnn,P->n", b_q[q][kn], eps_inv_p0, precision=Precision.HIGHEST)
+                wn_p0 = jnp.einsum("Pnn,P->n", b_q[q][kn].conj(), eps_inv_p0, precision=Precision.HIGHEST)
                 dp0.append(wings_const * 2.0 * wn_p0.real)
             return jnp.stack(w_kn), d00, jnp.stack(dp0)
 
@@ -124,7 +127,7 @@ def _screened_w_kpoint(b_q, e_k, nocc, table, freqs, nk, fc_q0=None):
         else:
             w, d00, dp0 = jax.vmap(at_frequency)(freqs)
         w_all.append(w)
-        if fc_q0 is not None and q == 0:
+        if fc_q0 is not None and q == zero_q:
             del00, delP0 = d00, dp0
     return w_all, del00, delP0
 
@@ -139,22 +142,26 @@ def _sigma_residue_kpoint(
     carries the 1/nk momentum average.
     """
     total = jnp.zeros((), dtype=jnp.complex128)
+    inverse_table = np.argsort(table, axis=0)
     for q in range(nk):
-        km = int(table[kn, q])
+        km = int(inverse_table[kn, q])
+        pair = b_q[q][km][:, :, p]
         total = total + sigma_residue_part(
             omega,
             e_k[km],
-            b_q[q][kn][:, p, :],
-            b_q[q][kn][:, :, p],
+            pair,
+            pair,
             channels_q[q],
             ef,
             eta,
             conjugate=True,
+            response_scale=1.0 / nk,
         )
     total = total / nk
     if q0_data is not None:
         qij_t, q_abs, volume = q0_data
-        km0 = int(table[kn, 0])
+        zero_q = int(np.flatnonzero(np.all(table == np.arange(nk)[:, None], axis=0))[0])
+        km0 = int(inverse_table[kn, zero_q])
         q0_dict = {
             "qij": qij_t,
             "q_abs": q_abs,
@@ -165,23 +172,25 @@ def _sigma_residue_kpoint(
         with_q0 = sigma_residue_part(
             omega,
             e_k[km0],
-            b_q[0][kn][:, p, :],
-            b_q[0][kn][:, :, p],
-            channels_q[0],
+            b_q[zero_q][km0][:, :, p],
+            b_q[zero_q][km0][:, :, p],
+            channels_q[zero_q],
             ef,
             eta,
             conjugate=True,
             q0=q0_dict,
+            response_scale=1.0 / nk,
         )
         without_q0 = sigma_residue_part(
             omega,
             e_k[km0],
-            b_q[0][kn][:, p, :],
-            b_q[0][kn][:, :, p],
-            channels_q[0],
+            b_q[zero_q][km0][:, :, p],
+            b_q[zero_q][km0][:, :, p],
+            channels_q[zero_q],
             ef,
             eta,
             conjugate=True,
+            response_scale=1.0 / nk,
         )
         total = total + (with_q0 - without_q0)
     return total
@@ -230,8 +239,13 @@ def g0w0_cd_kpoints(
     -------
     :class:`GWResult` with ``mo_energy`` of shape ``(nk, nmo)``.
     """
+    leaves = jax.tree_util.tree_leaves(
+        (inputs, kpts_frac, mo_energy_k, mo_coeff_k, fock_k, hcore_k, density_spin)
+    )
+    if any(isinstance(leaf, jax.core.Tracer) for leaf in leaves):
+        raise NotImplementedError("k-point GW currently supports eager evaluation only; AD/JIT is not implemented.")
     e_k = [jnp.asarray(e, dtype=jnp.float64) for e in jnp.asarray(mo_energy_k)]
-    c_k = jnp.asarray(mo_coeff_k, dtype=jnp.float64)
+    c_k = jnp.asarray(mo_coeff_k, dtype=jnp.complex128)
     nk = len(e_k)
     nmo = e_k[0].shape[0]
     nocc = int(nocc)
@@ -239,6 +253,7 @@ def g0w0_cd_kpoints(
         orbs = range(nmo)
 
     table = momentum_transfer_table(np.asarray(kpts_frac))
+    inverse_table = np.argsort(table, axis=0)
     b_q = kpoint_product_factors(inputs, c_k, mesh=mesh, momentum_table=table)
 
     j_k, k_ewald = get_kpoint_jk(
@@ -248,8 +263,8 @@ def g0w0_cd_kpoints(
     delta_v_k = []
     for kn in range(nk):
         c = c_k[kn]
-        vmf = c.T @ (jnp.asarray(fock_k[kn]) - jnp.asarray(hcore_k[kn]) - j_k[kn]) @ c
-        vk = c.T @ k_ewald[kn] @ c
+        vmf = c.conj().T @ (jnp.asarray(fock_k[kn]) - jnp.asarray(hcore_k[kn]) - j_k[kn]) @ c
+        vk = c.conj().T @ k_ewald[kn] @ c
         delta_v_k.append(jnp.diag(-(vk + vmf)).real)
 
     ef = jnp.asarray(
@@ -295,7 +310,7 @@ def g0w0_cd_kpoints(
     converged_mask = jnp.ones_like(qp_energy, dtype=bool)
     converged = True
     for kn in range(nk):
-        e_flat = jnp.concatenate([e_k[int(table[kn, q])] for q in range(nk)])
+        e_flat = jnp.concatenate([e_k[int(inverse_table[kn, q])] for q in range(nk)])
         for p in orbs:
             p = int(p)
             wmn_p_flat = jnp.concatenate([w_q[q][:, kn, :, p] for q in range(nk)], axis=1)

@@ -76,6 +76,7 @@ class RKSConfig:
     jk_backend: Literal["full", "df", "direct"] = "full"
     df_tol: float = 1e-10
     df_max_rank: int | None = None
+    auxbasis: str | None = None
     direct_scf_tol: float = 0.0
     convergence_metric: Literal["energy_and_residual", "energy"] = "energy_and_residual"
 
@@ -131,12 +132,14 @@ def _closed_shell_mo_occ(nao: int, nocc: int, dtype: Array) -> Array:
 
 def _build_jk(eri: Array, density: Array) -> tuple[Array, Array]:
     eri_arr = jnp.asarray(eri)
-    if eri_arr.ndim == 2:
-        return build_jk_from_eri_pair_matrix(eri_arr, density)
+    if eri_arr.ndim in (1,2):
+        from ..integrals.layouts import build_jk_from_packed
+        return build_jk_from_packed(eri_arr, density)
     if int(eri_arr.size) == 0:
         raise ValueError("JK build requires full AO ERI or packed AO-pair ERI data.")
     j_mat = jnp.einsum("pqrs,rs->pq", eri, density, precision=Precision.HIGHEST)
-    k_mat = jnp.einsum("prqs,rs->pq", eri, density, precision=Precision.HIGHEST)
+    from ..integrals.contraction import exchange_matrix
+    k_mat = exchange_matrix(eri, density)
     return j_mat, k_mat
 
 
@@ -249,6 +252,15 @@ def _make_jk_builder(
             raise ValueError("jk_backend='direct' requires direct_basis.")
 
         threshold = float(cfg.direct_scf_tol)
+        from ..integrals.backends.native_compact import NativeDirectBasis
+        if isinstance(direct_basis,NativeDirectBasis):
+            def _native_direct(density,mo_coeff=None,mo_occ=None,density_last=None,j_last=None,k_last=None):
+                del mo_coeff,mo_occ
+                delta=density if density_last is None else density-density_last
+                j,k=direct_basis.get_jk(delta,screening_threshold=threshold)
+                if density_last is not None:j,k=j+j_last,k+k_last
+                return j,k if with_k else jnp.zeros_like(density)
+            return _native_direct
         if threshold <= 0.0 and int(direct_basis.nao) <= _DIRECT_PACKED_JK_MAX_NAO:
             pair_arr = jnp.asarray(eri_pair_matrix_packed(direct_basis))
 
@@ -322,6 +334,9 @@ def _make_jk_builder(
                     return build_j_from_eri_pair_matrix(pair_arr, density), jnp.zeros_like(density)
                 if eri_arr is None:
                     raise ValueError("jk_backend='full' requires full AO ERI or packed AO-pair ERI.")
+                if eri_arr.ndim in (1,2):
+                    from ..integrals.layouts import build_jk_from_packed
+                    return build_jk_from_packed(eri_arr,density)[0],jnp.zeros_like(density)
                 return (
                     jnp.einsum("pqrs,rs->pq", eri_arr, density, precision=Precision.HIGHEST),
                     jnp.zeros_like(density),

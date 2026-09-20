@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 
 from gradscf import dft, gto
-from gradscf.gw import g0w0_cd_restricted
+from gradscf.gw import g0w0_cd_restricted, g0w0_cd_unrestricted
 
 _NW = 40
 
@@ -98,3 +98,58 @@ def test_qp_energy_implicit_matches_unrolled():
         inputs["mo_energy"]
     )
     np.testing.assert_allclose(grad_implicit, grad_unrolled, rtol=1e-5, atol=1e-7)
+
+
+@pytest.mark.parametrize("diff_mode", ["implicit", "unrolled"])
+@pytest.mark.parametrize("unrestricted", [False, True])
+def test_jit_preserves_full_gw_result(diff_mode, unrestricted):
+    inputs = _h2_inputs()
+    driver = g0w0_cd_restricted
+    if unrestricted:
+        driver = g0w0_cd_unrestricted
+        for key in ("mo_energy", "mo_coeff", "fock_matrix"):
+            inputs[key] = (inputs[key], inputs[key])
+        inputs["density_matrix"] = (inputs["density_matrix"] / 2,) * 2
+        inputs["nocc"] = (1, 1)
+
+    def run(energy):
+        return driver(**{**inputs, "mo_energy": energy}, nw=_NW, diff_mode=diff_mode)
+
+    eager = run(inputs["mo_energy"])
+    compiled = jax.jit(run)(inputs["mo_energy"])
+    assert np.max(np.abs(eager.sigma_qp)) > 1e-3
+    np.testing.assert_allclose(compiled.mo_energy, eager.mo_energy, rtol=0, atol=1e-10)
+    np.testing.assert_allclose(compiled.sigma_qp, eager.sigma_qp, rtol=0, atol=1e-10)
+    np.testing.assert_allclose(compiled.qp_residual, eager.qp_residual, rtol=0, atol=1e-10)
+    np.testing.assert_array_equal(compiled.converged_mask, eager.converged_mask)
+    assert bool(compiled.converged) == bool(eager.converged)
+
+
+def test_pole_only_gradient_matches_finite_difference():
+    inputs = _h2_inputs()
+    fn = lambda poles: g0w0_cd_restricted(
+        **inputs, mo_energy_poles=poles, nw=_NW
+    ).mo_energy[0]
+    grad_ad = jax.grad(fn)(inputs["mo_energy"])
+    grad_fd = _finite_diff_grad(fn, inputs["mo_energy"])
+    np.testing.assert_allclose(grad_ad, grad_fd, rtol=1e-4, atol=1e-6)
+
+
+def test_evaluate_only_preserves_selected_poles_and_reports_residual():
+    inputs = _h2_inputs()
+    poles = inputs["mo_energy"] + jnp.array([0.02, -0.01])
+    run = jax.jit(lambda e: g0w0_cd_restricted(
+        **inputs, mo_energy_poles=e, nw=_NW, orbs=(0,), evaluate_only=True
+    ))
+    result = run(poles)
+    np.testing.assert_allclose(result.mo_energy[0], poles[0], rtol=0, atol=1e-14)
+    np.testing.assert_allclose(result.mo_energy[1], inputs["mo_energy"][1], rtol=0, atol=1e-14)
+    # HF start: delta_v vanishes, so the residual is directly checkable.
+    np.testing.assert_allclose(
+        result.qp_residual[0], poles[0] - inputs["mo_energy"][0] - result.sigma_qp[0].real,
+        rtol=0, atol=1e-12,
+    )
+    assert not bool(result.converged)
+    assert float(result.qp_residual[1]) == 0.0
+    assert complex(result.sigma_qp[1]) == 0.0j
+    assert bool(result.converged_mask[1])

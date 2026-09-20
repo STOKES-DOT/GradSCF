@@ -259,12 +259,16 @@ def _unrestricted_project_response(
 
 
 def _jk_from_full_eri(eri: Array, density: Array) -> tuple[Array, Array]:
+    if eri.ndim in (1,2):
+        from ..integrals.layouts import build_jk_from_packed
+        return build_jk_from_packed(eri,density)
     j_mat = jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     k_mat = jnp.einsum("prqs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     return j_mat, k_mat
 
 
 def _j_from_full_eri(eri: Array, density: Array) -> Array:
+    if eri.ndim in (1,2):return _jk_from_full_eri(eri,density)[0]
     return jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
 
 

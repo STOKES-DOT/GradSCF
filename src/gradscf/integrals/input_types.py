@@ -64,6 +64,8 @@ class RKSIntegralInputs:
         if self.eri_pair_matrix is not None:
             return self.eri_pair_matrix
         if self.direct_basis is not None:
+            if hasattr(self.direct_basis,'response_eri_pair_matrix'):
+                return self.direct_basis.response_eri_pair_matrix()
             # Resolve the shared public/legacy patch point only when needed.
             from .assembly import eri_pair_matrix_packed
 
@@ -73,7 +75,7 @@ class RKSIntegralInputs:
 
 @dataclass(frozen=True)
 class UKSIntegralInputs:
-    """AO integrals and grid data required by the UKS SCF kernel."""
+    """AO integrals/grid for UKS; eri may be full or native s4 packed."""
 
     basis: CartesianBasis
     overlap: Array
@@ -126,4 +128,3 @@ class UKSIntegralInputs:
             "init_mo_energy_alpha": self.init_mo_energy_alpha,
             "init_mo_energy_beta": self.init_mo_energy_beta,
         }
-

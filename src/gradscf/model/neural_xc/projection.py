@@ -748,17 +748,21 @@ class NeuralXCProjectionMixin:
 
     def exact_exchange_energy(self, molecule: Any) -> Array:
         rep_tensor = jnp.asarray(molecule.rep_tensor)
+        factors=getattr(molecule,'df_factors',None)
         rdm1 = jnp.asarray(molecule.rdm1)
         if rdm1.ndim == 2:
             rdm1 = jnp.stack([0.5 * rdm1, 0.5 * rdm1], axis=0)
 
         def spin_exchange(dm_spin):
-            exchange_matrix = jnp.einsum(
-                "prqs,rs->pq",
-                rep_tensor,
-                dm_spin,
-                precision=Precision.HIGHEST,
-            )
+            if factors is not None and jnp.asarray(factors).size:
+                from ...df import build_jk_from_df
+                exchange_matrix=build_jk_from_df(factors,dm_spin)[1]
+            elif rep_tensor.ndim in (1,2):
+                from ...integrals.layouts import build_jk_from_packed
+                exchange_matrix=build_jk_from_packed(rep_tensor,dm_spin)[1]
+            else:
+                from ...integrals.contraction import exchange_matrix as contract_exchange
+                exchange_matrix=contract_exchange(rep_tensor,dm_spin)
             return -0.5 * jnp.einsum(
                 "pq,pq->",
                 dm_spin,
@@ -995,12 +999,15 @@ class NeuralXCProjectionMixin:
         rep_tensor = jnp.asarray(molecule.rep_tensor)
 
         e_one = jnp.einsum("pq,pq->", density_matrix, h1e, precision=Precision.HIGHEST)
-        j_matrix = jnp.einsum(
-            "pqrs,rs->pq",
-            rep_tensor,
-            density_matrix,
-            precision=Precision.HIGHEST,
-        )
+        factors=getattr(molecule,'df_factors',None)
+        if factors is not None and jnp.asarray(factors).size:
+            from ...df import build_j_from_df
+            j_matrix=build_j_from_df(factors,density_matrix)
+        elif rep_tensor.ndim in (1,2):
+            from ...integrals.layouts import build_jk_from_packed
+            j_matrix=build_jk_from_packed(rep_tensor,density_matrix)[0]
+        else:
+            j_matrix=jnp.einsum('pqrs,rs->pq',rep_tensor,density_matrix,precision=Precision.HIGHEST)
         e_hartree = 0.5 * jnp.einsum(
             "pq,pq->",
             density_matrix,

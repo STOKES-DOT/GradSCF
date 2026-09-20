@@ -52,7 +52,7 @@ def g0w0_cd_gamma_unrestricted(
     converged spin Fock matrices are required.
     """
     e_a, e_b = (jnp.asarray(e, dtype=jnp.float64) for e in mo_energy)
-    c_a, c_b = (jnp.asarray(c, dtype=jnp.float64) for c in mo_coeff)
+    c_a, c_b = (jnp.asarray(c, dtype=jnp.complex128) for c in mo_coeff)
     nocc_a, nocc_b = int(nocc[0]), int(nocc[1])
     nmo = e_a.shape[0]
     if orbs is None:
@@ -65,8 +65,8 @@ def g0w0_cd_gamma_unrestricted(
 
     density_spin = jnp.asarray(density_spin)
     j_mat, k_ewald = get_jk(inputs, density_spin, exxdiv="ewald", with_k=True)
-    ca_t = c_a.T.astype(jnp.complex128)
-    cb_t = c_b.T.astype(jnp.complex128)
+    ca_t = c_a.conj().T
+    cb_t = c_b.conj().T
     if fock_matrix is None:
         # HF start: v^mf_sigma = -K_sigma, so delta_v = 0 identically.
         delta_v_a = jnp.zeros(nmo)
@@ -90,12 +90,12 @@ def g0w0_cd_gamma_unrestricted(
     wmn_b = screened_w_imag_axis(b_b, response_fn, freqs, conjugate=True)
     channels = ((e_a, b_ov_a, 1.0), (e_b, b_ov_b, 1.0))
 
-    qp_a, sig_a, mask_a, conv_a = _qp_loop(
+    qp_a, sig_a, mask_a, conv_a, residual_a = _qp_loop(
         mo_energy=e_a, b_mn=b_a, channels=channels, wmn=wmn_a, freqs=freqs, wts=wts,
         ef=ef_a, eta=float(eta), delta_v=delta_v_a, nocc=nocc_a, orbs=orbs,
         diff_mode=diff_mode, conjugate=True,
     )
-    qp_b, sig_b, mask_b, conv_b = _qp_loop(
+    qp_b, sig_b, mask_b, conv_b, residual_b = _qp_loop(
         mo_energy=e_b, b_mn=b_b, channels=channels, wmn=wmn_b, freqs=freqs, wts=wts,
         ef=ef_b, eta=float(eta), delta_v=delta_v_b, nocc=nocc_b, orbs=orbs,
         diff_mode=diff_mode, conjugate=True,
@@ -103,10 +103,11 @@ def g0w0_cd_gamma_unrestricted(
     return GWResult(
         mo_energy=jnp.stack([qp_a, qp_b]),
         mo_coeff=jnp.stack([c_a, c_b]),
-        converged=conv_a and conv_b,
+        converged=conv_a & conv_b,
         sigma_qp=jnp.stack([sig_a, sig_b]),
         converged_mask=jnp.stack([mask_a, mask_b]),
         nw=int(nw),
+        qp_residual=jnp.stack([residual_a, residual_b]),
     )
 
 

@@ -33,7 +33,7 @@ def test_restricted_inputs_use_standalone_integrals(backend):
 def test_native_unrestricted_inputs_electron_counts_and_density():
     data=build_uks_integral_inputs(atom="H 0 0 0",basis="sto-3g",spin=1,xc_spec="hf")
     assert (data.nalpha,data.nbeta,data.total_electrons)==(1,0,1)
-    assert data.eri.shape==(1,1,1,1)
+    assert data.eri.shape==(1,1)  # Native assembly now directly emits s4.
 
 
 def test_native_inputs_match_independent_reference_integrals():

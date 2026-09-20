@@ -5,8 +5,8 @@ momentum transfer ``q = kL`` from pair transitions (ki, kj) satisfying
 
     -ki + kj + kL = G_reciprocal   (i.e. kj = ki - kL modulo the k mesh)
 
-and the self-energy at kn contracts orbital m at the partner point
-``km = kn - q``.  This module precomputes the index mapping on a uniform
+and the self-energy at kn contracts orbital m at the inverse partner
+``table[km, q] = kn`` (``km = kn + q``). This module precomputes the mapping on a uniform
 k mesh, following the table construction of PySCF ``pbc.gw.krgw_ac``
 (``kpti_kptj`` / ``kidx``).
 

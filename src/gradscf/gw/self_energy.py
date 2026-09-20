@@ -49,7 +49,7 @@ from .polarizability import rho_response_real
 _BATCH_MEM_LIMIT = 1 << 31
 
 
-def _response_solve_one(omega, channels, eta, naux, dtype, conjugate):
+def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0):
     """RPA response at one frequency + (1-Pi)^{-1} - I (complex)."""
     pi = None
     for e_spin, b_ov_spin, spin_factor in channels:
@@ -57,6 +57,7 @@ def _response_solve_one(omega, channels, eta, naux, dtype, conjugate):
             omega, e_spin, b_ov_spin, eta=eta, spin_factor=spin_factor, conjugate=conjugate
         )
         pi = contrib if pi is None else pi + contrib
+    pi = response_scale * pi
     eye = jnp.eye(naux, dtype=dtype)
     return jnp.linalg.solve(eye - pi, pi)
 
@@ -121,6 +122,7 @@ def sigma_residue_part(
     eta: float,
     conjugate: bool = False,
     q0: dict | None = None,
+    response_scale: float = 1.0,
 ) -> Array:
     """Residue part of Sigma_p(omega) from poles inside the contour.
 
@@ -141,6 +143,10 @@ def sigma_residue_part(
         beta channels with factor 1.0 each.
     ef, eta:
         Fermi-level estimate and response broadening.
+    response_scale:
+        Weight of the channel sum in Pi (1/Nk for k-resolved screening).
+        Applied to body, head and wings before dielectric inversion;
+        independent of the outer q average of the self-energy.
 
     Returns
     -------
@@ -169,7 +175,9 @@ def sigma_residue_part(
     naux = b_pm.shape[0]
     dtype = jnp.complex128
     est_bytes = pole_freqs.shape[0] * naux * naux * 16 * 2
-    solve_one = lambda w: _response_solve_one(w, channels, eta, naux, dtype, conjugate)
+    solve_one = lambda w: _response_solve_one(
+        w, channels, eta, naux, dtype, conjugate, response_scale
+    )
     if est_bytes > _BATCH_MEM_LIMIT:
         screened = jax.lax.map(solve_one, pole_freqs)
     else:
@@ -214,10 +222,10 @@ def sigma_residue_part(
             chi = 1.0 / (omega_c + eia + 2j * eta) + 1.0 / (-omega_c + eia)
             pi_00 = pi_00 + spin_factor * jnp.sum(qij_c.conj() * qij_c * chi)
             pi_p0 = pi_p0 + spin_factor * jnp.einsum(
-                "Pia,ia->P", b_ov_spin.conj(), chi * qij_c.conj(), precision=Precision.HIGHEST
+                "Pia,ia->P", b_ov_spin, chi * qij_c.conj(), precision=Precision.HIGHEST
             )
-        pi_00 = pi_00 / nkpts
-        pi_p0 = pi_p0 / nkpts
+        pi_00 = response_scale * pi_00
+        pi_p0 = response_scale * pi_p0
         eps_00 = 1.0 - 4.0 * jnp.pi / q2 * pi_00
         eps_p0 = -jnp.sqrt(4.0 * jnp.pi) / q_norm * pi_p0
         schur = eps_00 - eps_p0.conj() @ eps_body_inv @ eps_p0

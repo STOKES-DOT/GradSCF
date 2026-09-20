@@ -6,11 +6,14 @@ QP spectrum is self-consistent:
 
     e_{n+1} = G0W0[e_n]   (fixed-point iteration with optional damping)
 
-The drivers simply re-evaluate the G0W0 machinery
+The drivers re-evaluate the G0W0 machinery
 (:func:`gradscf.gw.g0w0_cd_restricted` / ``_unrestricted`` /
-:func:`gradscf.gw.pbc.krgw.g0w0_cd_gamma`) with ``mo_energy`` replaced by
-the current QP spectrum, so every ingredient (response, W, self-energy,
-QP solver, AD rules) is inherited unchanged.
+:func:`gradscf.gw.pbc.krgw.g0w0_cd_gamma`) with the current QP spectrum
+in G and W, retaining the original mean-field base in the Dyson equation.
+The outer convergence loop is eager-only; ``diff_mode`` does not provide
+implicit differentiation of this self-consistent fixed point.
+Convergence certifies the on-shell residual of the chosen discrete CD
+grid. Frequency-grid / own-pole limit accuracy requires separate validation.
 
 References
 ----------
@@ -25,6 +28,7 @@ References
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 import jax.numpy as jnp
 from jaxtyping import Array
@@ -46,26 +50,26 @@ def _evgw_loop(
 
     ``mo_energy_mf`` stays the fixed mean-field base of the QP equation;
     only the pole spectrum (``mo_energy_poles`` of the drivers) is iterated.
-    Each iteration uses the smooth Z-factor linearized update (the graphical
-    solve jumps branches in pole-dense regions); the converged linearized
-    spectrum IS the evGW result (standard Z-update evGW convention; see
-    Shishkin & Kresse, PRB 75, 235102 (2007)).
+    Iterate the diagonal self-consistent residual
+    F(E) = E - e_mf - Re Sigma(E; G[E], W[E]) - delta_v.
+    Each driver evaluates F with G/W rebuilt at E; the returned result
+    and the unscaled residual share that same spectrum. Fixed-G/W partial
+    frequency derivatives at a pole are not used to precondition this map.
     """
     if not 0.0 <= damping < 1.0:
         raise ValueError("damping must be in [0, 1).")
+    if max_iter < 1 or tol <= 0.0:
+        raise ValueError("max_iter and tol must be positive.")
     e_old = jnp.asarray(mo_energy_mf, dtype=jnp.float64)
-    result = None
     for _ in range(int(max_iter)):
-        result = driver(mo_energy_poles=e_old, linearized=True, **kwargs)
-        e_new = jnp.asarray(result.mo_energy, dtype=jnp.float64)
-        if damping > 0.0:
-            e_new = (1.0 - damping) * e_new + damping * e_old
-        delta = jnp.max(jnp.abs(e_new - e_old))
-        e_old = e_new
+        result = driver(mo_energy_poles=e_old, evaluate_only=True, **kwargs)
+        residual = result.qp_residual
+        delta = jnp.max(jnp.abs(residual))
         if float(delta) < tol:
-            return result
+            return replace(result, converged=True, converged_mask=jnp.abs(residual) < tol)
+        e_old = e_old - (1.0 - damping) * residual
     raise ArithmeticError(
-        f"evGW did not converge in {max_iter} iterations (last max|de| = "
+        f"evGW did not converge in {max_iter} iterations (last max|Dyson residual| = "
         f"{float(delta):.3e} > {tol}). Increase max_iter or damping; "
         "no fallback result is returned."
     )

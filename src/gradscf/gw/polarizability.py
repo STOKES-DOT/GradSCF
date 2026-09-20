@@ -20,6 +20,8 @@ total restricted-summed response is recovered by summing channels.
 
 These are pure JAX functions and are differentiable with respect to
 ``mo_energy`` and ``b_ov`` under ``jax.grad``/``jax.vjp``.
+For complex periodic factors (``conjugate=True``), the convention is
+``Pi_PQ = sum_ia B_Pia chi_ia conj(B_Qia)`` on both frequency axes.
 
 References
 ----------
@@ -76,8 +78,8 @@ def rho_response_iw(
     eia = e_occ[:, None] - e_virt[None, :]
     chi = eia / (omega**2 + eia * eia)
     weighted = b_ov * chi[None, :, :]
-    first = weighted.conj() if conjugate else weighted
-    return spin_factor * jnp.einsum("Pia,Qia->PQ", first, b_ov, precision=Precision.HIGHEST)
+    second = b_ov.conj() if conjugate else b_ov
+    return spin_factor * jnp.einsum("Pia,Qia->PQ", weighted, second, precision=Precision.HIGHEST)
 
 
 def rho_response_real(
@@ -108,8 +110,9 @@ def rho_response_real(
     eta_c = jnp.asarray(eta, dtype=jnp.float64)
     chi = 1.0 / (omega_c + eia + 2j * eta_c) + 1.0 / (-omega_c + eia)
     weighted = b_ov * chi[None, :, :]
-    first = weighted.conj() if conjugate else weighted
-    return spin_factor * jnp.einsum("Pia,Qia->PQ", first, b_ov, precision=Precision.HIGHEST)
+    # Pi = B chi B^dagger: conjugate the vertex, never the retarded weight.
+    second = b_ov.conj() if conjugate else b_ov
+    return spin_factor * jnp.einsum("Pia,Qia->PQ", weighted, second, precision=Precision.HIGHEST)
 
 
 __all__ = ["rho_response_iw", "rho_response_real"]

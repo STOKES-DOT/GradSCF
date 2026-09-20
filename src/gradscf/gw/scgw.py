@@ -1,73 +1,152 @@
-"""Fully self-consistent GW (scGW) -- Stage 5 (molecular, restricted).
+"""Finite-temperature, real restricted matrix scGW on Matsubara axes.
 
-Matrix scGW on the imaginary axis:
+The iterated state is the full static Fock matrix and frequency-dependent
+correlation self-energy, in a fixed orthonormal orbital basis. Each Dyson
+G determines the density, Pi=2GG, Wc=(1-Pi)^-1 Pi and Sigma_c=-G Wc. The
+chemical potential is solved from that same interacting G, not from pole
+occupations. Reference subtraction and frequency grids are implemented in
+:mod:`gradscf.gw.matsubara`.
 
-    G(iw)  = [ (iw + mu) I - H0 - Sigma^c(iw) ]^{-1},   H0 = h + J[rho] + Sigma^x
-    Sigma^c(iw) from the RPA screened interaction W(iw)
-    mu adjusted so that the pole occupations integrate to N electrons
+This is a finite-grid imaginary-axis implementation. It returns matrix G
+and Sigma, densities, internal energies, and residuals; quasiparticle poles
+require a separate analytic-continuation calculation and are not returned.
+The default solver is eager. An opt-in implicit response path compiles the
+primal loop and differentiates the joint matrix/particle-number residual,
+not the iterations. Inner kernels and response require resolvable reference
+spectra; see SCGW.md for charge-conditioning and derivative limits.
 
-Pragmatic simplifications (documented; small-molecule validation scope):
-
-1. The interacting density is approximated by the quasiparticle pole
-   occupations, rho = C diag(2 f(e_m - mu)) C^T (no Matsubara tail sum);
-   this keeps particle-number conservation exact without tail corrections.
-2. The RPA response entering W uses the quasiparticle pole energies of the
-   current iteration (diagonal-pole approximation of G).
-3. Correlation energy via the Galitskii-Migdal trace on the imaginary
-   grid, E_c = (1/2pi) sum_w wts_w Tr[Sigma^c(iw) G(iw)] (spin factor 2
-   included), which converges on the scaled-Legendre grid without tails.
-
-References
-----------
-- V. M. Galitskii and A. B. Migdal, Sov. Phys. JETP 7, 96 (1958)
-  (Galitskii-Migdal total energy).
-- B. Holm and U. von Barth, "Fully self-consistent GW self-energy of the
-  electron gas", Phys. Rev. B 57, 2108 (1998). DOI:10.1103/PhysRevB.57.2108
-- L. Hedin, Phys. Rev. 139, A796 (1965). DOI:10.1103/PhysRev.139.A796
-- A. Kutepov, "Electronic structure of Na, K, Si, and LiF from
-  self-consistent GW", Phys. Rev. B 95, 195120 (2017).
-  DOI:10.1103/PhysRevB.95.195120
+References: Yeh et al., Phys. Rev. B 106, 235104 (2022);
+Caruso et al., Phys. Rev. B 88, 075105 (2013); Galitskii and Migdal,
+Sov. Phys. JETP 7, 96 (1958).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
+import warnings
 
 import jax
 import jax.numpy as jnp
-from jax.lax import Precision
+import numpy as np
 from jaxtyping import Array
 
-from ..df import build_j_from_df, build_jk_from_df
-from .freq import scaled_legendre_grid
-from .g0w0 import _exchange_mo, _mo_factors
-from .polarizability import rho_response_iw
-from .screened import screened_w_imag_axis_matrix
-from .self_energy import sigma_imag_matrix
+from ..df import build_jk_from_df
 from ..scf._pytree import pytree_dataclass
+from ..scf.autodiff import SCFDifferentiationConfig
+from .g0w0 import _mo_factors
+from .matsubara import MatsubaraGrid, matsubara_grid, dyson_green_and_density, gw_matsubara_step
 
 
-@pytree_dataclass(static_fields=("converged", "nw", "n_iter"))
+@pytree_dataclass(static_fields=("nw", "beta"))
 @dataclass(frozen=True)
 class SCGWResult:
-    """Result of a molecular scGW calculation."""
+    """Converged imaginary-axis state; energies in Ha, beta in Ha^-1.
 
-    mo_energy: jnp.ndarray  # quasiparticle pole energies
+    ``mo_energy`` is None: no QP poles are inferred from Matsubara data.
+    ``mo_coeff`` is the fixed AO expansion of the orthonormal basis used by
+    ``green_iw``, ``self_energy_iw``, ``fock_mo``, and ``density_mo``. Full
+    off-diagonal G carries the orbital response in that fixed basis.
+    ``density_matrix`` is the spin-summed AO density; ``density_mo`` is its
+    representation in the orthonormal basis. ``static_mo_*`` diagonalize
+    the static Fock only and must not be interpreted as QP poles/orbitals.
+
+    ``correlation_energy`` is the dynamical Sigma_c G contribution to the
+    Galitskii-Migdal internal energy, not total_energy minus an HF energy.
+    ``fixed_point_residual`` bounds unmixed Fock/Sigma/moment updates
+    (the moment is expressed as Sigma at the lowest frequency), in Ha.
+    The returned Fock/Sigma are the ones used in the returned Dyson G.
+    The ``mapped_*`` fields are rebuilt from that same G; their difference
+    from the Dyson inputs is bounded by the convergence residual. The GM
+    energy is the GW functional of this returned G, with analytic reference
+    tails in its bosonic Pi Wc sum.
+    """
+
+    mo_energy: jnp.ndarray | None
     mo_coeff: jnp.ndarray
     chemical_potential: jnp.ndarray
     correlation_energy: jnp.ndarray
     total_energy: jnp.ndarray
-    converged: bool
+    density_matrix: jnp.ndarray
+    density_mo: jnp.ndarray
+    green_iw: jnp.ndarray
+    self_energy_iw: jnp.ndarray
+    sigma_moment: jnp.ndarray
+    fock_mo: jnp.ndarray
+    mapped_fock_mo: jnp.ndarray
+    mapped_self_energy_iw: jnp.ndarray
+    static_mo_energy: jnp.ndarray
+    static_mo_coeff: jnp.ndarray
+    fixed_point_residual: jnp.ndarray
+    particle_number_error: jnp.ndarray
+    grid: MatsubaraGrid
+    converged: bool | jnp.ndarray
     nw: int
-    n_iter: int
+    n_iter: int | jnp.ndarray
+    beta: float
 
 
-def _fermi(energy: Array, mu: Array, beta: float = 1e5) -> Array:
-    """T -> 0 Fermi occupation (smooth step for JAX friendliness)."""
-    return 0.5 * (1.0 - jnp.tanh(0.5 * beta * (energy - mu)))
+def _solve_chemical_potential(fock, sigma, guess, grid, target, particle_tol):
+    """Bracketed number solve with density from the interacting Dyson G."""
+    def evaluate(mu):
+        green, density = dyson_green_and_density(fock, sigma, mu, grid)
+        count = float(2 * jnp.trace(density))
+        if not np.isfinite(count):
+            raise ArithmeticError("Nonfinite scGW density during the chemical-potential solve.")
+        return count, green, density
+
+    count, green, density = evaluate(guess)
+    if abs(count - target) < particle_tol:
+        return guess, green, density
+    span = max(1.0, float(np.ptp(np.linalg.eigvalsh(np.asarray(fock)))), float(jnp.max(jnp.abs(sigma))))
+    for _ in range(20):
+        lower, upper = guess - span, guess + span
+        nlower, _, _ = evaluate(lower)
+        nupper, _, _ = evaluate(upper)
+        if nlower <= target <= nupper:
+            break
+        span *= 2
+    else:
+        raise ArithmeticError("Could not bracket the scGW electron number; check the frequency grid and inputs.")
+    for _ in range(80):
+        mu = 0.5 * (lower + upper)
+        count, green, density = evaluate(mu)
+        if abs(count - target) < particle_tol:
+            return mu, green, density
+        if not nlower - particle_tol <= count <= nupper + particle_tol:
+            raise ArithmeticError("Non-monotone scGW particle number on this grid; increase nw.")
+        if count < target:
+            lower, nlower = mu, count
+        else:
+            upper, nupper = mu, count
+    raise ArithmeticError("scGW chemical potential did not meet particle_tol; increase nw or check the inputs.")
 
 
-def scgw_cd_restricted(
+def _assemble_scgw_result(*, coeff, hcore, b, nuclear_repulsion, fock, sigma, moment,
+                          mu, grid, nocc, n_iter, converged):
+    """Recompute all observables from one state, retaining explicit input AD."""
+    green, per_spin_density = dyson_green_and_density(fock, sigma, mu, grid)
+    density = 2 * per_spin_density
+    step = gw_matsubara_step(green, fock, mu, b, grid, moment)
+    jmat, kmat = build_jk_from_df(b, density)
+    new_fock = hcore + jmat - 0.5 * kmat
+    residual = jnp.maximum(jnp.max(jnp.abs(new_fock - fock)), jnp.max(jnp.abs(step["sigma_iw"] - sigma)))
+    residual = jnp.maximum(residual, jnp.max(jnp.abs(step["sigma_moment"] - moment)) / (jnp.pi / grid.beta))
+    ec = step["correlation_energy"]
+    e_one = jnp.einsum("ij,ji->", density, hcore)
+    e_h = 0.5 * jnp.einsum("ij,ji->", density, jmat)
+    e_x = -0.25 * jnp.einsum("ij,ji->", density, kmat)
+    static_energy, static_rotation = jnp.linalg.eigh(fock)
+    return SCGWResult(
+        mo_energy=None, mo_coeff=coeff, chemical_potential=jnp.asarray(mu),
+        correlation_energy=ec, total_energy=e_one + e_h + e_x + ec + nuclear_repulsion,
+        density_matrix=coeff @ density @ coeff.T, density_mo=density,
+        green_iw=green, self_energy_iw=sigma, sigma_moment=moment, fock_mo=fock,
+        mapped_fock_mo=new_fock, mapped_self_energy_iw=step["sigma_iw"],
+        static_mo_energy=static_energy, static_mo_coeff=coeff @ static_rotation,
+        fixed_point_residual=jax.lax.stop_gradient(residual), particle_number_error=jnp.trace(density) - 2 * nocc,
+        grid=grid, converged=converged, nw=grid.nw, n_iter=n_iter, beta=grid.beta,
+    )
+
+
+def scgw_matsubara_restricted(
     *,
     mo_energy: Array,
     mo_coeff: Array,
@@ -76,103 +155,126 @@ def scgw_cd_restricted(
     hcore_matrix: Array,
     nuclear_repulsion: float = 0.0,
     nw: int = 100,
-    eta: float = 1e-3,
-    max_iter: int = 20,
+    beta: float = 100.0,
+    max_iter: int = 50,
     tol: float = 1e-6,
     mixing: float = 0.5,
+    particle_tol: float = 1e-9,
+    differentiation: SCFDifferentiationConfig | None = None,
+    charge_response_tol: float = 1e-10,
 ) -> SCGWResult:
-    """Spin-restricted matrix scGW with contour-deformation self-energy.
+    """Solve the restricted matrix scGW equations at finite inverse temperature.
 
-    Parameters follow :func:`gradscf.gw.qsgw_cd_restricted` plus
-    ``mixing`` (fraction of the new pole energies accepted per iteration).
-    Returns :class:`SCGWResult` including the Galitskii-Migdal total
-    energy.  Raises ``ArithmeticError`` on non-convergence (no fallback).
+    Inputs use the molecular GW conventions. mo_coeff must span an
+    orthonormal basis (C.T S C=I); hcore/DF factors are supplied in AO form.
+    The input spectrum initializes mu; the occupied orbitals initialize
+    density. Both G and the self-energy subsequently have full matrices.
+
+    beta is in Ha^-1. nw counts positive fermionic frequencies (2*nw total),
+    independent of beta. Increase nw at fixed beta before assessing the
+    low-temperature limit by increasing beta. eta is not used on this axis.
+    mixing applies to full Fock, Sigma(iw), and its high-frequency moment.
+    Convergence uses unmixed residuals (Ha) and particle_tol (electrons).
+    Results are finite-temperature internal energies, not free energies.
+
+    differentiation optionally supplies SCFDifferentiationConfig(mode="implicit")
+    to enable JIT, JVP and VJP with respect to real symmetric physical inputs.
+    beta/nw/nocc and solver controls remain static. A failed response solve
+    returns NaNs. charge_response_tol is the minimum resolved self-consistent
+    charge susceptibility (electrons/Ha); mu is differentiated, never frozen.
     """
-    mo_energy = jnp.asarray(mo_energy, dtype=jnp.float64)
-    coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
-    hcore = jnp.asarray(hcore_matrix, dtype=jnp.float64)
-    df_factors = jnp.asarray(df_factors)
-    nocc = int(nocc)
-    nmo = mo_energy.shape[0]
+    physical = (mo_energy, mo_coeff, df_factors, hcore_matrix, nuclear_repulsion)
+    if isinstance(beta, jax.core.Tracer) or (differentiation is None and any(
+        isinstance(x, jax.core.Tracer) for x in jax.tree_util.tree_leaves(physical)
+    )):
+        raise NotImplementedError(
+            "scGW default evaluation is eager; supply differentiation for implicit AD. beta must remain static."
+        )
+    if any(jnp.iscomplexobj(x) for x in physical):
+        raise NotImplementedError("scGW currently supports real restricted molecular inputs only.")
+    if max_iter < 1 or not np.isfinite(tol) or tol <= 0 or not np.isfinite(particle_tol) or particle_tol <= 0:
+        raise ValueError("max_iter, tol and particle_tol must be positive and finite.")
     if not 0.0 < mixing <= 1.0:
         raise ValueError("mixing must be in (0, 1].")
-
-    freqs, wts = scaled_legendre_grid(nw)
-    eye = jnp.eye(nmo, dtype=jnp.complex128)
-    energy = mo_energy
-    mu = 0.5 * (energy[nocc - 1] + energy[nocc])
-    h0_static = None
-    last_delta = None
+    grid = matsubara_grid(nw=nw, beta=beta)
+    coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
+    energy = jnp.asarray(mo_energy, dtype=jnp.float64)
+    nocc = int(nocc)
+    if energy.ndim != 1 or coeff.ndim != 2 or coeff.shape[1] != energy.size:
+        raise ValueError("mo_energy and mo_coeff shapes must describe the same orbital basis.")
+    if not 0 < nocc < energy.size:
+        raise ValueError("scGW requires both occupied and virtual orbitals: 0 < nocc < nmo.")
+    hcore = coeff.T @ jnp.asarray(hcore_matrix, dtype=jnp.float64) @ coeff
+    b = _mo_factors(jnp.asarray(df_factors, dtype=jnp.float64), coeff)
+    # Physical real Hamiltonians and pair vertices are symmetric. This also
+    # defines the symmetric-matrix tangent convention for response inputs.
+    hcore = 0.5 * (hcore + hcore.T)
+    b = 0.5 * (b + b.swapaxes(-1, -2))
+    if differentiation is not None:
+        from .scgw_response import implicit_scgw
+        return implicit_scgw(
+            coeff=coeff, energy_guess=energy, hcore=hcore, b=b, nocc=nocc,
+            nuclear_repulsion=nuclear_repulsion, grid=grid, max_iter=int(max_iter),
+            tol=float(tol), mixing=float(mixing), particle_tol=float(particle_tol),
+            config=differentiation, charge_response_tol=charge_response_tol,
+        )
+    density = jnp.diag(jnp.where(jnp.arange(energy.size) < nocc, 2.0, 0.0))
+    jmat, kmat = build_jk_from_df(b, density)
+    fock = hcore + jmat - 0.5 * kmat
+    sigma = jnp.zeros((2 * grid.nw, energy.size, energy.size), dtype=jnp.complex128)
+    moment = jnp.zeros_like(fock)
+    mu = float(0.5 * (energy[nocc - 1] + energy[nocc]))
+    last_residual = np.inf
 
     for iteration in range(1, int(max_iter) + 1):
-        b_mn = _mo_factors(df_factors, coeff)
-        b_ov = b_mn[:, :nocc, nocc:]
-
-        # Hartree + exchange from the pole-occupation density
-        occ = 2.0 * _fermi(energy, mu)
-        occ_coeff = coeff * jnp.sqrt(occ)[None, :]
-        density = occ_coeff @ occ_coeff.T
-        j_mat = build_j_from_df(df_factors, density)
-        vx_mo = _exchange_mo(b_mn, nocc)
-        h0_static = coeff.T @ (hcore + j_mat) @ coeff + vx_mo
-
-        # Screened interaction from the current pole energies
-        def response_fn(omega):
-            return rho_response_iw(omega, energy, b_ov, spin_factor=4.0)
-
-        wmn_full = screened_w_imag_axis_matrix(b_mn, response_fn, freqs)
-
-        # Self-energy on the grid (vectorized over frequencies)
-        ef = mu
-        sigma_w = jax.vmap(
-            lambda w: sigma_imag_matrix(w, wmn_full, energy, ef, freqs, wts, eta)
-        )(freqs)
-
-        # Dyson Green's function on the grid
-        def dyson(w, sig):
-            return jnp.linalg.solve((1j * w + mu) * eye - h0_static - sig, eye)
-
-        g_w = jax.vmap(dyson)(freqs, sigma_w)
-
-        # New pole energies: diagonal of H0 + Re Sigma at the old poles
-        sigma_at_poles = jax.vmap(
-            lambda m: sigma_imag_matrix(
-                energy[m], wmn_full, energy, ef, freqs, wts, eta
-            )[m, m]
-        )(jnp.arange(nmo))
-        new_energy = (h0_static + jnp.diag(sigma_at_poles)).diagonal().real
-        # Chemical potential: midgap of the new spectrum (gap system)
-        new_mu = 0.5 * (new_energy[nocc - 1] + new_energy[nocc])
-
-        delta = float(jnp.max(jnp.abs(new_energy - energy)))
-        last_delta = delta
-        energy = (1.0 - mixing) * energy + mixing * new_energy
-        mu = (1.0 - mixing) * mu + mixing * new_mu
-        if delta < tol:
-            # Galitskii-Migdal correlation energy on the final grid
-            tr_sg = jnp.einsum("wmn,wnm->w", sigma_w, g_w, precision=Precision.HIGHEST)
-            e_c = (1.0 / (2.0 * jnp.pi)) * jnp.sum(wts * tr_sg)
-            e_c = 2.0 * e_c.real  # spin factor
-            e_one = jnp.einsum("pq,pq->", density, hcore, precision=Precision.HIGHEST)
-            e_h = 0.5 * jnp.einsum("pq,pq->", density, j_mat, precision=Precision.HIGHEST)
-            _, k_tot = build_jk_from_df(df_factors, density)
-            e_x = -0.25 * jnp.trace(k_tot @ density)
-            total = e_one + e_h + e_x + e_c + float(nuclear_repulsion)
-            return SCGWResult(
-                mo_energy=energy,
-                mo_coeff=coeff,
-                chemical_potential=mu,
-                correlation_energy=e_c,
-                total_energy=jnp.asarray(total),
-                converged=True,
-                nw=int(nw),
-                n_iter=iteration,
+        mu, green, per_spin_density = _solve_chemical_potential(
+            fock, sigma, mu, grid, 2 * nocc, particle_tol
+        )
+        density = 2 * per_spin_density
+        step = gw_matsubara_step(green, fock, mu, b, grid, moment)
+        new_sigma = step["sigma_iw"]
+        new_moment = step["sigma_moment"]
+        jmat, kmat = build_jk_from_df(b, density)
+        new_fock = hcore + jmat - 0.5 * kmat
+        residual = jnp.maximum(jnp.max(jnp.abs(new_fock - fock)), jnp.max(jnp.abs(new_sigma - sigma)))
+        # The tail moment is part of the state: scale to its contribution
+        # at the lowest Matsubara frequency so the residual is in Ha.
+        residual = jnp.maximum(residual, jnp.max(jnp.abs(new_moment - moment)) / (jnp.pi / grid.beta))
+        last_residual = float(residual)
+        if not np.isfinite(last_residual):
+            raise ArithmeticError("Nonfinite scGW update; check dielectric stability and grid resolution.")
+        if last_residual < tol:
+            return _assemble_scgw_result(
+                coeff=coeff, hcore=hcore, b=b, nuclear_repulsion=nuclear_repulsion,
+                fock=fock, sigma=sigma, moment=moment, mu=mu, grid=grid,
+                nocc=nocc, n_iter=iteration, converged=True,
             )
+        fock = (1 - mixing) * fock + mixing * new_fock
+        sigma = (1 - mixing) * sigma + mixing * new_sigma
+        moment = (1 - mixing) * moment + mixing * new_moment
     raise ArithmeticError(
         f"scGW did not converge in {max_iter} iterations "
-        f"(last max|de| = {last_delta:.3e} > {tol}). "
-        "Increase max_iter or reduce mixing; no fallback result is returned."
+        f"(unmixed matrix/tail residual {last_residual:.3e} Ha > {tol}). "
+        "Increase max_iter, adjust mixing, and check nw/beta convergence."
     )
 
 
-__all__ = ["scgw_cd_restricted", "SCGWResult"]
+def scgw_cd_restricted(*, eta: float | None = None, **kwargs) -> SCGWResult:
+    """Deprecated spelling of scgw_matsubara_restricted.
+
+    The previous implementation was a pole approximation, not matrix scGW.
+    This compatibility entry uses finite-temperature Matsubara grids; nw
+    now counts positive fermionic frequencies and beta is explicit. No QP
+    poles are returned. A supplied real-axis eta is rejected, not ignored.
+    """
+    if eta is not None:
+        raise ValueError("eta is a real-frequency CD parameter; remove it when using Matsubara scGW.")
+    warnings.warn(
+        "scgw_cd_restricted now delegates to finite-temperature Matsubara scGW; "
+        "use scgw_matsubara_restricted with explicit beta. mo_energy is None without analytic continuation.",
+        DeprecationWarning, stacklevel=2,
+    )
+    return scgw_matsubara_restricted(**kwargs)
+
+
+__all__ = ["scgw_matsubara_restricted", "scgw_cd_restricted", "SCGWResult"]

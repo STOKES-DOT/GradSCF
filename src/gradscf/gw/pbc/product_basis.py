@@ -4,7 +4,7 @@ The periodic analogue of the molecular low-rank factors
 ``B_P[p,q]`` with ``(pq|rs) ~= sum_P B_P[p,q] B_P[r,s]`` is the plane-wave
 product basis: orbital pair densities are Fourier transformed,
 
-    pairs_G(m,n) = sum_r psi_m(r) psi_n(r) exp(-i G.r)      (unnormalized DFT)
+    pairs_G(m,n) = sum_r conj(psi_m(r)) psi_n(r) exp(-i G.r) (unnormalized DFT)
 
 and the Coulomb interaction is absorbed into symmetric factors
 
@@ -12,7 +12,7 @@ and the Coulomb interaction is absorbed into symmetric factors
 
 so that two-electron matrix elements recover the molecular form
 
-    (mi|jn) = sum_G conj(B_G(m,i)) B_G(j,n)
+    (mi|jn) = sum_G conj(B_G(i,m)) B_G(j,n)
 
 (derivation: the FFT pair-potential contraction of
 ``gradscf.integrals.periodic.fft.get_jk`` expanded in G space; the
@@ -45,7 +45,7 @@ from ...integrals.periodic.coulomb import coulomb_kernel
 
 
 def gamma_product_factors(inputs, mo_coeff: Array, *, mesh: tuple[int, int, int]) -> Array:
-    """Build symmetric plane-wave product factors at the Gamma point.
+    """Build plane-wave orbital-pair factors at the Gamma point.
 
     Parameters
     ----------
@@ -61,7 +61,8 @@ def gamma_product_factors(inputs, mo_coeff: Array, *, mesh: tuple[int, int, int]
     Returns
     -------
     Complex array ``B_G(m, n)`` of shape ``(ngrid, nmo, nmo)`` such that
-    ``(mi|jn) = sum_G conj(B_G(m,i)) B_G(j,n)``.
+    ``(mi|jn) = sum_G conj(B_G(i,m)) B_G(j,n)`` (the pair indices
+    coincide for real Gamma orbitals).
     """
     ao = jnp.asarray(inputs.ao[0, 0])  # (ngrid, nao), real at Gamma
     coeff = jnp.asarray(mo_coeff)
@@ -75,7 +76,7 @@ def gamma_product_factors(inputs, mo_coeff: Array, *, mesh: tuple[int, int, int]
 
     psi = ao @ coeff  # (ngrid, nmo)
     nmo = psi.shape[1]
-    pairs = psi[:, :, None] * psi[:, None, :]  # (ngrid, nmo, nmo), real
+    pairs = psi.conj()[:, :, None] * psi[:, None, :]  # (ngrid, nmo, nmo)
     pairs_g = jnp.fft.fftn(pairs.reshape(mesh + (nmo, nmo)), axes=(0, 1, 2)).reshape(
         ngrid, nmo, nmo
     )
@@ -99,11 +100,14 @@ def kpoint_product_factors(
     For each momentum transfer index ``q`` and each ``ki`` (with partner
     ``ka = momentum_table[ki, q]``, i.e. ``ka = ki - q`` on the mesh),
 
-        B_q[ki]_G(m, n) = sqrt(volume * v(G + q_cart)) / N_grid
-                          * sum_r conj(u_ki,m(r)) u_ka,n(r) exp(-i(G+q).r)
+        B_q[ki]_G(m, n) = sqrt(volume * v(G - q_cart)) / N_grid
+                          * sum_r conj(u_ki,m(r)) u_ka,n(r)
+                            exp(i(ka - ki + q_cart).r) exp(-i G.r)
 
     where ``u_k`` are the periodic parts stored in ``inputs.ao`` and
-    ``q_cart = inputs.kpoints[q]``.
+    ``q_cart = inputs.kpoints[q]``. The reciprocal wrap ``ka - ki + q``
+    aligns every pair with the same auxiliary wavevectors G-q. No Bloch
+    phase is added when that wrap vanishes: the stored u_k are periodic.
 
     Parameters
     ----------
@@ -138,11 +142,13 @@ def kpoint_product_factors(
     for q in range(nk):
         ka = table[:, q]  # partner index per ki
         q_cart = kpoints[q]
-        kernel = coulomb_kernel(gvectors + q_cart)  # v(G + q)
+        kernel = coulomb_kernel(gvectors - q_cart)  # canonical transfer -q
         scale = jnp.sqrt(volume * kernel) / ngrid
         # pairs[ki] = conj(u_ki,m) u_ka,n on the grid
         pairs = psi_k.conj()[:, :, :, None] * psi_k[jnp.asarray(ka)][:, :, None, :]
-        pairs = pairs * jnp.exp(-1j * (q_cart @ jnp.asarray(inputs.coords).T))[None, :, None, None]
+        wrap = kpoints[jnp.asarray(ka)] - kpoints + q_cart
+        phase = jnp.exp(1j * (wrap @ jnp.asarray(inputs.coords).T))
+        pairs = pairs * phase[:, :, None, None]
         pairs_g = jnp.fft.fftn(
             pairs.reshape(nk, *mesh, nmo, nmo), axes=(1, 2, 3)
         ).reshape(nk, ngrid, nmo, nmo)

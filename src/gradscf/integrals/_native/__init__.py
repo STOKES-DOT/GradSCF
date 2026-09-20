@@ -21,7 +21,10 @@ def register_integrals():
     handle = ctypes.CDLL(str(library), mode=ctypes.RTLD_LOCAL)
     targets = {"gradscf_ecp_cpu_v1": "GradSCFECP", "gradscf_integrals_cpu_v1": "GradSCFIntegrals",
                "gradscf_geometry_jvp_cpu_v1": "GradSCFGeometryJVP",
-               "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP"}
+               "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP",
+               "gradscf_compact_cpu_v1": "GradSCFCompact",
+               "gradscf_direct_jk_cpu_v1": "GradSCFDirectJK",
+               "gradscf_packed_jk_cpu_v1": "GradSCFPackedJK"}
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
             raise RuntimeError("Native integral library is stale; rebuild with "

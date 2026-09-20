@@ -53,12 +53,14 @@ def calculate(name,trained,max_eri_gib=2.):
     started=time.perf_counter()
     top,params,counts=prepare_case(name,trained)
     if not np.isfinite(max_eri_gib) or max_eri_gib<=0:raise ValueError('max_eri_gib must be finite and positive.')
-    if 8*top.nao**4/2**30>max_eri_gib:
-        raise MemoryError(f'{name} contracted ERI alone requires {8*top.nao**4/2**30:.2f} GiB; limit is {max_eri_gib:.2f} GiB.')
+    npair=top.nao*(top.nao+1)//2
+    eri_gib=8*npair*(npair+1)/2/2**30
+    if eri_gib>max_eri_gib:
+        raise MemoryError(f'{name} contracted ERI alone requires {eri_gib:.2f} GiB in s8; limit is {max_eri_gib:.2f} GiB.')
     plan=integrals.make_plan(top,backend='native')
     overlap=plan.evaluate('overlap',params)
     hcore=plan.evaluate('kinetic',params)+plan.evaluate('nuclear',params)
-    eri=plan.evaluate('eri',params);eri.block_until_ready()
+    eri=plan.evaluate('eri',params,aosym='s8');eri.block_until_ready()
     integral_seconds=time.perf_counter()-started
     enuc=nuclear_repulsion_energy(params.nuclear_coords,jnp.asarray(top.nuclear_charges))
     n=top.nao;nelectron=sum(top.nuclear_charges)-trained['charge']
@@ -80,7 +82,7 @@ def calculate(name,trained,max_eri_gib=2.):
     element_count={symbol:next(iter(values)) for symbol,values in per_element.items()}
     row=dict(basis=name,carbon_ao=element_count.get('C',0),hydrogen_ao=element_count.get('H',0),nao=n,
         fock_dimension=n,fock_elements=n*n,primitive_nao=sum((2*l+1)*p for l,p in zip(top.angular_momenta,top.primitive_counts)),
-        nelectron=nelectron,occupied_orbitals=nelectron//2,virtual_orbitals=n-nelectron//2,
+        nelectron=nelectron,occupied_orbitals=nelectron//2,virtual_orbitals=n-nelectron//2,eri_layout='s8',eri_gib=eri_gib,
         energy_hartree=energy,converged=bool(result.converged),scf_cycles=int(result.cycles),
         orbital_residual=residual,generalized_eigen_residual=eigen_residual,min_overlap_eigenvalue=smin,
         integral_seconds=integral_seconds,scf_seconds=time.perf_counter()-started-integral_seconds,

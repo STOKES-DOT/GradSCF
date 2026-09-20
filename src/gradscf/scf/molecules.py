@@ -124,6 +124,11 @@ class UnrestrictedMolecule:
     runtime_scf_backend: str | None = None
     runtime_scf_options: Any | None = None
 
+    @property
+    def eri_pair_matrix(self):
+        """Native ground-state assembly stores s4 directly in rep_tensor."""
+        return self.rep_tensor if self.rep_tensor.ndim==2 else None
+
     def density(self) -> jnp.ndarray:
         return jnp.einsum("spq,rp,rq->r", self.rdm1, self.ao, self.ao)
 

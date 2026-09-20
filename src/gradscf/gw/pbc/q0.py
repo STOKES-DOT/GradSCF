@@ -22,6 +22,10 @@ analytically:
       eps_inv_00 = 1/(eps_00 - eps_P0^dagger eps_body_inv eps_P0)
       eps_inv_P0 = -eps_inv_00 eps_body_inv eps_P0
 
+The real-frequency correction retains the PySCF finite-eta convention
+for conjugating the opposite wing; it is not a general non-Hermitian
+dielectric-block inversion.
+
 - finite-size scaled correction terms added to the self-energy,
 
       Del_00(w) = (2/pi)(6 pi^2/Omega/Nk)^(1/3) (eps_inv_00 - 1)
@@ -175,7 +179,7 @@ def screened_w_imag_axis_head_wing(
         pi_p0 = (
             4.0
             * jnp.einsum(
-                "Pia,ia->P", b_ov.conj(), chi * qij.conj(), precision=Precision.HIGHEST
+                "Pia,ia->P", b_ov, chi * qij.conj(), precision=Precision.HIGHEST
             )
             / nkpts
         )
@@ -187,7 +191,7 @@ def screened_w_imag_axis_head_wing(
         eps_inv_p0 = -eps_inv_00 * (eps_body_inv @ eps_p0)
 
         del00 = head_scale * (eps_inv_00 - 1.0)
-        wn_p0 = jnp.einsum("Pnn,P->n", b, eps_inv_p0, precision=Precision.HIGHEST)
+        wn_p0 = jnp.einsum("Pnn,P->n", b.conj(), eps_inv_p0, precision=Precision.HIGHEST)
         delp0 = wings_const * 2.0 * wn_p0.real
         return wmn, del00, delp0
 
@@ -203,7 +207,7 @@ def q0_residue_correction(
     omega_pole: Array,
     b_pp: Array,
     channels: tuple,
-    qij: Array,
+    qij: Array | tuple[Array, ...],
     q_abs: Array,
     volume: float,
     eta: float,
@@ -216,10 +220,15 @@ def q0_residue_correction(
     channels of :func:`gradscf.gw.self_energy.sigma_residue_part`;
     ``b_pp`` is the factor column ``B[:, p, p]``.  Returns the complex
     scalar ``Del_00 + wings`` to be added (with the contour sign ``fm``).
+    ``qij`` is a single array for one channel or a tuple aligned with
+    ``channels``. All response channels are averaged by ``nkpts`` before
+    dielectric inversion; finite-size prefactors are applied separately.
     """
     from ..polarizability import rho_response_real
 
-    qij = jnp.asarray(qij)
+    qij_list = list(qij) if isinstance(qij, (tuple, list)) else [qij]
+    if len(qij_list) != len(channels):
+        raise ValueError("qij must have one entry per response channel.")
     b_pp = jnp.asarray(b_pp)
     q2 = jnp.sum(jnp.asarray(q_abs) ** 2)
     q_norm = jnp.sqrt(q2)
@@ -230,31 +239,33 @@ def q0_residue_correction(
 
     # body inverse dielectric at the pole frequency
     pi = None
-    e_spin0, b_ov0, _ = channels[0]
-    nocc = b_ov0.shape[1]
     for e_spin, b_ov_spin, spin_factor in channels:
         contrib = rho_response_real(
             omega_pole, e_spin, b_ov_spin, eta=eta, spin_factor=spin_factor, conjugate=True
         )
         pi = contrib if pi is None else pi + contrib
+    pi = pi / nkpts
     naux = pi.shape[0]
     eye = jnp.eye(naux, dtype=pi.dtype)
     eps_body_inv = jnp.linalg.solve(eye - pi, eye)
 
-    # head/wing retarded response elements (factor 2 per spin channel)
-    eia = e_spin0[:nocc, None] - e_spin0[None, nocc:]
+    # Match the same channel sum and normalization used for the body.
     omega_c = jnp.asarray(omega_pole, dtype=jnp.complex128)
-    chi = 1.0 / (omega_c + eia + 2j * eta) + 1.0 / (-omega_c + eia)
-    pi_00 = 2.0 * jnp.sum(qij.conj() * qij * chi) / nkpts
-    eps_00 = 1.0 - 4.0 * jnp.pi / q2 * pi_00
-    b_ov = b_ov0
-    pi_p0 = (
-        2.0
-        * jnp.einsum(
-            "Pia,ia->P", b_ov.conj(), chi * qij.conj(), precision=Precision.HIGHEST
+    pi_00 = 0j
+    pi_p0 = jnp.zeros(naux, dtype=jnp.complex128)
+    for (energy, b_ov, spin_factor), qij_c in zip(channels, qij_list):
+        nocc = b_ov.shape[1]
+        e_occ, e_virt = energy if isinstance(energy, tuple) else (energy[:nocc], energy[nocc:])
+        eia = e_occ[:, None] - e_virt[None, :]
+        chi = 1.0 / (omega_c + eia + 2j * eta) + 1.0 / (-omega_c + eia)
+        qij_c = jnp.asarray(qij_c)
+        pi_00 = pi_00 + spin_factor * jnp.sum(qij_c.conj() * qij_c * chi)
+        pi_p0 = pi_p0 + spin_factor * jnp.einsum(
+            "Pia,ia->P", b_ov, chi * qij_c.conj(), precision=Precision.HIGHEST
         )
-        / nkpts
-    )
+    pi_00 = pi_00 / nkpts
+    pi_p0 = pi_p0 / nkpts
+    eps_00 = 1.0 - 4.0 * jnp.pi / q2 * pi_00
     eps_p0 = -jnp.sqrt(4.0 * jnp.pi) / q_norm * pi_p0
 
     schur = eps_00 - eps_p0.conj() @ eps_body_inv @ eps_p0

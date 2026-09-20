@@ -5,8 +5,39 @@ These transforms expose coefficient derivatives without a native basis JVP.
 Full primitive ERIs are intended for small-system validation, not a scalable cache.
 """
 from dataclasses import replace
+import math
+import jax
 import jax.numpy as jnp
 from .normalization import normalized_shell_coefficients, radial_primitive_norm
+
+
+def exchange_matrix(eri, density, *, block_size=None):
+    """K[...,p,q] = sum_rs (pr|qs) D[...,r,s], with bounded transposes.
+
+    Some CPU XLA versions silently return zero for the full-tensor exchange
+    transpose when the ERI exceeds 32-bit indexing. Slice its first AO axis
+    before contracting; all arithmetic remains in JAX, including higher AD.
+    ``block_size`` can force the bounded path on small regression inputs.
+    """
+    eri,density=jnp.asarray(eri),jnp.asarray(density)
+    n=eri.shape[0]
+    if eri.shape!=(n,)*4 or density.shape[-2:]!=(n,n):
+        raise ValueError('Exchange requires (n,n,n,n) ERI and (...,n,n) density.')
+    if block_size is None and math.prod(eri.shape)<2**31:
+        return jnp.einsum('prqs,...rs->...pq',eri,density,precision=jax.lax.Precision.HIGHEST)
+    width=max(1,min(n,(2**26)//n**3)) if block_size is None else int(block_size)
+    if width<1:raise ValueError('block_size must be positive.')
+    width=min(width,n)
+    result=jnp.zeros(density.shape[:-2]+(n,n),dtype=jnp.result_type(eri,density))
+    def contract(block):
+        return jnp.einsum('prqs,...rs->...pq',block,density,precision=jax.lax.Precision.HIGHEST)
+    def advance(i,out):
+        block=jax.lax.dynamic_slice_in_dim(eri,i*width,width,axis=0)
+        return jax.lax.dynamic_update_slice(out,contract(block),(0,)*(density.ndim-2)+(i*width,0))
+    result=jax.lax.fori_loop(0,n//width,advance,result)
+    start=(n//width)*width
+    if start<n:result=result.at[...,start:,:].set(contract(eri[start:]))
+    return result
 
 
 def primitive_basis(topology, parameters):
@@ -50,4 +81,4 @@ def contract_integrals(tensors, transform):
     return result
 
 
-__all__=['primitive_basis','contraction_matrix','contract_integrals']
+__all__=['primitive_basis','contraction_matrix','contract_integrals','exchange_matrix']
