@@ -370,10 +370,14 @@ def restricted_cisd_second_order_correction(
 ) -> Array:
     """Return the unscaled/SCS-free CIS(D) doubles correction for restricted roots.
 
-    This follows the Head-Gordon CIS(D) form used by ORCA double hybrids:
+    Method reference: Head-Gordon et al., Chem. Phys. Lett. 219, 21–29 (1994),
+    doi:10.1016/0009-2614(94)00070-0. The CIS(D) workflow is:
     solve the singles-only state first, then add a root-specific second-order
     doubles correction. No SCS/SOS spin-component factors or damping are used.
     The caller supplies the double-hybrid PT2 coefficient ``ac``.
+    The canonical RHF singlet validation and its equation-level companion are
+    documented in gradscf/ci/REFERENCES.md; they do not establish validation
+    of every double-hybrid or TDDFT use of this helper.
     """
 
     mo_coeff, mo_occ, mo_energy = _restricted_channel(molecule)
@@ -496,13 +500,16 @@ def unrestricted_cisd_second_order_correction(
     ac: Array | float = 1.0,
     occupation_tolerance: float = 1e-8,
 ) -> Array:
-    """Return an ORCA-style CIS(D) doubles correction for unrestricted roots.
+    """Return a spin-orbital doubles correction for unrestricted roots.
 
-    As in ORCA double-hybrid TDDFT, the response problem remains singles-only;
+    CIS(D) method reference: Head-Gordon et al. (1994),
+    doi:10.1016/0009-2614(94)00070-0. The response problem remains singles-only;
     this routine adds a root-specific post-hoc doubles correction afterwards.
     The first implementation uses spin-orbital amplitudes and AO integral
     contractions. For single-electron references such as H2+, the doubles
     space is empty and the correction is exactly zero.
+    The separate RHF-singlet determinant test does not certify this unrestricted
+    extension; see gradscf/ci/REFERENCES.md for the verified scope.
     """
 
     (

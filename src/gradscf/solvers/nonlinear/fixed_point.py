@@ -5,7 +5,8 @@ from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
-from jax.scipy.sparse.linalg import gmres as jax_gmres
+from ..linear import solve_implicit_linear_system
+from .root import attach_root
 from jaxtyping import Array, PyTree
 
 
@@ -80,8 +81,7 @@ def implicit_fixed_point_solution(
         # JAX's root JVP rebinds the root primitive when linearizing it. This
         # preserves the implicit state dependence under grad-of-grad while the
         # arbitrary forward solver/initial guess remain outside the AD path.
-        return jax.lax.custom_root(residual, solution_local,
-            solve=lambda _function, _initial: solution_local, tangent_solve=tangent_solve)
+        return attach_root(residual, solution_local, tangent_solve=tangent_solve)
 
     callbacks = (apply_fixed_point_transpose, apply_fixed_point_transpose_factory,
                  params_vjp_from_adjoint)
@@ -188,43 +188,3 @@ def implicit_fixed_point_solution(
 
     _solution_from_params.defvjp(_fwd, _bwd)
     return _solution_from_params(params, primal_solution, fixed_point_args_tree, jnp.asarray(converged))
-
-
-def solve_implicit_linear_system(
-    matvec: Callable[[Array], Array],
-    b_flat: Array,
-    *,
-    tol: float,
-    max_iter: int,
-    restart: int | None = None,
-    converged: Array | bool = True,
-) -> Array:
-    """Solve an adjoint system, returning NaNs if its true residual fails.
-
-    GMRES status alone does not certify convergence on all JAX versions. Check
-    the actual operator residual, allowing only a dtype-sized roundoff floor.
-    """
-    if b_flat.size == 0:
-        return jnp.zeros_like(b_flat)
-    def checked_solve(operator, rhs):
-        # GMRES breakdown tests can classify a machine-sized RHS as zero even
-        # with atol=0. Normalize inside the opaque solve, then restore scale.
-        scale = jnp.max(jnp.abs(rhs))
-        def nonzero(_):
-            unit, _ = jax_gmres(operator, rhs/scale, tol=float(tol), atol=0.0,
-                restart=20 if restart is None else max(1,int(restart)),
-                maxiter=max(1,int(max_iter)), solve_method="incremental")
-            return unit*scale
-        sol = jax.lax.cond(scale>0,nonzero,lambda _:jnp.zeros_like(rhs),operand=None)
-        applied = operator(sol)
-        rhs_norm = jnp.linalg.norm(rhs)
-        roundoff = 32*jnp.finfo(rhs.dtype).eps*(rhs_norm+jnp.linalg.norm(applied))
-        valid = (jnp.all(jnp.isfinite(sol)) & jnp.asarray(converged)
-                 & (jnp.linalg.norm(applied-rhs) <= float(tol)*rhs_norm+roundoff))
-        return jnp.where(valid, sol, jnp.full_like(sol,jnp.nan))
-
-    # Keep convergence tests inside the opaque solve. A nonlinear validity
-    # predicate outside a linear JVP cannot be transposed correctly. The custom
-    # linear solve also retains derivatives of both the operator and its RHS.
-    return jax.lax.custom_linear_solve(matvec,b_flat,solve=checked_solve,
-                                       transpose_solve=checked_solve)

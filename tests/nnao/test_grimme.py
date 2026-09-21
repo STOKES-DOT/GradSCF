@@ -80,7 +80,7 @@ def test_real_mace_predicts_direct_coefficients():
     with pytest.raises(ValueError,match='zero'):model.assemble(b,graph)
 
 
-def test_grimme_methane_stationary_gradient():
+def test_grimme_methane_implicit_gradient():
     from pathlib import Path
     import runpy
     cls=runpy.run_path(str(Path('tools/optimize_methane_nnao.py')))['MethaneRHF']

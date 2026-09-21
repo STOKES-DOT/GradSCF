@@ -4,11 +4,11 @@ from typing import Any, Literal
 
 from ..tools import spectra
 from ..tools.spectra import HARTREE_TO_EV
-from ..tddft.eigensolvers import PYSCF_TD_DAVIDSON_MAX_CYCLE
-from ..tddft.eigensolvers import FULL_TDDFT_DAVIDSON_MAX_CYCLE
-from ..tddft.eigensolvers import PYSCF_TD_DAVIDSON_TOL
-from ..tddft.eigensolvers import PYSCF_TD_POSITIVE_EIG_THRESHOLD
-from ..tddft.eigenvector_differentiation import TDAGradientMode
+from ..tddft.defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
+from ..tddft.defaults import FULL_TDDFT_DAVIDSON_MAX_CYCLE
+from ..tddft.defaults import PYSCF_TD_DAVIDSON_TOL
+from ..tddft.defaults import PYSCF_TD_POSITIVE_EIG_THRESHOLD
+from ..solvers.eigen.response import EigenGradientMode
 from ..tddft import RestrictedCasidaTDDFT, UnrestrictedCasidaTDDFT, UnrestrictedTDA
 from ..tddft._semilocal_response import SemilocalResponseFunctional
 from ..tddft._unrestricted_semilocal_response import (
@@ -85,7 +85,7 @@ class _BaseTD:
     davidson_max_subspace: int | None
     davidson_initial_guess_count: int | None
     davidson_max_trial_vectors: int | None
-    tda_gradient_mode: TDAGradientMode
+    tda_gradient_mode: EigenGradientMode
     eigenvector_adjoint_tol: float
     eigenvector_adjoint_max_iter: int
 
@@ -105,7 +105,7 @@ class _BaseTD:
         davidson_max_subspace: int | None = None,
         davidson_initial_guess_count: int | None = None,
         davidson_max_trial_vectors: int | None = None,
-        tda_gradient_mode: TDAGradientMode = "eigenvalue_only",
+        tda_gradient_mode: EigenGradientMode = "eigenvalue_only",
         eigenvector_adjoint_tol: float = 1e-6,
         eigenvector_adjoint_max_iter: int = 64,
         response_kernel_options: Any | None = None,

@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.scf import implicit_fixed_point_solution
+from gradscf.solvers.nonlinear import implicit_fixed_point_solution
 
 
 def test_fixed_point_argument_gradients_are_preserved():

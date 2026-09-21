@@ -3,7 +3,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from ._kpoint import energy_and_fock
-from ..tddft.eigensolvers import _davidson_lowest_symmetric,_davidson_lowest_tdhf
+from ..solvers.eigen.davidson import _davidson_lowest_symmetric
+from ..solvers.eigen.rpa import _davidson_lowest_tdhf, solve_dense_rpa
 
 
 def _validate_reference(mf):
@@ -107,15 +108,9 @@ class TDA:
             # The shared TDHF solver is real-only. Use a bounded exact solve
             # for complex k meshes until a complex symplectic iteration exists.
             aa,bb=self.get_ab()
-            matrix=jnp.block([[aa,bb],[-bb.conj(),-aa.conj()]])
-            values,vectors=jnp.linalg.eig(matrix)
-            eligible=(values.real>1e-8)&(jnp.abs(values.imag)<self.conv_tol)
-            order=jnp.argsort(jnp.where(eligible,values.real,jnp.inf))[:roots]
-            self.e=values[order].real;vec=vectors[:,order]
-            residual=jnp.linalg.norm(matrix@vec-vec*values[order],axis=0)
-            norm=jnp.sum(jnp.abs(vec[:n])**2-jnp.abs(vec[n:])**2,axis=0)
-            vec=vec/jnp.sqrt(jnp.where(norm>0,norm,1.))[None,:]
-            self.xy=(vec[:n],vec[n:]);self.converged=eligible[order]&(residual<self.conv_tol)&(norm>0)
+            self.e,x,y,self.converged=solve_dense_rpa(aa,bb,nroots=roots,
+                tol=self.conv_tol,min_frequency=1e-8,max_dense=self.max_dense)
+            self.xy=(x,y)
         self._solution_reference=self._reference
         return self.e,self.xy
 

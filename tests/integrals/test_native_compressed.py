@@ -53,6 +53,33 @@ def test_native_direct_jk_matches_integrals():
     np.testing.assert_allclose(jax.grad(loss)(d),jax.grad(ref)(d),atol=1e-10)
 
 
+def test_projected_native_direct_jk_differentiates_contraction():
+    from gradscf.integrals.backends.native_compact import NativeDirectBasis,ProjectedNativeDirectBasis
+    from gradscf.integrals.contraction import primitive_basis,contraction_matrix
+    top,p=integrals.prepare_basis('H 0 0 0; H 0 0 .8','sto-3g',cart=False)
+    primitive_top,primitive_parameters=primitive_basis(top,p)
+    plan=integrals.make_plan(primitive_top)
+    eri=plan.evaluate('eri',primitive_parameters)
+    transform=contraction_matrix(top,p)
+    density=jnp.asarray([[1.,.2],[.2,.7]])
+
+    def actual(t):
+        j,k=ProjectedNativeDirectBasis(
+            NativeDirectBasis(plan,primitive_parameters),t
+        ).get_jk(density)
+        return jnp.sum(j*j)+.3*jnp.sum(k*k)
+
+    def reference(t):
+        primitive_density=t@density@t.T
+        primitive_j=jnp.einsum('pqrs,rs->pq',eri,primitive_density)
+        primitive_k=jnp.einsum('prqs,rs->pq',eri,primitive_density)
+        j=t.T@primitive_j@t;k=t.T@primitive_k@t
+        return jnp.sum(j*j)+.3*jnp.sum(k*k)
+
+    np.testing.assert_allclose(actual(transform),reference(transform),atol=1e-11)
+    np.testing.assert_allclose(jax.grad(actual)(transform),jax.grad(reference)(transform),atol=1e-10)
+
+
 def test_packed_geometry_ad_is_not_silently_zero():
     top,p=integrals.prepare_basis('H 0 0 0; H 0 0 .8','sto-3g',cart=False)
     plan=integrals.make_plan(top)

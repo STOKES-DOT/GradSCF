@@ -2,11 +2,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gradscf.scf.implicit import (
+from gradscf.solvers.nonlinear import (
     ImplicitFixedPointConfig,
     implicit_fixed_point_solution,
-    solve_implicit_linear_system,
 )
+from gradscf.solvers.linear import solve_implicit_linear_system
 from gradscf.scf.xc_energy import xc_energy_and_potential_from_density
 
 
@@ -31,11 +31,13 @@ def test_implicit_fixed_point_solution_matches_scalar_analytic_gradient():
     assert np.allclose(jax.grad(solve)(param), 1.0 / (1.0 - 0.2) ** 2, rtol=1e-6)
 
 
-def test_scf_package_exports_new_refactor_boundaries():
-    from gradscf.scf import (
+def test_solver_and_scf_exports_follow_module_boundaries():
+    from gradscf.solvers.nonlinear import (
         ImplicitFixedPointConfig as ExportedImplicitFixedPointConfig,
-        XCEnergyPotentialResult,
         implicit_fixed_point_solution as exported_implicit_fixed_point_solution,
+    )
+    from gradscf.scf import (
+        XCEnergyPotentialResult,
         xc_energy_and_potential_from_density as exported_xc_energy_and_potential,
     )
 

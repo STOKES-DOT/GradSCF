@@ -1,4 +1,4 @@
-"""Non-methane geometry handling and pre-allocation resource guards."""
+"""Non-methane geometry handling and memory-safe integral paths."""
 import runpy
 
 import jax.numpy as jnp
@@ -7,21 +7,26 @@ import pytest
 
 
 def aniline_size_geometry():
-    # Only topology is inspected in guard tests; no integral is evaluated.
+    # A simple finite geometry is enough for topology and allocation tests.
     return dict(name='aniline-size',symbols=['C']*6+['N']+['H']*7,
                 coords_angstrom=[[1.4*i,0.,0.] for i in range(14)],charge=0,spin=0)
 
 
 @pytest.mark.parametrize('family',['szp442_direct','szp663_direct'])
-def test_aniline_training_stops_before_integral_allocation(monkeypatch,family):
+def test_aniline_training_configures_direct_jk_without_eri(monkeypatch,family):
     from gradscf.integrals.plan import IntegralPlan
-    def forbidden(*args,**kwargs):
-        pytest.fail('Resource guard must run before evaluating any integral')
-    monkeypatch.setattr(IntegralPlan,'evaluate',forbidden)
+    operators=[]
+    def bounded(self,operator,*args,**kwargs):
+        assert operator!='eri'
+        operators.append(operator)
+        n=self.topology.nao
+        return jnp.eye(n) if operator=='overlap' else jnp.zeros((n,n))
+    monkeypatch.setattr(IntegralPlan,'evaluate',bounded)
     geometry=aniline_size_geometry()
     cls=runpy.run_path('tools/optimize_methane_nnao.py')['MethaneRHF']
-    with pytest.raises(MemoryError,match='Primitive ERI alone requires'):
-        cls(geometry=geometry,basis_family=family)
+    experiment=cls(geometry=geometry,basis_family=family)
+    assert experiment.jk_backend=='direct' and experiment.rep is None
+    assert operators==['overlap','kinetic','nuclear']
 
 
 def test_nitrogen_geometry_energy_gradient_and_species_mapping():

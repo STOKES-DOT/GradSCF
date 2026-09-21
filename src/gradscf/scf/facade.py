@@ -70,6 +70,11 @@ class _BaseKS:
     _cached_scf_key: Any | None = field(default=None,init=False,repr=False)
     _cached_response_key: Any | None = field(default=None,init=False,repr=False)
 
+    def _scf_signature(self):
+        return _cache_signature((self._spec(), self.mol.basis, self._config(), self.grids_level,
+            self.max_l, self.integral_backend, self.geometry_grad_policy, self.grid_ao_backend,
+            self.init_guess, self.chkfile, self.sap_basis, self.init_guess_chkfile_project))
+
     def run(self) -> "_BaseKS":
         self.kernel()
         return self
@@ -83,6 +88,31 @@ class _BaseKS:
         from .. import tdscf
 
         return tdscf.TDDFT(self, **kwargs)
+
+    def CIS(self, **kwargs: Any) -> Any:
+        from ..ci import CIS
+
+        return CIS(self, **kwargs)
+
+    def CCSD(self, **kwargs: Any) -> Any:
+        from ..cc import CCSD
+
+        return CCSD(self, **kwargs)
+
+    def CISD(self, **kwargs: Any) -> Any:
+        from ..ci import CISD
+
+        return CISD(self, **kwargs)
+
+    def CISDT(self, **kwargs: Any) -> Any:
+        from ..ci import CISDT
+
+        return CISDT(self, **kwargs)
+
+    def CISDTQ(self, **kwargs: Any) -> Any:
+        from ..ci import CISDTQ
+
+        return CISDTQ(self, **kwargs)
 
     def nuc_grad_method(self) -> "_NuclearGradient":
         return _NuclearGradient(self)
@@ -215,11 +245,6 @@ class RKS(_BaseKS):
             chkfile=self.chkfile,sap_basis=self.sap_basis,init_guess_chkfile_project=self.init_guess_chkfile_project,
             geometry_is_traced=_contains_jax_tracer(spec))
 
-    def _scf_signature(self):
-        return _cache_signature((self._spec(),self.mol.basis,self._config(),self.grids_level,
-            self.max_l,self.integral_backend,self.geometry_grad_policy,self.grid_ao_backend,
-            self.init_guess,self.chkfile,self.sap_basis,self.init_guess_chkfile_project))
-
     def _response_signature(self):
         return _cache_signature((self.compute_local_hfx_features,self.compute_local_hfx_aux,
             self.hfx_omega_values,self.hfx_chunk_size,self.execution_device))
@@ -249,6 +274,11 @@ class UKS(_BaseKS):
     conv_tol_grad: float = 1e-7
     jk_backend: Literal['full','df'] = 'full'
     auxbasis: str | None = None
+
+    def _response_signature(self):
+        # UKS builds the response container during SCF, without the optional
+        # restricted local-HFX feature controls.
+        return _cache_signature((self.execution_device,))
 
     def _config(self) -> UKSConfig:
         return UKSConfig(
@@ -283,9 +313,12 @@ class UKS(_BaseKS):
 
     def kernel(self) -> Any:
         self._configure_jax_cache()
+        self.converged = False
         reference = self._build_reference(self._spec())
         reference = self._put_on_requested_device(reference)
         self._sync_from_reference(reference)
+        self._cached_scf_key = self._scf_signature()
+        self._cached_response_key = self._response_signature()
         return self.e_tot
 
     def density_fit(self, auxbasis: str | None = None) -> "UKS":

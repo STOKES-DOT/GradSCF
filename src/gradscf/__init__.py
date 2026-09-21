@@ -12,6 +12,9 @@ from typing import Any
 
 
 _NAMESPACE_EXPORTS = {
+    "cc",
+    "solvers",
+    "ci",
     "integrals",
     "gto",
     "scf",

@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.scf.diis import DIIS_SPACE, diis_push, diis_extrapolate
+from gradscf.solvers.nonlinear.diis import DIIS_SPACE, diis_push, diis_extrapolate
 from gradscf.scf import rks
 
 

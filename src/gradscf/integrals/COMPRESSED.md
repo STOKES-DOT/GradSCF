@@ -71,8 +71,16 @@ factorization of packed ERIs for compatibility; that is not auxiliary fitting.
 
 ## NNAO coefficient differentiation
 
-With fixed primitive exponents and centers, cache packed primitive RI factors
-and project them through the normalized contraction matrix:
+With fixed primitive exponents and centers, the exact default is a projected
+shell-direct operator. JAX forms `D_primitive = T @ D @ T.T`, the native
+operator evaluates primitive J/K without storing ERIs, and JAX projects the
+results with `T.T @ J_primitive @ T` and `T.T @ K_primitive @ T`. Native AD is
+therefore needed only for the density map; coefficient and normalization
+derivatives remain in JAX. The converged density is differentiated through the
+implicit SCF fixed point.
+
+The optional DF backend caches packed primitive factors and projects them
+through the normalized contraction matrix:
 
 ```python
 from gradscf.integrals.density_fitting import project_factors
@@ -81,14 +89,12 @@ contracted_factors = project_factors(primitive_factors, transform)
 
 The projection evaluates `T.T @ B[Q] @ T` in auxiliary blocks; its JAX graph
 includes coefficient normalization and supports zero initial coefficients.
-NNAO SCF consumes the contracted factors directly. The stationary gradient
-reconstructs energy in the primitive occupied-orbital space and includes the
-Pulay term. No primitive or contracted four-index ERI is constructed there.
+Neither backend constructs a primitive or contracted four-index ERI.
 
-Run the experiment with `tools/optimize_methane_nnao.py --geometry FILE
---eri-backend ri --auxbasis def2-universal-jkfit`. The old `full` setting is
-retained as a bounded exact reference. Factors remain in memory; HDF5
-out-of-core storage is not implemented by this interface yet.
+Run the experiment with
+`tools/optimize_methane_nnao.py --geometry FILE --jk-backend direct`, or select
+`--jk-backend df --auxbasis def2-universal-jkfit`. DF factors remain in memory;
+HDF5 out-of-core storage is not implemented by this interface yet.
 
 RI is an approximation. Validate auxiliary-basis energy and coefficient-
 gradient errors against exact contracted integrals. If centers/exponents

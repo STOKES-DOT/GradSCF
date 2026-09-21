@@ -9,16 +9,15 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from .eigensolvers import (
+from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
+from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_TOL,
     PYSCF_TD_POSITIVE_EIG_THRESHOLD,
-    _davidson_search_nroots,
-    _solver_dtype,
-    implicit_differential_davidson_lowest_tdhf,
 )
-from .eigenvector_differentiation import TDAGradientMode
+from ..solvers.eigen.davidson import _davidson_search_nroots, _solver_dtype
+from ..solvers.eigen.response import EigenGradientMode
 from ._utils import (
     _resolve_xc_functional,
     _restricted_channel,
@@ -138,7 +137,7 @@ class RestrictedCasidaTDDFT:
     davidson_max_subspace: int | None = None
     davidson_initial_guess_count: int | None = None
     davidson_max_trial_vectors: int | None = None
-    tda_gradient_mode: TDAGradientMode = "eigenvalue_only"
+    tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
     eigenvector_adjoint_tol: float = 1e-6
     eigenvector_adjoint_max_iter: int = 64
     response_kernel_options: ResponseKernelOptions | dict[str, Any] | None = None

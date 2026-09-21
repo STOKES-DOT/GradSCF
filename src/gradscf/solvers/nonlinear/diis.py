@@ -1,7 +1,7 @@
 """Shared DIIS ring history and normalized residual Gram solve.
 
-Keep the fixed history size, start count and arithmetic identical across SCF
-families. Method-specific iteration cadence remains with the caller.
+History size is inferred from the supplied buffers. SCF retains its existing
+default size and start count; other residual equations can choose their own.
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ def diis_solve(
     err_hist: Array,
     hist_count: Any,
 ) -> Array:
-    valid = (jnp.arange(DIIS_SPACE) < hist_count).astype(fock_hist.dtype)
+    history_size = fock_hist.shape[0]
+    valid = (jnp.arange(history_size) < hist_count).astype(fock_hist.dtype)
     gram = err_hist @ err_hist.T
     # The DIIS coefficients are invariant to a common residual scale. Use
     # relative regularization so small physical gradients are not overwhelmed
@@ -35,15 +36,15 @@ def diis_solve(
     top = gram * (valid[:, None] * valid[None, :])
     top = top + jnp.diag(valid * diag_reg + (1.0 - valid))
     b = jnp.zeros(
-        (DIIS_SPACE + 1, DIIS_SPACE + 1),
+        (history_size + 1, history_size + 1),
         dtype=fock_hist.dtype,
     )
-    b = b.at[:DIIS_SPACE, :DIIS_SPACE].set(top)
-    b = b.at[:DIIS_SPACE, DIIS_SPACE].set(-valid)
-    b = b.at[DIIS_SPACE, :DIIS_SPACE].set(-valid)
-    rhs = jnp.zeros((DIIS_SPACE + 1,), dtype=fock_hist.dtype)
-    rhs = rhs.at[DIIS_SPACE].set(-1.0)
-    coeff = jnp.linalg.solve(b, rhs)[:DIIS_SPACE]
+    b = b.at[:history_size, :history_size].set(top)
+    b = b.at[:history_size, history_size].set(-valid)
+    b = b.at[history_size, :history_size].set(-valid)
+    rhs = jnp.zeros((history_size + 1,), dtype=fock_hist.dtype)
+    rhs = rhs.at[history_size].set(-1.0)
+    coeff = jnp.linalg.solve(b, rhs)[:history_size]
     coeff = coeff * valid
     return jnp.tensordot(coeff, fock_hist, axes=(0, 0))
 
@@ -56,12 +57,13 @@ def diis_push(
     hist_head: Array,
     hist_count: Array,
 ) -> tuple[Array, Array, Array, Array]:
+    history_size = fock_hist.shape[0]
     fock_hist = fock_hist.at[hist_head].set(fock)
     err_hist = err_hist.at[hist_head].set(error.reshape(-1))
-    hist_head = (hist_head + 1) % jnp.asarray(DIIS_SPACE, dtype=hist_head.dtype)
+    hist_head = (hist_head + 1) % jnp.asarray(history_size, dtype=hist_head.dtype)
     hist_count = jnp.minimum(
         hist_count + jnp.asarray(1, dtype=hist_count.dtype),
-        jnp.asarray(DIIS_SPACE, dtype=hist_count.dtype),
+        jnp.asarray(history_size, dtype=hist_count.dtype),
     )
     return fock_hist, err_hist, hist_head, hist_count
 

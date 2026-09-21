@@ -50,7 +50,7 @@ def uks_stability(result: UKSResult | UHFResult, *, eri, ao, ao_deriv1,
     means SCF or the eigenpair residual check failed. No orbitals are mutated.
     The existing Davidson solver receives JAX HVPs, never a dense Hessian.
     """
-    from ..tddft.eigensolvers import _davidson_lowest_symmetric
+    from ..solvers.eigen.davidson import _davidson_lowest_symmetric
 
     if config.jk_backend != 'full' or config.potential_clip is not None:
         raise NotImplementedError('Stability requires full ERIs and an unclipped XC potential.')

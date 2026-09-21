@@ -1,4 +1,4 @@
-"""Implicit derivatives of nondegenerate symmetric TDA Ritz vectors."""
+"""Implicit derivatives of nondegenerate symmetric Ritz vectors."""
 
 from __future__ import annotations
 
@@ -7,21 +7,22 @@ from typing import Literal
 
 import jax
 import jax.numpy as jnp
-from jax._src.scipy.sparse.linalg import _gmres_incremental, _gmres_solve
+from ..linear import solve_implicit_linear_system
+from ..diagnostics import require_converged_derivative
 from jaxtyping import Array
 
-from .eigensolvers import (
-    PYSCF_TD_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_TOL,
+from .davidson import (
+    DEFAULT_EIGEN_MAXITER,
+    DEFAULT_EIGEN_TOL,
     _resolve_symmetric_linear_operator,
     implicit_differential_davidson_lowest_symmetric,
 )
 
 
-TDAGradientMode = Literal["eigenvalue_only", "implicit_eigenvector"]
+EigenGradientMode = Literal["eigenvalue_only", "implicit_eigenvector"]
 
 
-def _attach_implicit_eigenvector_differential(
+def attach_eigenvector_response(
     apply: Callable[[Array], Array],
     eigvals: Array,
     eigvecs: Array,
@@ -64,27 +65,9 @@ def _attach_implicit_eigenvector_differential(
             [-project(live_zero), jnp.zeros((1,), dtype=vector.dtype)]
         )
 
-        def solve(matvec: Callable[[Array], Array], values: Array) -> Array:
-            atol = jnp.asarray(float(tol), dtype=values.dtype) * jnp.linalg.norm(
-                values
-            )
-            return _gmres_solve(
-                matvec,
-                values,
-                jnp.zeros_like(values),
-                atol,
-                atol,
-                min(20, dim + 1),
-                max(1, int(max_iter)),
-                lambda x: x,
-                _gmres_incremental,
-            )
-
-        correction = jax.lax.custom_linear_solve(
-            augmented_matvec,
-            rhs,
-            solve=solve,
-            symmetric=True,
+        correction = solve_implicit_linear_system(
+            augmented_matvec, rhs, tol=tol, max_iter=max_iter,
+            restart=min(20, dim + 1),
         )
         return vector + correction[:dim]
 
@@ -97,8 +80,8 @@ def implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
     nroots: int,
     size: int | None = None,
     diag: Array | None = None,
-    tol: float = PYSCF_TD_DAVIDSON_TOL,
-    max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
+    tol: float = DEFAULT_EIGEN_TOL,
+    max_iter: int = DEFAULT_EIGEN_MAXITER,
     max_subspace: int | None = None,
     collapse_subspace: int | None = None,
     initial_guess_count: int | None = None,
@@ -140,8 +123,11 @@ def implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
         preconditioner_level_shift=preconditioner_level_shift,
         orth_eps=orth_eps,
     )
-    differentiable_vectors = _attach_implicit_eigenvector_differential(
-        apply,
+    def checked_apply(values):
+        return require_converged_derivative(apply(values), converged)
+
+    differentiable_vectors = attach_eigenvector_response(
+        checked_apply,
         eigvals,
         eigvecs,
         tol=eigenvector_adjoint_tol,
