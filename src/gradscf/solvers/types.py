@@ -66,3 +66,22 @@ class EigenResult(NamedTuple):
     residual_norms: Array
     converged: Array
     status: Array
+
+
+class SpectralProjectorResult(NamedTuple):
+    """Low-rank spectral observables, without gauge-dependent eigenvectors.
+
+    projection has the shape of the supplied vector/block. residual_norms
+    includes the extra boundary root when nroots < dimension. converged tests
+    the primal eigenspace; response_valid additionally requires a resolved
+    boundary gap. status: 0 valid, 1 invalid eigenspace, 2 unresolved boundary.
+    Diagnostics are nondifferentiable; projection and eigenvalue_sum expose
+    first-order response only.
+    """
+    projection: Array
+    eigenvalue_sum: Array
+    residual_norms: Array
+    boundary_gap: Array
+    converged: Array
+    response_valid: Array
+    status: Array

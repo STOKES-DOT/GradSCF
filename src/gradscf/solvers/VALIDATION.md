@@ -84,3 +84,76 @@ Architecture tests now require the old files to be absent and reject imports
 of removed paths across source, tests, tools and examples. The two pre-existing
 dirty files touched by the migration were checked against snapshots: only their
 intended import lines changed. `git diff --check` also passed.
+
+## Isolated degenerate spectral subspaces (2026-09-21)
+
+`solve_spectral_projector` was validated on real symmetric toy matrices on
+arm64 CPU (`TFRT_CPU_0`), JAX 0.8.1, float64, `OMP_NUM_THREADS=1`.
+The reference and mathematical contract are in [DEGENERACY.md](DEGENERACY.md).
+No generalized metric, non-Hermitian/RPA, GPU or higher-order subspace-response
+claim is made by these tests.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/solvers/test_subspace.py
+```
+
+Focused result: **21 passed**, 40.11 s. The coverage includes:
+
+- Exact internal degeneracy, splitting perturbations, and small/nonzero internal
+  gaps; projector and trace derivatives against analytic small-matrix values
+  and independent NumPy eigendecomposition finite differences.
+- JIT, vmap, vector/block probes and probe derivatives; JVP/VJP agreement.
+- Frame rotations within the selected span, including a nondiagonal Ritz block;
+  projector symmetry/idempotence, `P dP P = 0` and `dP P + P dP = dP`.
+- A 24-dimensional matrix-free operator with an eight-column Davidson bound;
+  no full operator block is requested in forward or backward evaluation.
+- A cut degenerate boundary, unresolved small boundary gap, unconverged guard
+  root, failed primal solve and failed adjoint solve; finite primal diagnostics
+  but invalid derivatives where required, including a direct response solver.
+- The full-space identity projector; reduction to the existing isolated-root
+  response for a nondegenerate rank-one subspace.
+- Bounded restart capacity, arbitrary starting vectors for a diagonal operator,
+  and disconnected invariant sectors whose low eigenvalues are missed by
+  diagonal-only guesses (dimensions 6 and 20).
+
+The shared Davidson forward fixes were independently reviewed. Accepted append
+counts are capped by remaining capacity, so the restarted basis cannot write
+past its last column. Vanishing projected preconditioner directions use the
+projected original residual rather than a normalized roundoff direction.
+
+The final shared-solver and client regression command was:
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/solvers tests/ci tests/test_tddft_eigensolvers.py \
+  tests/test_scf_higher_order.py
+```
+
+Result: **115 passed**, no skips, 166.03 s. Two PySCF warnings state that
+OpenMP is unavailable. This covers the new subspace suite and existing
+isolated-root, CI, TDDFT and higher-order SCF regression tests. The latter
+validate preservation of their existing contracts, not higher-order projector AD.
+
+### Executable example
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/degenerate_subspace.py
+```
+
+The dimensionless four-state example selects the twofold eigenvalue 1, with
+excluded eigenvalues 3 and 5. A perturbation mixes/splits the degenerate pair
+and couples it to the excluded states. For `loss = probe.T @ P @ probe`:
+
+| Quantity | Result |
+| --- | ---: |
+| Loss | 0.2500000000000002 |
+| JVP | -0.11499999999999991 |
+| VJP | -0.11500000000000000 |
+| Central finite difference, step 1e-4 | -0.11499999993655474 |
+| Absolute derivative error | 6.35e-11 |
+| Boundary gap | 1.9999999999999973 |
+| Maximum Ritz residual | 1.82e-15 |
+| Cut-cluster status with one selected root | 2 (invalid response) |
+| Elapsed time including compilation | 6.15 s |

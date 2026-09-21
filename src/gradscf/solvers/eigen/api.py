@@ -10,12 +10,14 @@ from .dense import dense_vectors
 from .response import attach_eigenvector_response
 
 
-def solve_hermitian(matrix_or_operator, *, config=None):
+def solve_hermitian(matrix_or_operator, *, config=None, initial_vectors=None):
     """Solve a real symmetric problem with isolated-root first-order AD.
 
     Matrix-free callers assert symmetry. Dense inputs are checked, never
     silently symmetrized. Failed primal roots keep their Ritz values while
     their derivatives are invalid. No automatic positive-eigenvalue filtering.
+    Optional initial_vectors supplies a full-rank Davidson starting block.
+    Initial guesses are numerical controls, not differentiated physical inputs.
     """
     config = EigenSolverConfig() if config is None else config
     op = as_operator(matrix_or_operator)
@@ -23,15 +25,26 @@ def solve_hermitian(matrix_or_operator, *, config=None):
     dim = op.shape[0]
     if config.nroots > dim:
         raise ValueError("nroots exceeds operator dimension")
+    if initial_vectors is not None:
+        if config.method != 'davidson':
+            raise ValueError("initial_vectors applies only to Davidson")
+        if jnp.iscomplexobj(initial_vectors):
+            raise NotImplementedError("Public solvers require real initial vectors")
     if config.method == "dense":
         vectors = dense_vectors(op, nroots=config.nroots, max_dense=config.max_dense)
     else:
         if op.diagonal is None:
             raise ValueError("Davidson requires an operator diagonal approximation")
+        # Resolve small preconditioned residuals at the requested tolerance.
+        # A fixed 1e-10 rejection threshold can stagnate before a tight guard
+        # root converges, particularly after a bounded-subspace restart.
+        scale = jnp.maximum(1., jnp.max(jnp.abs(op.diagonal)))
+        orth_eps = jnp.minimum(1e-10, .01*config.atol/scale)
         _, vectors, _ = _davidson_lowest_symmetric(
             lambda x: jax.lax.stop_gradient(op.apply(x)), nroots=config.nroots,
             size=dim, diag=op.diagonal, tol=config.atol, max_iter=config.maxiter,
-            max_subspace=config.max_subspace, positive_eig_threshold=None)
+            max_subspace=config.max_subspace, positive_eig_threshold=None,
+            initial_vectors=initial_vectors, orth_eps=orth_eps)
     vectors = jax.lax.stop_gradient(vectors)
     applied = op.apply(vectors)
     values = jnp.sum(vectors * applied, axis=0)

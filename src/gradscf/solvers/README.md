@@ -12,6 +12,7 @@ historical solver forwarding modules have been removed.
 | --- | --- | --- |
 | Symmetric/Hermitian Davidson | `eigen/davidson.py` | TDA, CIS/CI, stability, periodic TDA |
 | Real isolated-root eigenvector response | `eigen/response.py` | TDA and CI coefficient-dependent objectives |
+| Isolated spectral projector and trace response | `eigen/subspace.py` | Complete degenerate subspaces and basis-invariant observables |
 | Real RPA Davidson and metric energy derivatives | `eigen/rpa.py` | Full TDHF/TDDFT, periodic Gamma response |
 | Bounded complex dense RPA and metric energy derivatives | `eigen/rpa.py` | Small non-Gamma periodic response |
 | Regularized full-spectrum and inverse-square-root derivatives | `eigen/spectral.py` | SCF orbital diagonalization and overlap response |
@@ -103,6 +104,14 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   at a converged isolated root. Vectors are stopped. The
   `implicit_eigenvector` mode also solves the constrained eigenvector response.
   These Davidson rules promise first-order response only.
+- `solve_spectral_projector(operator, probes, config=EigenSolverConfig(nroots=k))`
+  returns `projection=P@probes` and `eigenvalue_sum` with first-order JVP/VJP.
+  It permits internal degeneracy and splitting, provided the entire selected
+  subspace is separated from the excluded spectrum. One extra boundary root
+  detects cut clusters; invalid or unresolved boundaries produce NaN derivatives.
+  It does not provide individual degenerate-state derivatives. See the
+  [derivation and boundary policy](DEGENERACY.md) and
+  [example](../../../examples/degenerate_subspace.py).
 - Failed eigenpairs remain inspectable; their derivatives are NaN. Failed
   linear or adjoint solves return NaNs. Residual predicates stay inside opaque
   linear solves so that the tangent map can still be transposed correctly.
@@ -141,6 +150,6 @@ python -m pytest -q tests/solvers tests/ci tests/test_tddft_eigensolvers.py \
 ```
 
 Generic non-Hermitian EOM-CC Davidson/Arnoldi, biorthogonal vector response,
-degenerate-subspace derivatives, and CC amplitude equations are future work.
+variable-metric subspace response, and higher-order projector derivatives are future work.
 The present RPA implementation is not a generic non-Hermitian EOM solver.
 GPU behavior has not been validated in this migration.

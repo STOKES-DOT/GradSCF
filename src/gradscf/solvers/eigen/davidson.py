@@ -125,6 +125,7 @@ def _davidson_lowest_symmetric(
     max_subspace: int | None = None,
     collapse_subspace: int | None = None,
     initial_guess_count: int | None = None,
+    initial_vectors: Array | None = None,
     max_trial_vectors: int | None = None,
     positive_eig_threshold: float | None = None,
     preconditioner_floor: float = 1e-8,
@@ -163,9 +164,21 @@ def _davidson_lowest_symmetric(
     else:
         trial_count = max(nroots, int(max_trial_vectors))
     trial_count = min(max_subspace, trial_count)
-    guess_dim = min(dim, max_subspace, guess_count)
-    guess_idx = jnp.argsort(diag)[:guess_dim]
-    guess_basis = jnp.eye(dim, dtype=dtype)[:, guess_idx]
+    # Retain the requested roots and leave room for correction vectors. A
+    # restart mask must never exceed the allocated subspace, even while traced
+    # in a branch that is not taken for an already converged diagonal problem.
+    collapse_subspace = min(collapse_subspace, max(nroots, max_subspace-trial_count))
+    if initial_vectors is None:
+        guess_dim = min(dim, max_subspace, guess_count)
+        guess_idx = jnp.argsort(diag)[:guess_dim]
+        guess_basis = jnp.eye(dim, dtype=dtype)[:, guess_idx]
+    else:
+        guess_basis = jnp.asarray(initial_vectors, dtype=dtype)
+        if (guess_basis.ndim != 2 or guess_basis.shape[0] != dim
+                or not nroots <= guess_basis.shape[1] <= max_subspace):
+            raise ValueError("initial_vectors must have shape (size, m), nroots <= m <= max_subspace")
+        guess_dim = guess_basis.shape[1]
+        guess_basis = jax.lax.stop_gradient(guess_basis)
     guess_basis, _ = jnp.linalg.qr(guess_basis, mode="reduced")
     guess_abasis = apply(guess_basis)
 
@@ -234,7 +247,8 @@ def _davidson_lowest_symmetric(
             candidate = _orthogonalize_against(candidate, basis_in)
             candidate = _orthogonalize_against(candidate, columns_so_far)
             cand_norm = jnp.linalg.norm(candidate)
-            accept = accept_seed & (cand_norm > orth_eps_arr)
+            accept = (accept_seed & (cand_norm > orth_eps_arr)
+                      & (appended_count_cur < max_subspace-basis_dim_in))
             safe_norm = jnp.where(cand_norm > orth_eps_arr, cand_norm, 1.0)
             col = (candidate / safe_norm)[:, None]
 
@@ -469,9 +483,21 @@ def _davidson_lowest_symmetric(
                     preconditioner_floor,
                     preconditioner_level_shift,
                 )
-                correction = root_residual / denom
+                raw_correction = root_residual / denom
+                correction = raw_correction
                 correction = _orthogonalize_against(correction, basis_it)
                 correction = _orthogonalize_against(correction, new_cols_cur)
+                corr_norm = jnp.linalg.norm(correction)
+                # For an exact diagonal preconditioner on a diagonal operator,
+                # the trial correction is parallel to the current Ritz vector.
+                # Fall back to the unpreconditioned residual instead of stalling
+                # or normalizing roundoff into a spurious search direction.
+                roundoff_floor = (64*dim*jnp.finfo(dtype).eps
+                                  * jnp.linalg.norm(raw_correction))
+                stalled = corr_norm <= jnp.maximum(orth_eps_arr, roundoff_floor)
+                fallback = _orthogonalize_against(root_residual, basis_it)
+                fallback = _orthogonalize_against(fallback, new_cols_cur)
+                correction = jnp.where(stalled, fallback, correction)
                 corr_norm = jnp.linalg.norm(correction)
                 accept = root_needs_update & (corr_norm > orth_eps_arr)
                 safe_norm = jnp.where(corr_norm > orth_eps_arr, corr_norm, 1.0)
