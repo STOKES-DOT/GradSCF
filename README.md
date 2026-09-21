@@ -28,6 +28,7 @@ dedicated `gradscf` API. Original copyright notices and licenses are retained.
 | SCF (molecules) | RHF, UHF, ROHF, GHF, RKS, UKS, ROKS, GKS; DIIS, damping, level shift, UHF/UKS stability analysis with directed restart | `gradscf.scf`, `gradscf.dft` (PySCF-style facades) |
 | Differentiable SCF | `unrolled` and `implicit` adjoint modes (gradients of converged energies/orbitals w.r.t. geometry, basis exponents/contractions, model parameters) | `SCFDifferentiationConfig`, `gradscf.scf.autodiff` |
 | Excited states | TDA, full Casida TDHF/TDDFT (restricted and unrestricted), implicit-differentiable Davidson eigensolvers, oscillator strengths and spectra | `gradscf.tdscf`, `gradscf.tddft` |
+| Configuration interaction | Real closed-shell-reference CIS (singlet/triplet), singlet CIS(D), CISD/CISDT/CISDTQ; generic small-system determinant engine with first-order integral AD | `gradscf.ci` — [scope and usage](src/gradscf/ci/README.md) |
 | GW many-body | Molecular G0W0 with contour deformation (restricted/unrestricted), evGW (Z-update), qsGW (static self-consistent potential), matrix scGW with Galitskii–Migdal energy | `gradscf.gw` (`GW`, `UGW`, `evgw_cd_*`, `qsgw_cd_restricted`, `scgw_cd_restricted`) |
 | Periodic GW | Plane-wave product basis, momentum-conserving k-point sampling, q→0 head/wing finite-size corrections; Gamma and k-point KRGW | `gradscf.gw.pbc` (`KRGW`, `g0w0_cd_kpoints`) |
 | Periodic SCF | GTH pseudopotentials, Ewald electrostatics, FFT density fitting, Γ/k-point HF and DFT, band structures, q=0 TDA/TDDFT optics | `gradscf.pbc` (`gto`, `scf`, `dft`, `tdscf`, `bands`) |
@@ -178,6 +179,8 @@ PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 python -m pytest -q
 
 ## Documentation Map
 
+- [Shared numerical solvers](src/gradscf/solvers/README.md) — common forward/backward implementations, operator API, and convergence contracts; [example](examples/shared_solvers.py)
+- [Configuration interaction](src/gradscf/ci/README.md) — CI theory, API, AD boundaries, and validation; [runnable example](examples/ci/restricted_ci.py)
 - [MIGRATION.md](MIGRATION.md) — old→new namespace mapping (`td_graddft`,
   `gradscf.neural_xc`, `gradscf.xc_backend`, top-level `nnao`, helper modules)
 - `src/gradscf/gw/` — GW module docstrings with literature references

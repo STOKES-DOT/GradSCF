@@ -9,6 +9,7 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .eigensolvers import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_MAX_CYCLE,
@@ -16,7 +17,6 @@ from .eigensolvers import (
     PYSCF_TD_POSITIVE_EIG_THRESHOLD,
     _davidson_search_nroots,
     _solver_dtype,
-    implicit_differential_davidson_lowest_tdhf,
 )
 from .eigenvector_differentiation import TDAGradientMode
 from ._utils import (

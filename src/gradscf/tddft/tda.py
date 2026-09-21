@@ -7,10 +7,10 @@ import jax.numpy as jnp
 from .eigensolvers import PYSCF_TD_DAVIDSON_MAX_CYCLE
 from .eigensolvers import PYSCF_TD_DAVIDSON_TOL
 from .eigensolvers import PYSCF_TD_POSITIVE_EIG_THRESHOLD
-from .eigensolvers import _davidson_search_nroots
-from .eigensolvers import implicit_differential_davidson_lowest_symmetric
-from .eigenvector_differentiation import (
-    TDAGradientMode,
+from ..solvers.eigen.davidson import _davidson_search_nroots
+from ..solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
+from ..solvers.eigen.response import (
+    EigenGradientMode as TDAGradientMode,
     implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
 from .types import TDAResult

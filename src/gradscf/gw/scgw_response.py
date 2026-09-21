@@ -3,7 +3,7 @@
 The state contains symmetric F, complex symmetric Sigma at positive
 frequencies, the tail moment, and mu. Charge is a separate residual block;
 mu is never frozen. Forward iteration is stopped before attaching the root
-rule. Tangent/adjoint systems use the shared SCF checked GMRES solver and
+rule. Tangent/adjoint systems use the shared checked GMRES solver and
 a scalar charge Schur complement. Invalid or unresolved response solves
 return NaNs, following the SCF differentiation policy.
 """
@@ -15,7 +15,9 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..df import build_jk_from_df
-from ..scf.implicit import solve_implicit_linear_system
+from ..solvers.linear import solve_scalar_border
+from ..solvers import LinearSolverConfig
+from ..solvers.nonlinear import attach_root
 from .matsubara import dyson_green_and_density, gw_matsubara_step
 
 
@@ -134,37 +136,11 @@ def _solve_state(hcore, b, energy_guess, grid, *, nocc, max_iter, tol, mixing, p
 
 
 def _charge_linear_solve(matvec, rhs, config, beta, charge_response_tol, converged):
-    """Joint solve with a checked scalar Schur complement for charge.
-
-    Wrapping the complete checked solve in custom_linear_solve keeps the
-    nonlinear validity checks out of the tangent map being transposed.
-    The same block construction works for the transposed operator.
-    """
-    def checked_solve(operator, value):
-        zero = jnp.zeros(1, dtype=value.dtype)
-        lift = lambda v: jnp.concatenate((v, zero))
-        block = lambda v: operator(lift(v))[:-1]
-        column = operator(jnp.zeros_like(value).at[-1].set(1.0))
-        def solve(v):
-            return solve_implicit_linear_system(
-                block, v, tol=config.tolerance, max_iter=config.max_iter,
-                restart=config.restart, converged=converged,
-            )
-        response_column = solve(column[:-1])
-        response_rhs = solve(value[:-1])
-        eliminated = operator(lift(response_column))[-1]
-        schur = column[-1] - eliminated
-        cancellation_floor = config.tolerance * (jnp.abs(column[-1]) + jnp.abs(eliminated))
-        resolved = (jnp.abs(beta * schur) > charge_response_tol) & (jnp.abs(schur) > cancellation_floor)
-        dmu = (value[-1] - operator(lift(response_rhs))[-1]) / jnp.where(resolved, schur, 1.0)
-        solution = jnp.concatenate((response_rhs - response_column * dmu, dmu[None]))
-        applied = operator(solution)
-        norm = jnp.linalg.norm(value)
-        roundoff = 32 * jnp.finfo(value.dtype).eps * (norm + jnp.linalg.norm(applied))
-        valid = (converged & resolved & jnp.all(jnp.isfinite(solution))
-                 & (jnp.linalg.norm(applied - value) <= config.tolerance * norm + roundoff))
-        return jnp.where(valid, solution, jnp.full_like(solution, jnp.nan))
-    return jax.lax.custom_linear_solve(matvec, rhs, solve=checked_solve, transpose_solve=checked_solve)
+    """Supply the physical charge-resolution policy to the shared bordered solve."""
+    linear_config = LinearSolverConfig(rtol=config.tolerance, maxiter=config.max_iter,
+                                        restart=20 if config.restart is None else config.restart)
+    return solve_scalar_border(matvec, rhs, config=linear_config, converged=converged,
+        schur_valid=lambda schur: jnp.abs(beta * schur) > charge_response_tol)
 
 
 def _raise_nonconverged(residual):
@@ -191,7 +167,7 @@ def implicit_scgw(*, coeff, energy_guess, hcore, b, nocc, nuclear_repulsion, gri
     tangent_solve = lambda matvec, rhs: _charge_linear_solve(
         matvec, rhs, config, grid.beta, charge_response_tol, converged
     )
-    state = jax.lax.custom_root(residual, seed, solve=lambda _f, _x: seed, tangent_solve=tangent_solve)
+    state = attach_root(residual, seed, tangent_solve=tangent_solve)
     fock, sigma, moment, mu = _unpack_state(state, hcore.shape[0], grid)
     return _assemble_scgw_result(
         coeff=coeff, hcore=hcore, b=b, nuclear_repulsion=nuclear_repulsion,

@@ -16,18 +16,19 @@ from ._unrestricted_semilocal_response import (
     UnrestrictedSemilocalResponseFunctional,
     build_unrestricted_semilocal_response_action,
 )
+from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .eigensolvers import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_TOL,
     PYSCF_TD_POSITIVE_EIG_THRESHOLD,
-    _davidson_search_nroots,
-    _solver_dtype,
-    implicit_differential_davidson_lowest_symmetric,
-    implicit_differential_davidson_lowest_tdhf,
 )
-from .eigenvector_differentiation import (
-    TDAGradientMode,
+from ..solvers.eigen.davidson import (
+    _davidson_search_nroots, _solver_dtype,
+    implicit_differential_davidson_lowest_symmetric,
+)
+from ..solvers.eigen.response import (
+    EigenGradientMode as TDAGradientMode,
     implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
 from ._utils import (

@@ -84,6 +84,26 @@ class _BaseKS:
 
         return tdscf.TDDFT(self, **kwargs)
 
+    def CIS(self, **kwargs: Any) -> Any:
+        from ..ci import CIS
+
+        return CIS(self, **kwargs)
+
+    def CISD(self, **kwargs: Any) -> Any:
+        from ..ci import CISD
+
+        return CISD(self, **kwargs)
+
+    def CISDT(self, **kwargs: Any) -> Any:
+        from ..ci import CISDT
+
+        return CISDT(self, **kwargs)
+
+    def CISDTQ(self, **kwargs: Any) -> Any:
+        from ..ci import CISDTQ
+
+        return CISDTQ(self, **kwargs)
+
     def nuc_grad_method(self) -> "_NuclearGradient":
         return _NuclearGradient(self)
 
