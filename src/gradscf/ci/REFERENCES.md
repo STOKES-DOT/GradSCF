@@ -16,6 +16,8 @@ different purposes and are identified separately below.
 | `corrections.py`, `tddft/cisd.py`: canonical singlet CIS(D) | HeadGordon1994 | Original CIS(D) method; the explicit working expression used by the independent test is also documented in the Q-Chem manual below |
 | CI eigenvalue/eigenvector differentiation through `solvers` | Xie2020 | Related implicit eigensolver differentiation theory; this citation does not expand the implemented first-order, isolated-root contract |
 | PySCF CISD, HF-TDA and FCI test oracles; public API conventions | Sun2020 | Reference software attribution, separate from the theoretical definition of CI or CIS(D) |
+| `make_uci_space`, UCISD/UCISDT/UCISDTQ | Slater1929; Condon1930; Sherrill1999 | The same determinant CI hierarchy in a fixed (N-alpha,N-beta) sector with separate orbital frames; no new perturbation model or spin adaptation |
+| `solve_ucis` | Singles projection of the same Hamiltonian, subtracting the HF determinant energy | PySCF UHF/TDA comparison for a stationary UHF reference; this does not implement spin-flip CIS or a ROHF response theory |
 
 The production singlet CIS(D) adapter reuses the existing repository function
 `gradscf.tddft.cisd.restricted_cisd_second_order_correction`. The project-level

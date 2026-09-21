@@ -13,6 +13,7 @@ modified routines, hashes, and license are in [NOTICE.md](NOTICE.md).
 | Conventional CCSD(T) | Raghavachari et al. (1989); real restricted working formula adapted from PySCF's slow (T) implementation | H4 and H2O corrections compared with PySCF; full energy derivatives compared with finite differences |
 | CCSD+T(CCSD) | Urban et al. (1985); pure connected WT2 term distinguished in OpenMolcas CCT3 | Independent determinant-space triple moments and a connected-only PySCF oracle |
 | Lambda/implicit response | Stationary Lagrangian E + lambda^T R; general CC response theory in Bartlett–Musiał (2007) | Nonredundant coordinate adjoint, spin-adapted dual conversion, and PySCF CCSD l1/l2 comparison |
+| UCCSD / UCCD | Spin-orbital CCSD equations; PySCF `gintermediates` cites Gauss–Stanton (1995), Table III | PySCF UCCSD energies and spin-block amplitudes, random-amplitude GCCSD residuals, and implicit-response finite differences; see [open-shell conventions](OPEN_SHELL.md) |
 
 ## Bibliography
 
@@ -55,3 +56,11 @@ with their own numerical validation rather than inferred from the names above.
 
 The pinned OpenMolcas source review, method/program naming distinction and limits
 of the cross-check are recorded in [OPENMOLCAS.md](OPENMOLCAS.md).
+
+7. J. Gauss and J. F. Stanton, “Coupled-cluster calculations of nuclear magnetic
+   resonance chemical shifts,” *J. Chem. Phys.* **103**, 3561 (1995).
+   [DOI: 10.1063/1.470240](https://doi.org/10.1063/1.470240).
+   Bibliographic identity checked against the
+   [author's publication list](https://www.tc.uni-mainz.de/publikationen/publikationen-juergen-gauss/).
+   The Table III attribution is inherited from the inspected PySCF source;
+   this work does not claim an independent full-text audit of that table.

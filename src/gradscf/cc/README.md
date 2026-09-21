@@ -1,9 +1,15 @@
-# Restricted ground-state coupled cluster
+# Ground-state coupled cluster
 
 `gradscf.cc` provides real molecular CCS, CCD, CCSD, CC2, LCCD and LCCSD, plus
 the conventional CCSD(T) and Urban CCSD+T(CCSD) corrections. Numerical iterations, DIIS and implicit
 root/adjoint solves are owned by `gradscf.solvers`. The CC module defines the
 Hamiltonian blocks, amplitude representation, residuals and energy contractions.
+
+Real UHF/ROHF-based `UCCSD` and `UCCD` are also available. `CCSD(mf)` and
+`CCD(mf)` select the equations from the reference. See
+[Open-shell post-HF](OPEN_SHELL.md) for spin-block amplitudes, frozen orbitals,
+implicit response and the current in-core limits. The remaining methods and
+triples/property examples below apply to restricted closed-shell references.
 
 Method citations are in [REFERENCES.md](REFERENCES.md). Some contraction code
 is adapted from PySCF 2.9.0 under Apache-2.0; see [NOTICE.md](NOTICE.md).
@@ -30,11 +36,12 @@ dm1 = mycc.make_rdm1()  # spin-summed MO density, including frozen cores
 ```
 
 `CCS`, `CCD`, `CC2`, `LCCD`, and `LCCSD` use the same constructor convention;
-`RCCSD` is a spelling alias for `CCSD`. `CC(mf, method="cc2")` selects a model
+`RCCSD` explicitly requires a restricted reference. `CC(mf, method="cc2")` selects a model
 explicitly. Unsupported names are rejected, not mapped to CCSD. The facade
 accepts converged closed-shell GradSCF `RKS(xc="hf")` or explicit
-`CCReference(h1_mo, eri_mo, nocc, nuclear_repulsion=...)` data. UHF/ROHF/GHF,
-complex orbitals and DFT references are not accepted by this initial interface.
+`CCReference(h1_mo, eri_mo, nocc, nuclear_repulsion=...)` data for restricted models.
+CCSD/CCD additionally accept UHF/ROHF and explicit `UnrestrictedReference`.
+GHF, complex orbitals and DFT references are not accepted.
 Changing the reference, method or frozen space invalidates post-processing until
 `kernel()` is run again. Reference-array mutations are detected by content hashes;
 SCF-backed references also track the completed SCF state.

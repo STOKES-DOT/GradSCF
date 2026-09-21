@@ -239,6 +239,7 @@ class ROKS(_BaseKS):
 
     def kernel(self) -> Any:
         self._configure_jax_cache()
+        self.converged = False
         cfg = self._config()
         inputs = build_uks_integral_inputs(
             atom=self._spec(), basis=self.mol.basis, config=cfg, xc_spec=self.xc,
@@ -263,6 +264,8 @@ class ROKS(_BaseKS):
         result = run_roks_from_integrals(**kwargs, nalpha=inputs.nalpha, nbeta=inputs.nbeta, config=cfg)
         self.scf_result = result
         self._sync_from_scf_result(result)
+        self._scf_inputs = inputs
+        self._cached_scf_key = self._scf_signature()
         return self.e_tot
 
     def make_rdm1(self) -> Array:

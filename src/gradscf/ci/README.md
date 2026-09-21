@@ -1,6 +1,8 @@
-# Restricted single-reference configuration interaction
+# Single-reference configuration interaction
 
-`gradscf.ci` implements real, molecular, closed-shell-reference CI with JAX.
+`gradscf.ci` implements real molecular CI with restricted and unrestricted references.
+UHF and ROHF support, integral conventions and differentiation limits are
+described in [Open-shell post-HF](../cc/OPEN_SHELL.md).
 PySCF is used in the tests as an independent reference, not by the solver.
 Numerical eigensolves and their response rules are owned by
 [`gradscf.solvers`](../solvers/README.md); CI constructs the Hamiltonian action
@@ -14,14 +16,16 @@ Method references and their connection to the implementation are recorded in
 | --- | --- |
 | `CIS(mf, singlet=True/False)` | Spin-adapted singles; excitation energies relative to HF |
 | `CIS_D(mf)` | Canonical RHF singlet CIS(D); corrected excitation energies |
-| `CISD(mf)` | Reference plus all singles and doubles, fixed M_s = 0 |
-| `CISDT(mf)` | Reference plus all excitations through triples, fixed M_s = 0 |
-| `CISDTQ(mf)` | Reference plus all excitations through quadruples, fixed M_s = 0 |
-| `CI(mf, max_excitation=k)` | General rank-truncated space, fixed M_s = 0 |
+| `CISD(mf)` / `UCISD(mf)` | Reference plus all singles and doubles, fixed (N-alpha, N-beta) |
+| `CISDT(mf)` / `UCISDT(mf)` | Reference plus all excitations through triples |
+| `CISDTQ(mf)` / `UCISDTQ(mf)` | Reference plus all excitations through quadruples |
+| `CI(mf, max_excitation=k)` / `UCI` | General rank-truncated space |
+| `UCIS(mf)` | Spin-conserving UHF singles; no total-spin projection |
 
-The determinant CI solvers fix N-alpha = N-beta. They do **not** select total
+Restricted determinant spaces fix N-alpha = N-beta; unrestricted spaces permit
+different electron counts and different orbital frames. They do **not** select total
 spin S: higher roots can be singlets, triplets, or higher-spin states. Only CIS
-currently exposes explicit singlet/triplet adaptation. This differs from the
+on closed-shell references exposes explicit singlet/triplet adaptation. This differs from the
 spin-adapted restricted CISD amplitudes in PySCF; raw CI coefficient arrays are
 not interchangeable. Truncated CI is generally not size extensive; see the CI
 review by [Sherrill and Schaefer (1999)](https://doi.org/10.1016/S0065-3276%2808%2960532-8).
@@ -80,7 +84,8 @@ For explicit inputs to a facade use
 `CIReference(h1_mo, eri_mo, nocc, nuclear_repulsion=..., mo_energy=...)`.
 For AO inputs, `integrals.mo.transform_integrals` supports full ERIs, an s4
 AO-pair matrix, or density-fitting factors with shape `(naux, nao, nao)`.
-The SCF facade adapter is eager and accepts converged GradSCF `RKS(xc="hf")`;
+The SCF facade adapter is eager and accepts converged GradSCF `RKS(xc="hf")`,
+`UHF` and `ROHF`; the latter two use `UnrestrictedReference` and `make_uci_space`.
 use functional kernels inside `jax.jit`, `jax.grad`, and `jax.jvp`.
 
 The default `gradient_mode="eigenvalue_only"` stops the iterative Ritz vectors
@@ -134,14 +139,14 @@ the Fock matrix is diagonal and consistent with the supplied orbital energies.
   does not construct a dense determinant Hamiltonian. Static connections are
   cached on the host, while integral contractions and vector actions use JAX.
 - This generic implementation targets small reference calculations. Full MO
-  ERIs still require O(nmo^4) storage, and the connection table can be large.
+  ERIs still require O(nmo^4) storage (dense spin embedding for UCI), and the connection table can be large.
   It is not an optimized production CISD/FCI engine.
 - The default space limit is 5000 determinants (configurable); connection
   construction stops at 1,000,000 stored diagonal/undirected connections.
   Dense verification is limited to 2048 determinants. Reducing the orbital
   space or excitation rank is preferable to simply increasing these limits.
-- UHF/ROHF/GHF, complex orbitals, periodic CI, RDM/property APIs, and automatic
-  spin selection for general CI roots are not implemented in this first stage.
+- GHF, complex orbitals, periodic CI, RDM/property APIs, and automatic
+  spin selection for general CI roots are not implemented.
 - Named `CISD(T)` / `CISDT(Q)` corrections are not exported. They need a specific
   perturbative definition and reference implementation; these names are not
   inferred from the coupled-cluster hierarchy.

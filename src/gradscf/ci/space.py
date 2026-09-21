@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from math import comb
 from numbers import Integral
-from ..integrals.mo import frozen_indices
+from ..integrals.mo import frozen_indices, unrestricted_frozen_indices
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,54 @@ class CISpace:
     @property
     def size(self):
         return len(self.determinants)
+
+
+@dataclass(frozen=True)
+class UCISpace:
+    """Fixed (Nalpha,Nbeta) determinant space, without total-spin projection."""
+    nmo: int
+    nocc: tuple[int, int]
+    max_excitation: int
+    frozen: tuple[tuple[int, ...], tuple[int, ...]]
+    determinants: tuple[int, ...]
+    ranks: tuple[int, ...]
+
+    @property
+    def size(self):
+        return len(self.determinants)
+
+
+def make_uci_space(nmo, nocc, *, max_excitation=2, frozen=None, max_determinants=5000):
+    """Rank-truncated alpha/beta space; frozen electrons remain explicit."""
+    if not isinstance(nmo, Integral) or nmo < 1:
+        raise ValueError("nmo must be a positive integer")
+    if not isinstance(max_excitation, Integral) or max_excitation < 0:
+        raise ValueError("max_excitation must be a nonnegative integer")
+    if not isinstance(max_determinants, Integral) or max_determinants < 1:
+        raise ValueError("max_determinants must be a positive integer")
+    frozen = unrestricted_frozen_indices(nmo, nocc, frozen)
+    nocc = tuple(map(int, nocc))
+    occupied = [tuple(i for i in range(no) if i not in f) for no, f in zip(nocc, frozen)]
+    virtual = [tuple(i for i in range(no, nmo) if i not in f) for no, f in zip(nocc, frozen)]
+    counts = [[comb(len(o), k)*comb(len(v), k)
+               for k in range(min(max_excitation, len(o), len(v))+1)]
+              for o, v in zip(occupied, virtual)]
+    count = sum(a*b for i, a in enumerate(counts[0]) for j, b in enumerate(counts[1])
+                if i+j <= max_excitation)
+    if count > max_determinants:
+        raise ValueError(f"CI space requires {count} determinants; max_determinants={max_determinants}")
+    channels = []
+    for no, occ, vir, numbers in zip(nocc, occupied, virtual, counts):
+        ref = (1 << no)-1
+        channels.append([[ref ^ sum(1 << p for p in holes+particles)
+                          for holes in combinations(occ, rank)
+                          for particles in combinations(vir, rank)]
+                         for rank in range(len(numbers))])
+    entries = sorted((i+j, a | (b << nmo))
+                     for i, aa in enumerate(channels[0]) for j, bb in enumerate(channels[1])
+                     if i+j <= max_excitation for a in aa for b in bb)
+    return UCISpace(int(nmo), nocc, int(max_excitation), frozen,
+                    tuple(d for _, d in entries), tuple(r for r, _ in entries))
 
 
 def make_ci_space(nmo, nocc, *, max_excitation=2, frozen=None, max_determinants=5000):

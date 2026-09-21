@@ -13,13 +13,17 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 
-from .space import excite
-from ..integrals.mo import validate_integrals
+from .space import excite, UCISpace
+from ..integrals.mo import validate_integrals, spin_orbital_integrals
 
 
 @lru_cache(maxsize=8)
 def _connections(space):
     n = space.nmo
+    unrestricted = isinstance(space, UCISpace)
+    frozen = (set(space.frozen[0]) | {p+n for p in space.frozen[1]} if unrestricted
+              else set(space.frozen) | {p+n for p in space.frozen})
+    orbital = (lambda p: p) if unrestricted else (lambda p: p % n)
     lookup = {d: i for i, d in enumerate(space.determinants)}
     rows, cols, one, two = [], [], [], []
 
@@ -31,10 +35,10 @@ def _connections(space):
         return len(rows) - 1
 
     def h(edge, p, q, sign=1):
-        one.append((edge, p % n, q % n, sign))
+        one.append((edge, orbital(p), orbital(q), sign))
 
     def g(edge, p, q, r, s, sign=1):
-        two.append((edge, p % n, q % n, r % n, s % n, sign))
+        two.append((edge, orbital(p), orbital(q), orbital(r), orbital(s), sign))
 
     # Diagonals occupy the first space.size connection slots.
     for j, det in enumerate(space.determinants):
@@ -48,8 +52,8 @@ def _connections(space):
                 g(edge, p, q, q, p, -1)
     for j, det in enumerate(space.determinants):
         occ = [p for p in range(2 * n) if det & (1 << p)]
-        holes = [p for p in occ if p % n not in space.frozen]
-        vir = [p for p in range(2 * n) if not det & (1 << p) and p % n not in space.frozen]
+        holes = [p for p in occ if p not in frozen]
+        vir = [p for p in range(2 * n) if not det & (1 << p) and p not in frozen]
         for q in holes:
             for p in vir:
                 if p // n != q // n:
@@ -102,7 +106,12 @@ class CIHamiltonian(NamedTuple):
 
 
 def build_hamiltonian(h1, eri, space):
-    h1, eri = validate_integrals(h1, eri, space.nmo)
+    if isinstance(space, UCISpace):
+        h1, eri = spin_orbital_integrals(h1, eri)
+        if h1.shape[0] != 2*space.nmo:
+            raise ValueError("MO integral dimensions do not match the MO space")
+    else:
+        h1, eri = validate_integrals(h1, eri, space.nmo)
     rows, cols, one, two = _connections(space)
     weights = jnp.zeros((len(rows),), dtype=jnp.result_type(h1, eri))
     if len(one):

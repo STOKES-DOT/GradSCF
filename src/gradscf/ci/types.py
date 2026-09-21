@@ -1,4 +1,4 @@
-"""Configuration and JAX-compatible results for real restricted CI."""
+"""Configuration and JAX-compatible results for real molecular CI."""
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -35,7 +35,7 @@ class CIResult(NamedTuple):
     """All energies in Hartree; coefficients have shape (ndet, nroots).
 
     Coefficient derivatives require gradient_mode='implicit_eigenvector'.
-    The determinant space fixes M_s=0, and does not select total spin S.
+    The determinant space fixes (Nalpha,Nbeta), and does not select total spin S.
     """
     total_energies: Array
     correlation_energies: Array
@@ -53,6 +53,15 @@ class CISResult(NamedTuple):
     converged: Array
     amplitude_response: bool = False
     singlet: bool = True
+
+
+class UCISResult(NamedTuple):
+    """Spin-conserving singles; amplitudes=(alpha,beta), with root axis first."""
+    excitation_energies: Array
+    amplitudes: object
+    residual_norms: Array
+    converged: Array
+    amplitude_response: bool = False
 
 
 class CISDCorrectionResult(NamedTuple):

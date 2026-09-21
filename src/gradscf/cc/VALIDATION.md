@@ -98,3 +98,77 @@ finite difference to 1.0542e-9 Hartree along the documented canonical path.
 The inspected OpenMolcas source revision and hashes are recorded in
 [OPENMOLCAS.md](OPENMOLCAS.md). These checks do not claim that an OpenMolcas
 executable was run or that its ROHF/Cholesky implementations were ported.
+## Open-shell extension (2026-09-21)
+
+The open-shell implementation is described in [OPEN_SHELL.md](OPEN_SHELL.md).
+It uses the same common nonlinear/linear/eigenvalue solvers as the restricted
+implementation. All tests here use CPU and float64; PySCF 2.9.0 is an independent
+test dependency. No GPU, nuclear-gradient or spin-adapted ROCCSD claim is made.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/cc tests/ci tests/solvers \
+  tests/test_scf_uhf.py tests/test_scf_rohf_roks.py tests/test_tddft_eigensolvers.py
+```
+
+Result: **158 passed, 5 skipped**, 294.70 s on macOS arm64, JAX 0.8.1. The five
+skips are existing semilocal ROKS comparisons requiring unavailable `jax_xc`
+(three functionals on an identical grid, the PBE facade, and the closed-shell
+PBE limit). Two PySCF warnings report unavailable OpenMP. Subsequent narrowly
+targeted regressions include the UKS response-cache fix and additional CI
+triples/empty-amplitude cases; see the focused command below.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/ci/test_uci.py tests/cc/test_ucc.py \
+  tests/cc/test_refinements.py::test_facade_rejects_stale_posthoc_state
+```
+
+Final focused result: **27 passed**, 55.67 s (24 open-shell cases plus three
+existing restricted facade-freshness cases). Separately, the UHF response-cache
+regression and `tests/test_reference_uks.py` give **6 passed**, 9.11 s.
+
+Coverage includes:
+
+- H3 doublet/STO-3G, z = 0, 0.85, 1.9 Angstrom: unrestricted CI Hamiltonian
+  compared with PySCF UHF-FCI, UCISD energies with PySCF UCISD, UCIS excitations
+  with UHF/TDA, UCCSD energies and all amplitude blocks with PySCF UCCSD.
+- OH doublet/6-31G, R = 0.97 Angstrom: nonzero alpha-alpha and beta-beta
+  doubles, UCCSD energies/amplitudes, random noncanonical residuals against
+  PySCF GCCSD. Oracle CC uses up to 150 cycles with energy tolerance 1e-12 Ha
+  and amplitude-update tolerance 1e-10; GradSCF checks the physical residual.
+- A four-MO synthetic Hamiltonian with distinct spin orbital frames and three
+  electrons: nonempty triple excitations, projected FCI matrices, variational
+  lowering from doubles to triples, and the full-CI limit.
+- Full/s4/DF AO transforms; separate frozen alpha/beta occupied and virtual
+  orbitals; alpha-beta exchange of labels; level shift; float32 restarts into
+  float64 calculations; single empty spin channels and all-frozen amplitudes.
+- JIT energy/coefficient/amplitude response versus central finite differences
+  (step 1e-4) for one- and two-electron MO integral perturbations. Tolerances are
+  2e-8 to 3e-8 for derivative comparisons, 2e-9 Ha for molecular energy oracles,
+  3e-8 for amplitudes, and 3e-12 for random residuals. Unconverged UCC response
+  must be nonfinite rather than silently zero.
+- GradSCF UHF/ROHF facade dispatch and stale-SCF rejection, including the existing
+  UHF response adapter after adding the shared input-freshness bookkeeping.
+
+### Reproducible public-API example
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/cc/open_shell_ground.py
+```
+
+The example prints its hardware/backend, geometry, convergence tolerances,
+amplitude shapes, elapsed time and derivative comparison. Measured on
+2026-09-21, macOS 26.6.2 arm64, JAX 0.8.1, TFRT CPU, float64, in 16.15 s:
+
+| Reference | HF (Ha) | UCCSD (Ha) | CC residual norm | Fixed-MO derivative absolute error |
+| --- | ---: | ---: | ---: | ---: |
+| UHF | -1.5506267047570963 | -1.5741669980551043 | 2.44e-12 | 1.54e-12 |
+| ROHF | -1.5415902126151726 | -1.5741669980551203 | 2.67e-13 | 8.27e-13 |
+
+UCISD and full CI also give -1.57416699805511 Ha for this small system. Here the
+orbital/electron counts allow at most two spin-conserving excitations; this
+equality must not be generalized to arbitrary three-electron systems. The
+derivative perturbs only h-alpha by `x*diag(0.2,-0.1,0.07)` at fixed MO orbitals,
+with finite-difference step 1e-4. It is not a nuclear force.

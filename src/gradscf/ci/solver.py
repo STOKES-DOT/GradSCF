@@ -1,10 +1,13 @@
-"""Restricted CI and spin-adapted CIS solvers."""
+"""CI Hamiltonian orchestration using the common eigensolver and AD rules."""
 import jax.numpy as jnp
+import numpy as np
+from dataclasses import replace
 
 from ..solvers import LinearOperator, EigenSolverConfig, solve_hermitian
 from .hamiltonian import build_hamiltonian, validate_integrals
 from .space import frozen_indices
-from .types import CIConfig, CIResult, CISResult
+from .types import CIConfig, CIResult, CISResult, UCISResult
+from .space import make_uci_space, excite
 
 
 def _eigenpairs(apply, diagonal, config):
@@ -20,7 +23,7 @@ def _eigenpairs(apply, diagonal, config):
 
 
 def solve_ci(h1, eri, space, *, nuclear_repulsion=0.0, config=None):
-    """Variational CI in a static M_s=0 space, with first-order energy AD.
+    """Variational CI in a static fixed-M_s space, with first-order energy AD.
 
     Frozen-core energy is retained because frozen electrons remain in the
     determinants. Derivatives assume converged, isolated roots and fixed topology.
@@ -36,6 +39,37 @@ def solve_ci(h1, eri, space, *, nuclear_repulsion=0.0, config=None):
 def restricted_fock(h1, eri, nocc):
     return h1 + 2 * jnp.einsum("pqii->pq", eri[:, :, :nocc, :nocc]) - jnp.einsum(
         "piiq->pq", eri[:, :nocc, :nocc, :])
+
+
+def solve_ucis(h1, eri, *, nocc, frozen=None, config=None, max_determinants=5000):
+    """Spin-conserving UHF singles, relative to the reference determinant.
+
+    Requires a stationary UHF reference for equivalence to UHF/TDA. No singlet/
+    triplet projection or spin-flip excitations. Explicit MO inputs are checked
+    by the eager UCIS facade; this functional interface is JIT-compatible.
+    """
+    config = CIConfig() if config is None else config
+    n = h1[0].shape[0]
+    full = make_uci_space(n, nocc, max_excitation=1, frozen=frozen,
+                          max_determinants=max_determinants)
+    if full.size == 1:
+        raise ValueError("UCIS has no active single excitations")
+    full_op = build_hamiltonian(h1, eri, full)
+    space = replace(full, determinants=full.determinants[1:], ranks=full.ranks[1:])
+    op = build_hamiltonian(h1, eri, space)
+    energies, vectors, norms, converged = _eigenpairs(op, op.diagonal, config)
+    amplitudes = []
+    lookup = {d: k for k, d in enumerate(space.determinants)}
+    for spin, (no, fr) in enumerate(zip(nocc, full.frozen)):
+        occ = [p for p in range(no) if p not in fr]
+        vir = [p for p in range(no, n) if p not in fr]
+        links = [excite(full.determinants[0], (spin*n+i,), (spin*n+a,))
+                 for i in occ for a in vir]
+        indices = np.asarray([lookup[d] for d, _ in links], dtype=np.int32)
+        signs = jnp.asarray([s for _, s in links], dtype=vectors.dtype)
+        amplitudes.append((vectors[indices]*signs[:, None]).T.reshape(config.nroots, len(occ), len(vir)))
+    return UCISResult(energies-full_op.diagonal[0], tuple(amplitudes), norms, converged,
+                       config.gradient_mode == "implicit_eigenvector")
 
 
 def solve_cis(h1, eri, *, nocc, singlet=True, frozen=None, config=None):
