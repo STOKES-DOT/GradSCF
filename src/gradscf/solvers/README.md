@@ -3,7 +3,8 @@
 `gradscf.solvers` owns numerical forward algorithms, implicit derivatives and
 their convergence checks. Electronic-structure modules construct Hamiltonian
 actions, residuals, orbital maps and physical selection criteria. They do not
-maintain copies of these solvers. Historical import paths remain thin aliases.
+maintain copies of these solvers. Clients import the shared modules directly;
+historical solver forwarding modules have been removed.
 
 ## Ownership
 
@@ -20,9 +21,26 @@ maintain copies of these solvers. Historical import paths remain thin aliases.
 | DIIS and callback-based orbital minimization | `nonlinear/` | SCF families |
 
 `tddft/eigensolvers.py`, `tddft/eigenvector_differentiation.py`, `scf/implicit.py`,
-`scf/diis.py`, `scf/_orbital_solver.py`, and `ci/response.py` contain compatibility
-exports only. An architecture test prevents algorithms from being reintroduced
-there. The shared layer has no dependency on CI, TDDFT, SCF, GW or PBC modules.
+`scf/diis.py`, `scf/_orbital_solver.py`, and `ci/response.py` have been removed.
+Architecture tests prevent their return and reject imports of those paths.
+The shared layer has no dependency on CI, TDDFT, SCF, GW or PBC modules.
+
+Import migration:
+
+| Removed path | Canonical import |
+| --- | --- |
+| `gradscf.tddft.eigensolvers` | `gradscf.solvers.eigen.davidson` or `.rpa` |
+| `gradscf.tddft.eigenvector_differentiation` | `gradscf.solvers.eigen.response` |
+| `gradscf.scf.implicit` | `gradscf.solvers.nonlinear` and `gradscf.solvers.linear` |
+| `gradscf.scf.diis` | `gradscf.solvers.nonlinear.diis` |
+| `gradscf.scf._orbital_solver` | `gradscf.solvers.nonlinear.minimize` |
+| `gradscf.ci.response` | `gradscf.solvers.diagnostics` |
+
+`ImplicitFixedPointConfig` and `implicit_fixed_point_solution` are no longer
+re-exported from `gradscf.scf`; import them from `gradscf.solvers.nonlinear`.
+Use `EigenGradientMode` from `gradscf.solvers.eigen.response` for solver mode
+annotations. TD-SCF tolerances and positive-frequency defaults remain in
+`gradscf.tddft.defaults`, which defines method configuration, not solver aliases.
 
 Physical construction remains in method modules: TD response matrices and
 amplitude conventions, CI spaces, orbital parameterizations, scGW equations,
@@ -102,8 +120,8 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   and unrolled modes. Regularization changes the response problem and remains
   explicit rather than a silent numerical fallback.
 
-The legacy TD-SCF signatures, thresholds, positive-root selection, tuple layouts
-and successful numerical behavior are preserved. Invalid legacy symmetric/RPA
+TD-SCF calculation signatures, thresholds, positive-root selection, tuple layouts
+and successful numerical behavior are preserved. Invalid symmetric/RPA
 eigenvalue derivatives now follow the shared NaN policy. The generic public
 Hermitian API does not filter negative eigenvalues: stability analysis and CI
 must retain those roots.

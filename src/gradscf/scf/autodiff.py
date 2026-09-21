@@ -6,7 +6,7 @@ from typing import Callable, Literal
 
 from jaxtyping import Array, PyTree
 
-from .implicit import ImplicitFixedPointConfig, implicit_fixed_point_solution
+from ..solvers.nonlinear import ImplicitFixedPointConfig, implicit_fixed_point_solution
 
 
 def normalize_scf_gradient_mode(mode: str) -> Literal['implicit', 'unrolled']:

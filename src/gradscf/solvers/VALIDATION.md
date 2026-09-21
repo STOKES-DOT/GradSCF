@@ -1,5 +1,9 @@
 # Shared solver migration validation — 2026-09-21
 
+The first section records the initial migration, before removal of the
+compatibility export files. The removal is validated separately below.
+See `README.md` for current canonical import paths.
+
 Environment: local arm64 CPU, JAX 0.8.1, float64 enabled. Commands were run
 inside the isolated `refactor/shared-solvers` worktree with `PYTHONPATH=src`,
 `JAX_PLATFORMS=cpu`, `JAX_ENABLE_X64=1`, and `OMP_NUM_THREADS=1`.
@@ -53,3 +57,30 @@ physical root selection and charge-resolution criteria remain in method modules.
 RPA exposes eigenvalue response only; its X/Y derivatives are not supplied.
 Davidson eigenvector response assumes isolated converged roots and is first-order.
 SCF's existing tested higher-order root and matrix-function response is retained.
+
+## Compatibility export removal
+
+After removing the six forwarding files and the fixed-point solver exports
+from `gradscf.scf`, all repository clients were migrated to `gradscf.solvers`.
+TD-SCF numerical defaults retain their values in `tddft/defaults.py`.
+The numerical implementations were not changed in this cleanup.
+
+With the same CPU/float64 environment:
+
+```bash
+python -m pytest -q tests/solvers tests/ci tests/test_tddft_eigensolvers.py \
+  tests/test_pyscf_style_excited_state_api.py \
+  tests/test_scf_implicit_and_xc_energy.py tests/test_scf_higher_order.py \
+  tests/test_scf_autodiff.py tests/test_scf_diis_state.py \
+  tests/test_scf_diis_scaling.py
+# 128 passed, 2 PySCF OpenMP warnings, 105.80 s
+
+python -m pytest -q tests/pbc/test_tdscf.py tests/test_scf_orbital_optimization.py \
+  -k 'cached_response or lowers_energy'
+# 3 passed, 22 deselected, 12.23 s
+```
+
+Architecture tests now require the old files to be absent and reject imports
+of removed paths across source, tests, tools and examples. The two pre-existing
+dirty files touched by the migration were checked against snapshots: only their
+intended import lines changed. `git diff --check` also passed.

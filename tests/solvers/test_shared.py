@@ -108,15 +108,9 @@ def test_solver_layer_has_no_electronic_structure_or_private_jax_dependencies():
                                for part in (node.module or '').split('.')), path
 
 
-def test_legacy_hermitian_entrypoint_is_the_shared_implementation():
-    from gradscf.tddft.eigensolvers import _davidson_lowest_symmetric as old
-    from gradscf.solvers.eigen.davidson import _davidson_lowest_symmetric as shared
-    assert old is shared
-
-
-def test_legacy_failed_roots_use_shared_invalid_derivative_policy():
-    from gradscf.tddft.eigensolvers import implicit_differential_davidson_lowest_symmetric
-    from gradscf.tddft.eigenvector_differentiation import (
+def test_failed_roots_use_shared_invalid_derivative_policy():
+    from gradscf.solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
+    from gradscf.solvers.eigen.response import (
         implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
     )
     a = jnp.array([[.8,.07,.01],[.07,1.3,.04],[.01,.04,1.9]])
@@ -148,23 +142,50 @@ def test_linear_preconditioned_vmap_and_shape_boundaries():
     assert bool(empty.converged) and empty.solution.shape == (0,)
 
 
-def test_method_solver_modules_are_compatibility_exports_only():
-    """There must be one owner for numerical forward/backward implementations."""
-    import ast
+def test_method_solver_compatibility_files_are_removed():
+    """Numerical clients must import the canonical solver modules directly."""
     from pathlib import Path
     import gradscf
     root = Path(gradscf.__file__).parent
     for relative in ('tddft/eigensolvers.py', 'tddft/eigenvector_differentiation.py',
                      'scf/implicit.py', 'scf/diis.py', 'scf/_orbital_solver.py', 'ci/response.py'):
-        tree = ast.parse((root/relative).read_text())
-        assert not any(isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef))
-                       for node in ast.walk(tree)), relative
+        assert not (root/relative).exists(), relative
+    import gradscf.scf as scf
+    assert not hasattr(scf, 'implicit_fixed_point_solution')
+    assert not hasattr(scf, 'ImplicitFixedPointConfig')
+
+
+def test_repository_clients_do_not_import_removed_solver_paths():
+    import ast
+    from importlib.util import resolve_name
+    from pathlib import Path
+    import gradscf
+    package = Path(gradscf.__file__).parent
+    removed = {
+        'gradscf.tddft.eigensolvers', 'gradscf.tddft.eigenvector_differentiation',
+        'gradscf.scf.implicit', 'gradscf.scf.diis',
+        'gradscf.scf._orbital_solver', 'gradscf.ci.response',
+    }
+    repository = package.parent.parent
+    for directory in ('src', 'tests', 'tools', 'examples'):
+        base = repository / directory
+        for path in base.rglob('*.py'):
+            namespace = '.'.join(path.relative_to(base).parts[:-1])
+            for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+                if isinstance(node, ast.Import):
+                    targets = [item.name for item in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ''
+                    if node.level:
+                        module = resolve_name('.'*node.level + module, namespace)
+                    targets = [module] + [module+'.'+item.name for item in node.names]
+                else:
+                    continue
+                assert removed.isdisjoint(targets), (path, targets)
 
 
 def test_rpa_forward_and_backward_share_public_owner():
     from gradscf.solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf as shared
-    from gradscf.tddft.eigensolvers import implicit_differential_davidson_lowest_tdhf as old
-    assert shared is old
     a = jnp.array([[1.,.06],[.06,1.5]])
     b = jnp.array([[.1,.01],[.01,.12]])
     def energy(t):

@@ -42,7 +42,7 @@ from .core import (
 from ._pytree import pytree_dataclass
 from .energy import XCContribution, restricted_energy, restricted_fock
 
-from .diis import (
+from ..solvers.nonlinear.diis import (
     DIIS_START_CYCLE as _PYSCF_LIKE_DIIS_START_CYCLE,
     DIIS_SPACE as _PYSCF_LIKE_DIIS_SPACE,
     diis_solve as _diis_solve,

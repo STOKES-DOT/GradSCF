@@ -89,6 +89,11 @@ class _BaseKS:
 
         return CIS(self, **kwargs)
 
+    def CCSD(self, **kwargs: Any) -> Any:
+        from ..cc import CCSD
+
+        return CCSD(self, **kwargs)
+
     def CISD(self, **kwargs: Any) -> Any:
         from ..ci import CISD
 

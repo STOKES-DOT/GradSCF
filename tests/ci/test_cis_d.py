@@ -1,6 +1,7 @@
 """CIS(D) checked against determinant-space perturbation theory.
 
-Q-Chem manual 5.1, equations 7.38–7.40:
+Method: Head-Gordon et al. (1994), doi:10.1016/0009-2614(94)00070-0.
+Working-expression companion: Q-Chem manual 5.1, equations 7.38–7.40:
 delta omega = <CIS|V|U2 HF> + <CIS|V|T2 U1 HF> - E_MP2.
 This oracle uses PySCF's independent FCI Hamiltonian, not tensor intermediates
 from the GradSCF correction implementation.

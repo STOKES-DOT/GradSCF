@@ -7,10 +7,6 @@ from .differentiable import (
     DifferentiableSCFConfig,
     DifferentiableSCFInfo,
 )
-from .implicit import (
-    ImplicitFixedPointConfig,
-    implicit_fixed_point_solution,
-)
 from .xc_energy import (
     XCEnergyPotentialResult,
     xc_energy_and_potential_from_density,
@@ -72,8 +68,6 @@ __all__ = [
     "DifferentiableSCF",
     "DifferentiableSCFConfig",
     "DifferentiableSCFInfo",
-    "ImplicitFixedPointConfig",
-    "implicit_fixed_point_solution",
     "XCEnergyPotentialResult",
     "xc_energy_and_potential_from_density",
     "RHFConfig",

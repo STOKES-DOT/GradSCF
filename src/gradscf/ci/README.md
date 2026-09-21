@@ -5,6 +5,8 @@ PySCF is used in the tests as an independent reference, not by the solver.
 Numerical eigensolves and their response rules are owned by
 [`gradscf.solvers`](../solvers/README.md); CI constructs the Hamiltonian action
 and maps the common solver results to electronic-structure quantities.
+Method references and their connection to the implementation are recorded in
+[REFERENCES.md](REFERENCES.md), with [BibTeX entries](references.bib).
 
 ## Methods and interfaces
 
@@ -21,7 +23,8 @@ The determinant CI solvers fix N-alpha = N-beta. They do **not** select total
 spin S: higher roots can be singlets, triplets, or higher-spin states. Only CIS
 currently exposes explicit singlet/triplet adaptation. This differs from the
 spin-adapted restricted CISD amplitudes in PySCF; raw CI coefficient arrays are
-not interchangeable. Truncated CI is generally not size extensive.
+not interchangeable. Truncated CI is generally not size extensive; see the CI
+review by [Sherrill and Schaefer (1999)](https://doi.org/10.1016/S0065-3276%2808%2960532-8).
 
 ```python
 from gradscf import gto, dft, ci
@@ -75,7 +78,7 @@ of supplied integrals and the reference is the caller's responsibility.
 
 For explicit inputs to a facade use
 `CIReference(h1_mo, eri_mo, nocc, nuclear_repulsion=..., mo_energy=...)`.
-For AO inputs, `ci.integrals.transform_integrals` supports full ERIs, an s4
+For AO inputs, `integrals.mo.transform_integrals` supports full ERIs, an s4
 AO-pair matrix, or density-fitting factors with shape `(naux, nao, nao)`.
 The SCF facade adapter is eager and accepts converged GradSCF `RKS(xc="hf")`;
 use functional kernels inside `jax.jit`, `jax.grad`, and `jax.jvp`.
@@ -99,7 +102,8 @@ introduced here.
 
 ## CIS(D) theory and validation
 
-The singlet correction is the unscaled Head-Gordon CIS(D) expression:
+The singlet correction implements the unscaled CIS(D) method of
+[Head-Gordon, Rico, Oumi, and Lee (1994)](https://doi.org/10.1016/0009-2614%2894%2900070-0):
 
 ```text
 delta omega = <CIS|V|U2 HF> + <CIS|V|T2 U1 HF> - E_MP2
@@ -159,5 +163,5 @@ Directional finite differences use a 1e-4 parameter step with approximately
 2e-7 derivative tolerance. These are validation tolerances, not error estimates
 for the electronic-structure approximation.
 
-Additional references: [PySCF CI API](https://pyscf.org/user/ci.html),
-[Psi4 determinant CI theory and spin conventions](https://psicode.org/psi4manual/master/detci.html).
+For theoretical citations, numerical-method references, software attribution,
+and the limits of these validations, see [REFERENCES.md](REFERENCES.md).

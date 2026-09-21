@@ -4,9 +4,9 @@ import jax.numpy as jnp
 import pytest
 
 from gradscf.tddft.casida import solve_casida_from_tdhf_operator
-from gradscf.tddft.eigensolvers import _davidson_search_nroots
-from gradscf.tddft.eigensolvers import implicit_differential_davidson_lowest_symmetric
-from gradscf.tddft.eigenvector_differentiation import (
+from gradscf.solvers.eigen.davidson import _davidson_search_nroots
+from gradscf.solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
+from gradscf.solvers.eigen.response import (
     implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
 from gradscf.tddft.tda import solve_tda_from_operator

@@ -7,7 +7,7 @@ from ..tddft.cisd import restricted_cisd_second_order_correction
 from ..tddft.types import TDAResult
 from .space import frozen_indices
 from .types import CISDCorrectionResult
-from .response import require_converged_derivative
+from ..solvers.diagnostics import require_converged_derivative
 
 
 def cis_d_correction(eri, mo_energy, singles, *, nocc, frozen=None, denominator_tol=1e-10):
@@ -20,7 +20,10 @@ def cis_d_correction(eri, mo_energy, singles, *, nocc, frozen=None, denominator_
     For derivatives, solve_cis must use gradient_mode='implicit_eigenvector';
     otherwise this function reports NaN correction derivatives, not partial AD.
     Formula: <CIS|V|U2 HF> + <CIS|V|T2 U1 HF> - E_MP2.
+    Method: Head-Gordon et al. (1994), doi:10.1016/0009-2614(94)00070-0.
+    Working-equation companion (not a numerical software comparison):
     https://manual.q-chem.com/5.1/sect-excorr.html (7.38–7.40).
+    See ci/REFERENCES.md for attribution and validation scope.
     """
     if isinstance(singles.singlet, bool) and not singles.singlet:
         raise NotImplementedError("CIS(D) currently requires singlet CIS roots")

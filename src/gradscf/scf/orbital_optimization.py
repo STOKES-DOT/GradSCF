@@ -12,7 +12,7 @@ from jax.scipy.linalg import solve_triangular
 import numpy as np
 
 from ._pytree import pytree_dataclass
-from ._orbital_solver import solve_orbitals
+from ..solvers.nonlinear.minimize import solve_orbitals
 from .autodiff import SCFDifferentiationConfig, attach_scf_backward, normalize_scf_gradient_mode
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
 from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type

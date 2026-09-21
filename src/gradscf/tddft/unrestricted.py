@@ -17,7 +17,7 @@ from ._unrestricted_semilocal_response import (
     build_unrestricted_semilocal_response_action,
 )
 from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
-from .eigensolvers import (
+from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_MAX_CYCLE,
     PYSCF_TD_DAVIDSON_TOL,
@@ -28,7 +28,7 @@ from ..solvers.eigen.davidson import (
     implicit_differential_davidson_lowest_symmetric,
 )
 from ..solvers.eigen.response import (
-    EigenGradientMode as TDAGradientMode,
+    EigenGradientMode,
     implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
 from ._utils import (
@@ -877,7 +877,7 @@ def solve_unrestricted_tda_from_operator(
     davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
     davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
-    tda_gradient_mode: TDAGradientMode = "eigenvalue_only",
+    tda_gradient_mode: EigenGradientMode = "eigenvalue_only",
     eigenvector_adjoint_tol: float = 1e-6,
     eigenvector_adjoint_max_iter: int = 64,
 ) -> UnrestrictedTDAResult:
@@ -1027,7 +1027,7 @@ class UnrestrictedTDA:
     davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
     davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
-    tda_gradient_mode: TDAGradientMode = "eigenvalue_only"
+    tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
     eigenvector_adjoint_tol: float = 1e-6
     eigenvector_adjoint_max_iter: int = 64
 
@@ -1127,7 +1127,7 @@ class UnrestrictedCasidaTDDFT:
     davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
-    tda_gradient_mode: TDAGradientMode = "eigenvalue_only"
+    tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
     eigenvector_adjoint_tol: float = 1e-6
     eigenvector_adjoint_max_iter: int = 64
 

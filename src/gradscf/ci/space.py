@@ -1,8 +1,13 @@
-"""Static determinant spaces; alpha orbitals precede beta orbitals."""
+"""Static determinant spaces; alpha orbitals precede beta orbitals.
+
+For the rank-truncated CI hierarchy see Sherrill and Schaefer (1999),
+doi:10.1016/S0065-3276(08)60532-8. See ci/REFERENCES.md.
+"""
 from dataclasses import dataclass
 from itertools import combinations
 from math import comb
 from numbers import Integral
+from ..integrals.mo import frozen_indices
 
 
 @dataclass(frozen=True)
@@ -17,24 +22,6 @@ class CISpace:
     @property
     def size(self):
         return len(self.determinants)
-
-
-def frozen_indices(nmo, nocc, frozen):
-    if frozen is None:
-        return ()
-    if isinstance(frozen, Integral) and not isinstance(frozen, bool):
-        if frozen < 0 or frozen > nocc:
-            raise ValueError("frozen core count must lie between 0 and nocc")
-        return tuple(range(frozen))
-    try:
-        indices = tuple(frozen)
-    except TypeError as error:
-        raise ValueError("frozen must be a core count or orbital index list") from error
-    if any(not isinstance(i, Integral) or isinstance(i, bool) or i < 0 or i >= nmo for i in indices):
-        raise ValueError("Frozen orbital indices must be integers in [0, nmo)")
-    if len(set(indices)) != len(indices):
-        raise ValueError("Duplicate frozen orbital indices")
-    return tuple(sorted(int(i) for i in indices))
 
 
 def make_ci_space(nmo, nocc, *, max_excitation=2, frozen=None, max_determinants=5000):

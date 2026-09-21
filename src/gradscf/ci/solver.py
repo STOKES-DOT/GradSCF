@@ -44,6 +44,8 @@ def solve_cis(h1, eri, *, nocc, singlet=True, frozen=None, config=None):
     A(ia,jb) = delta(ij) F(ab) - delta(ab) F(ij)
                + 2 (ia|jb) [singlet only] - (ij|ab).
     The occupied-virtual Fock block must vanish (stationary HF reference).
+    CIS reference: Foresman et al. (1992), doi:10.1021/j100180a030.
+    See ci/REFERENCES.md for the separate numerical-response references.
     """
     config = CIConfig() if config is None else config
     h1, eri = validate_integrals(h1, eri)

@@ -2,6 +2,9 @@
 
 H = sum h[p,q] a_p^+ a_q + 1/2 sum (pq|rs) a_p^+ a_r^+ a_s a_q.
 The host builds integer connections once. All integral contractions use JAX.
+
+Slater (1929), doi:10.1103/PhysRev.34.1293; Condon (1930),
+doi:10.1103/PhysRev.36.1121. See ci/REFERENCES.md for scope and attribution.
 """
 from functools import lru_cache
 from itertools import combinations
@@ -11,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .space import excite
+from ..integrals.mo import validate_integrals
 
 
 @lru_cache(maxsize=8)
@@ -78,21 +82,6 @@ def _connections(space):
     return (np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32),
             np.asarray(one, dtype=np.int32).reshape(-1, 4),
             np.asarray(two, dtype=np.int32).reshape(-1, 6))
-
-
-def validate_integrals(h1, eri, nmo=None):
-    h1, eri = jnp.asarray(h1), jnp.asarray(eri)
-    if jnp.iscomplexobj(h1) or jnp.iscomplexobj(eri):
-        raise NotImplementedError("CI currently requires real integrals and real orbitals")
-    if not jnp.issubdtype(h1.dtype, jnp.floating) or not jnp.issubdtype(eri.dtype, jnp.floating):
-        raise ValueError("CI integrals must have floating-point dtype")
-    if h1.ndim != 2 or h1.shape[0] != h1.shape[1]:
-        raise ValueError("h1 must be square")
-    if nmo is not None and h1.shape != (nmo, nmo):
-        raise ValueError("MO integral dimensions do not match the CI space")
-    if eri.shape != h1.shape * 2:
-        raise ValueError("eri must have shape (nmo, nmo, nmo, nmo), in chemists' notation")
-    return h1, eri
 
 
 class CIHamiltonian(NamedTuple):

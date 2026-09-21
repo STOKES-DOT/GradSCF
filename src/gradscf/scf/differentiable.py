@@ -18,7 +18,7 @@ from ..model.neural_xc.inputs import (
 )
 from .core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
 from .autodiff import SCFDifferentiationConfig, normalize_scf_gradient_mode
-from .implicit import implicit_fixed_point_solution
+from ..solvers.nonlinear import implicit_fixed_point_solution
 from .xc_energy import xc_energy_and_potential_from_density
 from .energy import (XCContribution, restricted_energy, restricted_fock,
                      unrestricted_energy, unrestricted_fock)

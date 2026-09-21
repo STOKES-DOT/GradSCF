@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.scf import ImplicitFixedPointConfig, implicit_fixed_point_solution
+from gradscf.solvers.nonlinear import ImplicitFixedPointConfig, implicit_fixed_point_solution
 from gradscf.scf.autodiff import attach_scf_backward
 
 
@@ -78,7 +78,7 @@ def test_scf_eigensolver_jvp_and_second_response_match_nondegenerate_reference()
 
 
 def test_tiny_adjoint_rhs_retains_relative_accuracy_and_derivatives():
-    from gradscf.scf.implicit import solve_implicit_linear_system
+    from gradscf.solvers.linear import solve_implicit_linear_system
     matrix=jnp.array([[1.65,.54],[.54,1.65]])
     def solve(rhs):
         return solve_implicit_linear_system(lambda v:matrix@v,rhs,tol=1e-11,max_iter=10,restart=2)
