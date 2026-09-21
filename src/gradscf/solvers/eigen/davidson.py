@@ -646,4 +646,3 @@ def implicit_differential_davidson_lowest_symmetric(
     )
     eigvals = jnp.sum(eigvecs * applied, axis=0) / denom
     return require_converged_derivative(eigvals, converged), eigvecs, converged
-
