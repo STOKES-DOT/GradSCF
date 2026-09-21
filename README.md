@@ -1,198 +1,272 @@
 # GradSCF
 
-GradSCF is a JAX toolkit for Hartree-Fock and Kohn-Sham self-consistent-field
-calculations, differentiable SCF, response theory, and Neural XC training.
-The Python package is `gradscf`; the import namespace
-is `gradscf`.
+**Differentiable electronic structure in JAX.**
 
-```python
-from gradscf import dft, gto, scf, tdscf
-from gradscf.model import neural_xc, training
-```
+GradSCF is a Python framework for molecular and periodic electronic-structure
+calculations, differentiable numerical methods, and machine-learned models.
+It brings together Hartree–Fock and density-functional theory, excited-state
+response, configuration interaction, coupled cluster, and GW, with tools for
+learning exchange–correlation functionals and atomic-orbital basis sets.
 
-GradSCF was previously named GradTDDFT. The canonical imports are now
-`gradscf` and `gradscf_tools`; the old import namespaces are no longer shipped.
-See [MIGRATION.md](MIGRATION.md) for the name mapping and installation checks.
+[Installation](#installation) · [Quick start](#quick-start) ·
+[Methods](#supported-methods) · [Differentiation](#differentiation-and-numerical-solvers) ·
+[Examples](#documentation-and-examples) · [Citation](#citation)
 
-## Code Origins
+## Highlights
 
-The foundational DFT and TDDFT code in GradSCF originates from
-[GradTDDFT](https://github.com/STOKES-DOT/GradTDDFT). GradSCF builds on that
-codebase with expanded SCF methods, reorganized integral backends, and a
-dedicated `gradscf` API. Original copyright notices and licenses are retained.
-
-## Supported Methods
-
-| Category | Methods | Entry points |
-|---|---|---|
-| SCF (molecules) | RHF, UHF, ROHF, GHF, RKS, UKS, ROKS, GKS; DIIS, damping, level shift, UHF/UKS stability analysis with directed restart | `gradscf.scf`, `gradscf.dft` (PySCF-style facades) |
-| Differentiable SCF | `unrolled` and `implicit` adjoint modes (gradients of converged energies/orbitals w.r.t. geometry, basis exponents/contractions, model parameters) | `SCFDifferentiationConfig`, `gradscf.scf.autodiff` |
-| Excited states | TDA, full Casida TDHF/TDDFT (restricted and unrestricted), implicit-differentiable Davidson eigensolvers, oscillator strengths and spectra | `gradscf.tdscf`, `gradscf.tddft` |
-| Configuration interaction | Real RHF/UHF/ROHF determinant CISD/CISDT/CISDTQ; restricted singlet/triplet CIS and singlet CIS(D), spin-conserving UCIS; first-order integral and coefficient AD | `gradscf.ci` — [scope and usage](src/gradscf/ci/README.md) |
-| Coupled cluster | Restricted CCS/CCD/CCSD/CC2/LCCD/LCCSD, CCSD(T), CCSD+T(CCSD), Lambda and unrelaxed 1-RDM; UHF/ROHF-based UCCSD/UCCD with implicit response; in-core implementation | `gradscf.cc` — [scope, references and usage](src/gradscf/cc/README.md) |
-| GW many-body | Molecular G0W0 with contour deformation (restricted/unrestricted), evGW (Z-update), qsGW (static self-consistent potential), matrix scGW with Galitskii–Migdal energy | `gradscf.gw` (`GW`, `UGW`, `evgw_cd_*`, `qsgw_cd_restricted`, `scgw_cd_restricted`) |
-| Periodic GW | Plane-wave product basis, momentum-conserving k-point sampling, q→0 head/wing finite-size corrections; Gamma and k-point KRGW | `gradscf.gw.pbc` (`KRGW`, `g0w0_cd_kpoints`) |
-| Periodic SCF | GTH pseudopotentials, Ewald electrostatics, FFT density fitting, Γ/k-point HF and DFT, band structures, q=0 TDA/TDDFT optics | `gradscf.pbc` (`gto`, `scf`, `dft`, `tdscf`, `bands`) |
-| Density fitting | Full-ERI spectral factorization (pure JAX, differentiable), native compact RI backend (libcint int3c2e) | `gradscf.df`, `gradscf.integrals` |
-| Integrals | Native C++ CPU kernels (vendored libcint/PySCF C sources, no runtime PySCF), Cartesian/spherical, overlap/kinetic/nuclear/dipole/ERI, coordinate JVP/VJP | `gradscf.integrals`, `gradscf.integrals._native` |
-| Neural XC | Neural XC functional construction, DM21-style presets, self-consistent and response-aware training | `gradscf.model.neural_xc`, `gradscf.model.training` |
-| Neural basis sets (NNAO) | MACE-conditioned per-atom contracted-GTO basis assembly for 34 main-group elements (H–Xe), variational basis training | `gradscf.model.nnao` |
-| Dispersion | Neural dispersion corrections | `gradscf.model.neural_d` |
-
-## Differentiable Architecture
-
-Everything below the public facades is a pure-JAX function, so energies,
-orbital energies, and spectra are differentiable with respect to geometry,
-basis-set parameters, and neural-network weights.
-
-- **SCF adjoints.** `SCFDifferentiationConfig(mode="implicit" | "unrolled")`
-  selects between an implicit-function-theorem adjoint (one linear solve at
-  the converged point) and direct backpropagation through the SCF loop.
-  Geometry gradients match PySCF analytic gradients to ~1e-12 Ha/Bohr, and
-  basis exponents/contraction coefficients are differentiable inputs for
-  variational basis-set training.
-- **Quasiparticle adjoints.** The GW quasiparticle equation is solved
-  graphically; its gradients use the implicit function theorem, with the
-  quasiparticle renormalization factor `Z = 1/(1 - dΣ/dω)` appearing
-  naturally in the denominator. Singular backward rules (satellite regions,
-  `Z → 0`) raise explicit errors instead of returning silent fallbacks.
-- **Self-consistent stationarity.** qsGW/scGW fixed-point loops are
-  differentiated at the stationary point (envelope theorem), so total-energy
-  and response gradients do not require unrolling the self-consistent cycles.
-- **Finite-temperature scGW responses.** `scgw_matsubara_restricted` exposes
-  implicit responses of the Matsubara-grid scGW model to density-fitting
-  vertex scalings (`examples/scgw_implicit_response_h2.py`).
-
-## Neural XC and Neural Basis Sets
-
-**`gradscf.model.neural_xc`** builds neural exchange-correlation functionals
-that run inside the standard SCF/TDDFT machinery (restricted/unrestricted,
-ground and response). Functionals bind to molecules
-(`bind_to_molecule_for_scf`), can mix exact exchange and nonlocal features,
-and train through self-consistent loops with `gradscf.model.training`
-(energy, force, excitation, and density targets; checkpoints included).
-
-**`gradscf.model.nnao`** produces neural-network atomic-orbital (NNAO) basis
-sets: a MACE graph model predicts signed contraction coefficients per shell
-(s/p/d output heads), which are assembled into Gaussian-normalized contracted
-GTO basis sets for 34 main-group elements. Bases are optimized variationally
-by directly minimizing converged SCF energies (`tools/optimize_methane_nnao.py`),
-so the resulting sets beat same-size Pople-style bases at a fraction of the
-primitives of correlation-consistent sets.
-
-## Usage Examples
-
-### Molecular SCF and TDDFT
-
-```python
-from gradscf import dft, gto, tdscf
-
-mol = gto.M(atom="O 0 0 0.117; H 0 0.755 -0.471; H 0 -0.755 -0.471",
-            basis="def2-svp")
-mf = dft.RKS(mol, xc="pbe").run()          # UKS / ROKS / GKS; HF = xc="hf"
-td = tdscf.TDDFT(mf, nstates=5)
-e, xy = td.kernel()                        # excitation energies (Ha), amplitudes
-```
-
-### Molecular GW
-
-```python
-from gradscf import dft, gto
-from gradscf.gw import GW, UGW, evgw_cd_restricted, qsgw_cd_restricted
-
-mol = gto.M(atom="H 0 0 0; F 0 0 0.92", basis="cc-pvdz")
-mf = dft.RKS(mol, xc="hf").run()
-
-gw = GW(mf, nw=100).run()                  # G0W0, contour deformation
-print(gw.mo_energy)                        # quasiparticle energies (Ha)
-```
-
-### Periodic SCF and k-point GW
-
-```python
-import numpy as np
-from gradscf.pbc import gto, scf
-from gradscf.gw.pbc import KRGW
-
-cell = gto.M(atom="H 3.0 3.0 2.3; H 3.0 3.0 3.7", a=np.eye(3) * 6.0,
-             unit="Bohr", basis="gth-szv", pseudo="gth-pade",
-             mesh=(17, 17, 17))
-mf = scf.KRHF(cell, kpts=cell.make_kpts([1, 1, 1])).run()
-gw = KRGW(mf, nw=60).run()                 # q->0 head/wing included by default
-```
-
-### Neural XC functional
-
-```python
-from gradscf import gto
-from gradscf.model import neural_xc
-
-mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
-functional = neural_xc.Functional(model=..., name="my_xc")  # see neural_xc docs
-mf_like = neural_xc.make_neural_xc_functional(functional)
-# train with gradscf.model.training.MolecularTrainingConfig / Trainer
-```
-
-### Neural basis set (NNAO)
-
-```python
-from gradscf.model.nnao import prepare_direct_basis, supported_elements
-
-basis = prepare_direct_basis("C 0 0 0; H 0 0 1.09; H 0.51 0 0.94; ...")
-print(supported_elements())                # 34 main-group elements (H–Xe)
-```
-
-### Differentiable SCF gradient
-
-```python
-from gradscf import dft, gto
-from gradscf.scf import SCFDifferentiationConfig
-
-mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
-mf = dft.RKS(mol, xc="hf").run()
-grad = mf.nuc_grad_method().kernel()     # analytic nuclear gradient
-# implicit/unrolled adjoint modes are selected via SCFDifferentiationConfig
-# in the lower-level solvers (see tests/pbc/test_gradients.py)
-```
-
-### scGW (finite-temperature, implicit response)
-
-```python
-# examples/scgw_matsubara_h2.py        — finite-T scGW on the Matsubara grid
-# examples/scgw_implicit_response_h2.py — dE/ds for DF-vertex scaling
-from gradscf.gw import scgw_matsubara_restricted
-```
+- **Molecular and periodic calculations.** Mean-field, response, and correlated
+  methods with explicit reference-state and backend conventions.
+- **Differentiable numerical solutions.** Shared eigensolvers, linear solvers,
+  and fixed-point response rules connect physical equations to JAX autodiff.
+- **Learnable electronic-structure models.** Neural XC functionals and
+  MACE-conditioned Gaussian basis contractions can enter self-consistent workflows.
+- **Python interfaces at two levels.** PySCF-style calculation objects for
+  interactive use, and functional kernels for JIT compilation and differentiation.
 
 ## Installation
 
-```bash
-python -m pip install -e ".[dev,upstreams]"        # tests, PySCF, jax-xc
-python -m pip install -e ".[dev,reproducibility]"  # manuscript evaluation stack
-python -m pip install -e ".[nnao]"                 # MACE-jax for NNAO models
-PYTHONPATH=src python -m gradscf.integrals._native.build  # native CPU integrals
-```
-
-Tests run on CPU with float64:
+Install from source on Linux or macOS. Use Python 3.11 or newer for repository
+tests; the package declares Python 3.10+ support. The native CPU integral backend
+requires CMake 3.20+, a C99/C++17 compiler, and a BLAS library (Accelerate on macOS).
 
 ```bash
-PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 python -m pytest -q
+git clone --branch release/v1.0.0 https://github.com/STOKES-DOT/GradSCF.git
+cd GradSCF
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m gradscf.integrals._native.build
+python -c "from gradscf import gto, dft, ci, cc; print('GradSCF imported')"
 ```
 
-## Documentation Map
+Native sources are included in the repository; the build does not download
+upstream code. Rebuild the extension after changing JAX versions. See the
+[native build instructions](src/gradscf/integrals/_native/README.md) for details.
 
-- [Ground-state coupled cluster](src/gradscf/cc/README.md) — method definitions, Lambda/AD, frozen orbitals, and [source attribution](src/gradscf/cc/NOTICE.md)
-- [Shared numerical solvers](src/gradscf/solvers/README.md) — common forward/backward implementations, operator API, and convergence contracts; [example](examples/shared_solvers.py)
-- [Configuration interaction](src/gradscf/ci/README.md) — CI theory, API, AD boundaries, and validation; [runnable example](examples/ci/restricted_ci.py)
-- [MIGRATION.md](MIGRATION.md) — old→new namespace mapping (`td_graddft`,
-  `gradscf.neural_xc`, `gradscf.xc_backend`, top-level `nnao`, helper modules)
-- `src/gradscf/gw/` — GW module docstrings with literature references
-  (Hedin 1965; Hybertsen–Louie 1986; Godby–Needs 1989; Ren 2012;
-  Faleev/van Schilfgaarde/Kotani qsGW; PRB 83, 245122 q→0 corrections)
-- `src/gradscf/gw/SCGW.md` — scGW design notes
-- `src/gradscf/integrals/COMPRESSED.md` — native compact-integral backend
-- `src/gradscf/model/nnao/NNAO.md` — NNAO usage and scope
+Optional dependencies can be added to the same environment:
 
-## License
+- `python -m pip install -e ".[upstreams]"` — the `jax-xc` backend for XC functionals.
+- `python -m pip install -e ".[dev,comparison-tests]"` — pytest and PySCF comparisons.
+- `python -m pip install -e ".[nnao]"` — the pinned upstream MACE-JAX dependency.
+- `python -m pip install -e ".[reproducibility]"` — plotting, HDF5, and evaluation dependencies.
 
-MIT for original GradSCF code (see LICENSE). [Adapted PySCF CC contractions](src/gradscf/cc/NOTICE.md) retain Apache-2.0. Vendored upstream sources keep their original licenses
-and notices.
+The native integral runtime and CI/CC kernels do not require PySCF. Comparison
+tests and optional PySCF bridges have separate requirements. JAX device support
+does not imply that every GradSCF backend runs on that device: the native
+integral extension is a CPU implementation.
+
+## Quick start
+
+The following examples run independently after building the native backend.
+Set `JAX_PLATFORMS=cpu` before starting Python; each example enables float64
+before constructing arrays. Molecular coordinates below are in Angstrom and
+energies are in Hartree.
+
+### Run a ground-state calculation
+
+Use `RKS(xc="hf")` for the closed-shell HF facade, then correlate its reference
+with CCSD. The same mean-field object can also supply CI and response calculations.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+from gradscf import gto, dft, cc
+
+mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
+mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+assert mf.converged
+mycc = cc.CCSD(mf).run()
+assert mycc.converged
+print("HF:", float(mf.e_tot), "CCSD:", float(mycc.e_tot))
+```
+
+For open-shell references, use `scf.UHF` or `scf.ROHF`.
+`cc.CCSD(mf)` and `ci.CISD(mf)` dispatch according to the reference; explicit
+`UCCSD` and `UCISD` interfaces are also available. See the
+[open-shell example](examples/cc/open_shell_ground.py).
+
+### Compute excitation energies
+
+This HF example evaluates singlet TDA excitation energies. The `tdscf` facade
+also provides full TDHF/TDDFT for supported references and XC kernels.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+from gradscf import gto, dft, tdscf
+
+mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
+mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+assert mf.converged
+td = tdscf.TDA(mf, nstates=1)
+td.kernel()
+assert td.converged
+print("Excitation energies / Ha:", td.e)
+```
+
+### Differentiate a calculation
+
+Here a scalar scales the two-electron MO integrals while the orbital basis
+remains fixed. The derivative includes the response of the converged CC
+amplitudes. It is an integral-parameter derivative, not a nuclear force.
+
+```python
+import jax
+jax.config.update("jax_enable_x64", True)
+from gradscf import gto, dft, cc
+from gradscf.scf.reference import reference_from_source
+
+mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
+mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+ref = reference_from_source(mf)
+config = cc.CCConfig(conv_tol=1e-12, residual_tol=1e-11)
+
+def energy(coupling):
+    result = cc.run_cc(ref.h1, coupling * ref.eri, nocc=ref.nocc,
+                       nuclear_repulsion=ref.nuclear_repulsion, config=config)
+    return result.total_energy
+
+value, derivative = jax.jit(jax.value_and_grad(energy))(1.0)
+print("Energy / Ha:", float(value), "dE/dcoupling:", float(derivative))
+```
+
+## Supported methods
+
+Forward availability and derivative coverage are separate. Follow the linked
+module documentation for reference restrictions, inputs, and validated paths.
+
+| Family | Available methods | Scope and documentation |
+| --- | --- | --- |
+| Molecular mean field | RHF, UHF, ROHF, GHF; RKS, UKS, ROKS, GKS; UHF/UKS stability analysis | [SCF](src/gradscf/scf) and [DFT](src/gradscf/dft) interfaces; closed-shell HF facade uses `RKS(xc="hf")` |
+| Periodic mean field | Gamma/k-point HF and DFT, GTH pseudopotentials, FFT density fitting, bands | [Periodic modules](src/gradscf/pbc); [example](examples/periodic_h2.py) |
+| Excited-state response | TDA and full TDHF/TDDFT, transition properties and spectra; periodic q=0 response | [Molecular facade](src/gradscf/tdscf), [periodic response](src/gradscf/pbc/tdscf.py); reference/kernel restrictions apply |
+| Configuration interaction | Restricted singlet/triplet CIS, singlet CIS(D), spin-conserving UCIS; CISD/CISDT/CISDTQ and general rank truncation | [CI guide](src/gradscf/ci/README.md); real molecular determinant spaces from RHF/UHF/ROHF |
+| Coupled cluster | Restricted CCS/CCD/CCSD/CC2/LCCD/LCCSD, CCSD(T), CCSD+T(CCSD), Lambda and unrelaxed 1-RDM; UCCSD/UCCD | [CC guide](src/gradscf/cc/README.md); [open-shell scope](src/gradscf/cc/OPEN_SHELL.md); in-core molecular implementation |
+| GW | Molecular G0W0 with contour deformation, evGW, restricted qsGW and finite-temperature matrix scGW; Gamma/k-point GW | [GW modules](src/gradscf/gw), [Matsubara scGW](src/gradscf/gw/SCGW.md), [periodic GW](src/gradscf/gw/pbc) |
+| Integrals and density fitting | Native CPU and JAX reference integrals, packed ERIs, direct J/K, auxiliary-basis RI and full-ERI spectral factorization | [Integral API](src/gradscf/integrals), [compact/direct/DF paths](src/gradscf/integrals/COMPRESSED.md) |
+
+ROHF-based UCCSD uses unrestricted cluster amplitudes on common spatial
+orbitals; it is not a separate spin-adapted ROCCSD implementation. Open-shell
+triples corrections and explicit UCC Lambda/density facades are not yet provided.
+
+## Differentiation and numerical solvers
+
+GradSCF combines JAX contractions with native integral kernels and explicit
+derivative rules. Supported inputs and derivative orders depend on the path:
+
+| Calculation path | Differentiable quantities | Coverage and conditions |
+| --- | --- | --- |
+| Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or unrolled modes; upstream integral/XC derivatives are required for the selected inputs |
+| TDA and CI | Eigenvalues; eigenvectors for coefficient-dependent objectives | Shared isolated-root response; CI coefficient AD requires `gradient_mode="implicit_eigenvector"` |
+| Ground-state CC | Energies and amplitudes versus MO integrals | Implicit response at converged roots; fixed topology and orbital ordering; first-order validated contract |
+| GW | Quasiparticle roots and selected matrix-scGW responses | Path-specific rules; evGW/qsGW outer self-consistency loops currently have no AD rule |
+| Native integrals | Geometry or density response on supported operators/layouts | Read the operator-specific contract; geometry, exponent, and coefficient derivatives are not interchangeable |
+| Basis and neural models | Contractions and neural parameters through supported SCF/response paths | Requires derivative support along the complete calculation; fixed-primitive NNAO contraction training is a distinct path |
+
+[gradscf.solvers](src/gradscf/solvers/README.md) owns shared diagonalization,
+linear solves, nonlinear iteration, and their derivative rules. Method modules
+provide Hamiltonian actions, residuals, and physical convergence conditions.
+Eager calculation objects prepare inputs; use functional kernels inside
+`jax.jit` and `jax.grad`.
+
+Convergence and response conditioning matter. Check returned residuals,
+convergence flags, and validity diagnostics. Derivatives at degeneracies or
+unconverged solutions are not generally defined by the isolated-root contracts.
+Higher derivatives are supported only on specifically validated paths.
+
+Complete nuclear derivatives also need orbital response and the appropriate
+integral/XC derivatives. The generic molecular `mf.nuc_grad_method().kernel()`
+entry is currently disabled; it is not the interface for the lower-level
+[force-supervision example](examples/train_neural_scf_forces.py).
+
+## Machine learning with electronic structure
+
+**Neural exchange–correlation functionals.**
+[model.neural_xc](src/gradscf/model/neural_xc) defines configurable XC models,
+features, and molecular bindings. [model.training](src/gradscf/model/training)
+provides self-consistent and response-aware training utilities. The
+[force-supervision example](examples/train_neural_scf_forces.py) demonstrates a
+small neural XC energy with differentiable SCF on a finite test quadrature;
+it is a derivative demonstration rather than an accurate production DFT grid.
+
+**Neural atomic-orbital basis sets.**
+[model.nnao](src/gradscf/model/nnao/NNAO.md) connects MACE predictions to
+normalized Gaussian contractions. The
+[basis example](examples/nnao_basis.py) illustrates assembly, and the
+[molecular optimization tool](tools/optimize_methane_nnao.py) minimizes converged
+RHF energies using direct J/K or DF factors with fixed primitive parameters.
+Fixed-geometry optimization results do not establish a transferable basis model;
+comparisons must specify the molecule, basis family, and optimization protocol.
+
+Additional neural dispersion models are available in
+[model.neural_d](src/gradscf/model/neural_d).
+
+## Documentation and examples
+
+- **CI and CC:** [CI tutorial](examples/ci/restricted_ci.py),
+  [restricted CC](examples/cc/restricted_ground.py),
+  [open-shell CI/CC](examples/cc/open_shell_ground.py).
+- **Periodic calculations:** [HF/DFT and bands](examples/periodic_h2.py).
+- **GW:** [finite-temperature scGW](examples/scgw_matsubara_h2.py),
+  [implicit scGW response](examples/scgw_implicit_response_h2.py).
+- **Numerical development:** [shared solver guide](src/gradscf/solvers/README.md)
+  and [operator/solver example](examples/shared_solvers.py).
+- **Integrals:** [native build and derivative contracts](src/gradscf/integrals/_native/README.md),
+  [compact integrals and density fitting](src/gradscf/integrals/COMPRESSED.md).
+- **Migration:** [namespace changes](MIGRATION.md) from GradTDDFT to `gradscf`.
+
+## Validation and development status
+
+Validation includes comparisons with PySCF, independently constructed
+Hamiltonians or working expressions, finite differences, and residual and
+physical-consistency checks. Numerical tolerances and tested systems are
+recorded in the [CC validation report](src/gradscf/cc/VALIDATION.md),
+[CI guide](src/gradscf/ci/README.md),
+[solver validation report](src/gradscf/solvers/VALIDATION.md), and
+[scGW notes](src/gradscf/gw/SCGW.md).
+
+CI and CC currently target in-core reference calculations. Transforming DF
+inputs into full MO tensors does not make these implementations DF-CI or DF-CC.
+CPU/float64 validation does not establish GPU coverage, and a method's presence
+does not establish every reference, property, or derivative combination.
+
+With test dependencies installed and native integrals built, run focused checks:
+
+```bash
+JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 python -m pytest -q tests/solvers tests/ci tests/cc
+```
+
+Run `python -m pytest -q` for the full suite. Optional-dependency tests may skip;
+inspect the skip reasons with `-ra` when assessing coverage.
+
+## Contributing
+
+Bug reports and focused contributions are welcome through
+[GitHub Issues](https://github.com/STOKES-DOT/GradSCF/issues) and pull requests.
+For numerical reports, include a minimal example, commit/version, JAX backend,
+dtype, molecular geometry and units, basis/XC settings, convergence tolerances,
+and the reference result. Add a targeted regression for behavior changes and
+keep method equations separate from shared numerical solver implementations.
+
+## Citation
+
+For reproducibility, identify the GradSCF repository and the commit or version
+used in your calculation. Cite the theoretical methods and upstream software
+relevant to that calculation; method references and implementation attribution
+are recorded separately in the [CI references](src/gradscf/ci/REFERENCES.md),
+[CC references](src/gradscf/cc/REFERENCES.md), and
+[GW module documentation](src/gradscf/gw/__init__.py).
+
+<a id="code-origins"></a>
+
+## License and acknowledgments
+
+Original GradSCF code is distributed under the [MIT license](LICENSE).
+The foundational DFT and TDDFT code originates from
+[GradTDDFT](https://github.com/STOKES-DOT/GradTDDFT), whose interfaces and modules
+have been expanded and reorganized under the `gradscf` namespace.
+
+Adapted and vendored components retain their original notices and licenses:
+[PySCF CC contractions](src/gradscf/cc/NOTICE.md),
+[native PySCF/libcint sources](src/gradscf/integrals/_native/README.md), and
+the [MACE-JAX source record](src/gradscf/model/nnao/UPSTREAM.json).
