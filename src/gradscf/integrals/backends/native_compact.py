@@ -30,6 +30,40 @@ class NativeDirectBasis:
         return self.plan.evaluate("eri", self.parameters, aosym="s4")
 
 
+@dataclass(frozen=True)
+class ProjectedNativeDirectBasis:
+    """Exact contracted J/K from a fixed primitive shell-direct operator.
+
+    The native call is differentiated only with respect to the primitive AO
+    density.  JAX owns both contractions with ``transform``, so contraction
+    coefficient derivatives do not require basis derivatives in libcint.
+    """
+
+    primitive_basis: NativeDirectBasis
+    transform: object
+
+    @property
+    def nao(self):
+        return self.transform.shape[1]
+
+    def get_jk(self, density, *, screening_threshold=0.0):
+        transform = jnp.asarray(self.transform)
+        primitive_density = jnp.einsum(
+            "pi,...ij,qj->...pq", transform, density, transform
+        )
+        fixed_parameters = jax.tree.map(
+            jax.lax.stop_gradient, self.primitive_basis.parameters
+        )
+        primitive_j, primitive_k = self.primitive_basis.plan.get_jk(
+            fixed_parameters, primitive_density,
+            screening_threshold=screening_threshold,
+        )
+        project = lambda matrix: jnp.einsum(
+            "pi,...pq,qj->...ij", transform, matrix, transform
+        )
+        return project(primitive_j), project(primitive_k)
+
+
 def evaluate(atm, bas, env, shape, *, layout, cart, split=0):
     register_integrals()
     if jnp.asarray(env).dtype != jnp.float64:

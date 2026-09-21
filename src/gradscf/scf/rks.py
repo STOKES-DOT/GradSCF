@@ -252,8 +252,8 @@ def _make_jk_builder(
             raise ValueError("jk_backend='direct' requires direct_basis.")
 
         threshold = float(cfg.direct_scf_tol)
-        from ..integrals.backends.native_compact import NativeDirectBasis
-        if isinstance(direct_basis,NativeDirectBasis):
+        from ..integrals.backends.native_compact import NativeDirectBasis,ProjectedNativeDirectBasis
+        if isinstance(direct_basis,(NativeDirectBasis,ProjectedNativeDirectBasis)):
             def _native_direct(density,mo_coeff=None,mo_occ=None,density_last=None,j_last=None,k_last=None):
                 del mo_coeff,mo_occ
                 delta=density if density_last is None else density-density_last

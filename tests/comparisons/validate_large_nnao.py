@@ -1,4 +1,4 @@
-"""Large-system stationary coefficient gradient and independent RHF checks."""
+"""Large-system implicit coefficient gradient and independent RHF checks."""
 import argparse
 import json
 from pathlib import Path
@@ -16,11 +16,11 @@ from pyscf import gto,scf
 def run(args):
     geometry=json.loads(Path(args.geometry).read_text());start=time.perf_counter()
     cls=runpy.run_path('tools/optimize_methane_nnao.py')['MethaneRHF']
-    print('Building primitive integral cache',args.family,flush=True)
-    ex=cls(geometry=geometry,basis_family=args.family,max_primitive_eri_gib=220.,eri_backend=args.eri_backend,auxbasis=args.auxbasis)
+    print('Building primitive J/K backend',args.family,flush=True)
+    ex=cls(geometry=geometry,basis_family=args.family,jk_backend=args.jk_backend,auxbasis=args.auxbasis)
     x=ex.layout.reference_outputs()
     energy,g,info=ex.evaluate(x)
-    print('Initial stationary evaluation',energy,info,flush=True)
+    print('Initial implicit evaluation',energy,info,flush=True)
     rng=np.random.default_rng(73)
     direction=jnp.asarray(rng.normal(size=x.shape))
     mask=jnp.zeros_like(x)
@@ -36,17 +36,18 @@ def run(args):
     basis=dict(zip(labels,ex.layout.atom_shells(ex.layout.bind(x))))
     mol=gto.M(atom=list(zip(labels,ex.coords)),basis=basis,cart=False,unit='Angstrom',verbose=0)
     mf=scf.RHF(mol)
-    if args.eri_backend=='ri':mf=mf.density_fit(auxbasis=args.auxbasis)
+    if args.jk_backend=='df':mf=mf.density_fit(auxbasis=args.auxbasis)
     mf.init_guess='1e';mf.conv_tol=1e-12;mf.conv_tol_grad=1e-9;mf.max_cycle=200
     expected=float(mf.kernel());assert mf.converged
     np.testing.assert_allclose(energy,expected,atol=1e-8,rtol=0)
-    result=dict(family=args.family,eri_backend=args.eri_backend,auxbasis=args.auxbasis,
-        rep_shape=ex.rep.shape,rep_bytes=int(ex.rep.size*ex.rep.dtype.itemsize),
+    result=dict(family=args.family,jk_backend=args.jk_backend,auxbasis=args.auxbasis,
+        rep_shape=None if ex.rep is None else ex.rep.shape,
+        rep_bytes=0 if ex.rep is None else int(ex.rep.size*ex.rep.dtype.itemsize),
         nao=ex.layout.topology.nao,primitive_nao=ex.primitive_topology.nao,
         gradscf_energy=energy,pyscf_energy=expected,energy_error=abs(energy-expected),
         gradient_ad=ad,gradient_fd=fd,gradient_error=abs(ad-fd),step=step,
         info=info,elapsed_seconds=time.perf_counter()-start,status='pass')
-    if args.eri_backend=='ri':
+    if args.jk_backend=='df':
         def exact(v):
             mol.basis=dict(zip(labels,ex.layout.atom_shells(ex.layout.bind(v))))
             mol.build(False,False)
@@ -71,6 +72,6 @@ if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('geometry');p.add_argument('--family',choices=['szp442_direct','szp663_direct'],default='szp442_direct')
     p.add_argument('--output',required=True)
-    p.add_argument('--eri-backend',choices=['full','ri'],default='ri')
+    p.add_argument('--jk-backend',choices=['direct','df'],default='df')
     p.add_argument('--auxbasis',default='def2-universal-jkfit')
     run(p.parse_args())
