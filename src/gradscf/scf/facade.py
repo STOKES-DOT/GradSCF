@@ -99,10 +99,20 @@ class _BaseKS:
 
         return CCSD(self, **kwargs)
 
+    def QCISD(self, **kwargs: Any) -> Any:
+        from ..cc import QCISD
+
+        return QCISD(self, **kwargs)
+
     def CISD(self, **kwargs: Any) -> Any:
         from ..ci import CISD
 
         return CISD(self, **kwargs)
+
+    def CID(self, **kwargs: Any) -> Any:
+        from ..ci import CID
+
+        return CID(self, **kwargs)
 
     def CISDT(self, **kwargs: Any) -> Any:
         from ..ci import CISDT

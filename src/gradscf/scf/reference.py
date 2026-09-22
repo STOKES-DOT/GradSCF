@@ -1,6 +1,7 @@
 """Shared eager conversion from converged HF references to MO Hamiltonians."""
 
 from dataclasses import dataclass
+import hashlib
 import numpy as np
 import jax.numpy as jnp
 from ..integrals.mo import (transform_integrals, validate_integrals,
@@ -124,3 +125,30 @@ def reference_from_source(source):
         kwargs = {"eri_pair_matrix": pair}
     h, g = transform_integrals(inputs.hcore, c, **kwargs)
     return RestrictedReference(h, g, nocc, inputs.nuclear_repulsion, source.mo_energy)
+
+
+def _array_signature(value):
+    array = np.asarray(value)
+    return array.shape, array.dtype.str, hashlib.sha256(array.tobytes()).digest()
+
+
+def reference_state_signature(source):
+    """Fingerprint a validated eager post-HF input, including mutable arrays."""
+    if isinstance(source, UnrestrictedReference):
+        return (source.nocc, tuple(_array_signature(a) for a in (*source.h1, *source.eri)),
+                _array_signature(source.nuclear_repulsion))
+    if all(hasattr(source, name) for name in ("h1", "eri", "nocc")):
+        return (
+            source.nocc,
+            _array_signature(source.h1),
+            _array_signature(source.eri),
+            _array_signature(source.nuclear_repulsion),
+        )
+    return (
+        source._scf_signature(),
+        id(source.scf_result),
+        id(source.reference) if source.scf_result is None else None,
+        source.converged,
+        _array_signature(source.mo_coeff),
+        _array_signature(source.mo_occ),
+    )

@@ -60,9 +60,52 @@ class LinearResult(NamedTuple):
     status: Array
 
 
+class TensorSumResult(NamedTuple):
+    solution: Array
+    residual_norm: Array
+    converged: Array
+    min_abs_denominator: Array
+
+
 class EigenResult(NamedTuple):
     values: Array
     vectors: Array
     residual_norms: Array
     converged: Array
     status: Array
+
+
+class SpectralProjectorResult(NamedTuple):
+    """Low-rank spectral observables, without gauge-dependent eigenvectors.
+
+    projection has the shape of the supplied vector/block. residual_norms
+    includes the extra boundary root when nroots < dimension. converged tests
+    the primal eigenspace; response_valid additionally requires a resolved
+    boundary gap. status: 0 valid, 1 invalid eigenspace, 2 unresolved boundary.
+    Diagnostics are nondifferentiable; projection and eigenvalue_sum expose
+    first-order response only.
+    """
+    projection: Array
+    eigenvalue_sum: Array
+    residual_norms: Array
+    boundary_gap: Array
+    converged: Array
+    response_valid: Array
+    status: Array
+
+
+class RPAResult(NamedTuple):
+    """Stable real RPA roots, column amplitudes and nondifferentiable diagnostics.
+
+    stability_margins contains min eig(A-B), min eig(A+B). Unstable or invalid
+    blocks return NaN physical outputs. response_valid additionally tests the
+    isolated-root gap, including the extra excluded root when available.
+    """
+    values: Array
+    x: Array
+    y: Array
+    residual_norms: Array
+    converged: Array
+    stable: Array
+    response_valid: Array
+    stability_margins: Array

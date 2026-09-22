@@ -1,43 +1,16 @@
 """PySCF-style ground-state CC facades, without solver copies."""
 
 from dataclasses import fields
-import hashlib
-import numpy as np
-from ..scf.reference import (reference_from_source, RestrictedReference, UnrestrictedReference,
+from ..scf.reference import (reference_from_source, UnrestrictedReference,
                              unrestricted_reference_from_source, is_unrestricted_source)
 from ..integrals.mo import frozen_indices, unrestricted_frozen_indices
+from ..scf.reference import reference_state_signature
 from .types import CCConfig
 from .ground import run_cc
 from .uccsd import run_ucc
 from .lambda_equations import solve_lambda
 from .triples import evaluate_triples
-from .properties import _density_from_lambda
-
-
-def _array_signature(value):
-    array = np.asarray(value)
-    return array.shape, array.dtype.str, hashlib.sha256(array.tobytes()).digest()
-
-
-def _source_signature(source):
-    if isinstance(source, UnrestrictedReference):
-        return (source.nocc, tuple(_array_signature(a) for a in (*source.h1, *source.eri)),
-                _array_signature(source.nuclear_repulsion))
-    if isinstance(source, RestrictedReference):
-        return (
-            source.nocc,
-            _array_signature(source.h1),
-            _array_signature(source.eri),
-            _array_signature(source.nuclear_repulsion),
-        )
-    return (
-        source._scf_signature(),
-        id(source.scf_result),
-        id(source.reference) if source.scf_result is None else None,
-        source.converged,
-        _array_signature(source.mo_coeff),
-        _array_signature(source.mo_occ),
-    )
+from .properties import _density_from_lambda, _rdm2_from_lambda
 
 
 class CC:
@@ -61,7 +34,7 @@ class CC:
         return (
             self.method,
             frozen,
-            _source_signature(self.mf),
+            reference_state_signature(self.mf),
         )
 
     def _config(self):
@@ -107,8 +80,6 @@ class CC:
 
     def solve_lambda(self):
         ref = self._ready()
-        if isinstance(ref, UnrestrictedReference):
-            raise NotImplementedError("Explicit UCC Lambda is not yet exposed; energy/amplitude implicit AD is supported")
         self.lambda_result = solve_lambda(
             ref.h1,
             ref.eri,
@@ -121,13 +92,19 @@ class CC:
         self.converged_lambda = bool(self.lambda_result.converged)
         return self.l1, self.l2
 
-    def triples(self, *, variant="ccsd(t)"):
-        """Return a correction with residual, canonicality and denominator diagnostics."""
+    def triples(self, *, variant=None, orbital_basis="canonical",
+                max_triples_elements=2_000_000):
+        """Return CCSD(T) or QCISD(T) for this model, with state diagnostics.
+
+        An explicit variant can select restricted CCSD+T(CCSD). Cross-model
+        amplitude reuse is rejected; functional callers select the variant explicitly.
+        """
         ref = self._ready()
-        if isinstance(ref, UnrestrictedReference):
-            raise NotImplementedError("Unrestricted/open-shell triples are not yet implemented")
-        if self.method != "ccsd":
-            raise ValueError("Noniterative triples require CCSD amplitudes")
+        if variant is None:
+            variant = "qcisd(t)" if self.method == "qcisd" else "ccsd(t)"
+        required = "qcisd" if variant == "qcisd(t)" else "ccsd"
+        if self.method != required:
+            raise ValueError("Noniterative triples require matching CCSD or QCISD amplitudes")
         result = evaluate_triples(
             ref.h1,
             ref.eri,
@@ -137,15 +114,23 @@ class CC:
             denominator_tol=self.denominator_tol,
             residual_tol=self.residual_tol,
             variant=variant,
+            orbital_basis=orbital_basis,
+            max_triples_elements=max_triples_elements,
         )
         if not bool(result.valid):
             raise ValueError(
-                "Triples require matching converged CCSD amplitudes, canonical orbitals and resolved denominators"
+                "Triples require matching converged CCSD/QCISD amplitudes, canonical orbitals "
+                "(unless orbital_basis='semicanonical'), and a resolved denominator solve"
             )
         return result
 
-    def ccsd_t(self):
-        return self.triples().energy
+    def ccsd_t(self, *, orbital_basis="canonical", max_triples_elements=2_000_000):
+        return self.triples(variant="ccsd(t)", orbital_basis=orbital_basis,
+                            max_triples_elements=max_triples_elements).energy
+
+    def qcisd_t(self):
+        """Canonical restricted QCISD(T), requiring converged QCISD amplitudes."""
+        return self.triples(variant="qcisd(t)").energy
 
     def make_rdm1(self):
         ref = self._ready()
@@ -162,10 +147,26 @@ class CC:
             config=self._config(),
         )
 
+    def make_rdm2(self):
+        ref = self._ready()
+        self.solve_lambda()
+        if not self.converged_lambda:
+            raise RuntimeError("Converge Lambda before evaluating the CC density")
+        return _rdm2_from_lambda(ref.h1, ref.eri, self.result, self.lambda_result,
+                                 nocc=ref.nocc, frozen=self.frozen, config=self._config())
+
 
 class CCSD(CC):
     def __init__(self, mf, **kwargs):
         super().__init__(mf, method="ccsd", **kwargs)
+
+
+class QCISD(CC):
+    """Real restricted quadratic CI singles and doubles; distinct from CCSD."""
+    def __init__(self, mf, **kwargs):
+        if is_unrestricted_source(mf):
+            raise NotImplementedError("QCISD currently requires a restricted closed-shell reference")
+        super().__init__(mf, method="qcisd", **kwargs)
 
 
 class RCCSD(CCSD):

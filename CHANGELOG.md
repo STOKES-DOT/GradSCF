@@ -23,6 +23,22 @@
   reproducibility artifacts, and the existing NPZ target-bundle format marker.
 - Retire the old import namespaces without a compatibility alias.
 
+### Molecular GW and BSE
+
+- Add real closed-shell static singlet/triplet TDA-BSE with factorized Davidson
+  actions and a bounded dense oracle. Reuse shared eigensolvers and screened
+  linear solves; include isolated-root energy and optical-property response.
+- Add bounded stable full BSE (`tda=False, solver="dense"`) with coupling
+  blocks, metric-normalized X/Y and first-order amplitude response through a
+  shared Cholesky-Hermitian RPA solver. Report stability margins and reject
+  invalid derivatives; scalable full-BSE Davidson remains deferred.
+- Record QP-computation coverage and the actual screening spectrum in CD GW
+  results. Add checked G0W0/evGW result snapshots for fixed-frame BSE inputs,
+  without claiming evGW outer fixed-point differentiation.
+- Add native water TDA/full-BSE examples, pinned QuAcK Fortran A/B kernel
+  fixtures, TDHF limit comparisons and first-order response regressions.
+
+
 ### SCF and native integrals
 
 - Add RHF/UHF, ROHF/ROKS, and GHF/GKS workflows and opt-in UHF/UKS

@@ -1,4 +1,4 @@
-"""Ground-state CC orchestration: equations here, iteration/AD in solvers."""
+"""Ground-state CC/QCI orchestration: equations here, iteration/AD in solvers."""
 
 import jax.numpy as jnp
 from ..solvers import LinearSolverConfig
@@ -8,7 +8,7 @@ from .amplitudes import AmplitudeSpace
 from .integrals import prepare_integrals, denominators
 from .rccsd import residual, correlation_energy
 
-METHODS = ("ccs", "ccd", "ccsd", "cc2", "lccd", "lccsd")
+METHODS = ("ccs", "ccd", "ccsd", "cc2", "lccd", "lccsd", "qcisd")
 
 
 def linear_config(config):

@@ -1,7 +1,9 @@
-# Ground-state coupled cluster
+# Ground-state coupled cluster and quadratic CI
 
 `gradscf.cc` provides real molecular CCS, CCD, CCSD, CC2, LCCD and LCCSD, plus
-the conventional CCSD(T) and Urban CCSD+T(CCSD) corrections. Numerical iterations, DIIS and implicit
+the conventional CCSD(T) and Urban CCSD+T(CCSD) corrections. Real restricted
+`QCISD` and canonical `QCISD(T)` are also available, with their own equations
+and triples weighting; see [QCISD.md](QCISD.md). Numerical iterations, DIIS and implicit
 root/adjoint solves are owned by `gradscf.solvers`. The CC module defines the
 Hamiltonian blocks, amplitude representation, residuals and energy contractions.
 
@@ -9,7 +11,9 @@ Real UHF/ROHF-based `UCCSD` and `UCCD` are also available. `CCSD(mf)` and
 `CCD(mf)` select the equations from the reference. See
 [Open-shell post-HF](OPEN_SHELL.md) for spin-block amplitudes, frozen orbitals,
 implicit response and the current in-core limits. The remaining methods and
-triples/property examples below apply to restricted closed-shell references.
+Urban triples and non-CCSD/CCD model examples below apply to restricted
+closed-shell references. Canonical UHF CCSD(T), UCCSD/UCCD Lambda and spin-resolved
+densities are available through the same functional and facade methods.
 
 Method citations are in [REFERENCES.md](REFERENCES.md). Some contraction code
 is adapted from PySCF 2.9.0 under Apache-2.0; see [NOTICE.md](NOTICE.md).
@@ -33,8 +37,11 @@ print(mycc.e_tot + e_triples)
 urban = mycc.triples(variant="ccsd+t(ccsd)")
 print(mycc.e_tot + urban.energy, urban.min_abs_denominator)
 dm1 = mycc.make_rdm1()  # spin-summed MO density, including frozen cores
+dm2 = mycc.make_rdm2()  # chemists' order; includes the CC Lambda state
 ```
 
+`QCISD(mf).run()` (also `mf.QCISD().run()`) uses the shared nonlinear engine with
+the quadratic CI residual. Its `.qcisd_t()` adds the QCI triples correction.
 `CCS`, `CCD`, `CC2`, `LCCD`, and `LCCSD` use the same constructor convention;
 `RCCSD` explicitly requires a restricted reference. `CC(mf, method="cc2")` selects a model
 explicitly. Unsupported names are rejected, not mapped to CCSD. The facade
@@ -120,7 +127,7 @@ For CCSD(T), add `triples_correction(h1, eri, result, nocc=...)` to the returned
 CCSD total energy **inside the differentiated function**. This retains the
 CCSD amplitude response and the direct dependence of the correction; a CCSD-only
 Lambda is not substituted for the derivative of the combined objective.
-The (T) path requires a canonical active Fock matrix and resolved denominators.
+The default (T) path requires a canonical active Fock matrix and resolved denominators.
 It streams symmetry-unique virtual triples and caps their count at 20,000 by
 default. It does not allocate the full six-index triples amplitude tensor.
 
@@ -139,13 +146,37 @@ under an outer derivative. This density is orbital-unrelaxed and belongs to the
 selected CC model, not CCSD(T). The facade solves Lambda automatically and rejects
 a failed response. This is not a nuclear-gradient interface.
 
+`make_rdm2` returns the real Hermitian part of the CCSD left/right two-particle
+density, `dm2[p,q,r,s] = <a_p^+ a_r^+ a_s a_q>`, including frozen-core terms.
+Restricted output is spin summed; UCC output is `(aa,ab,bb)`. Their two-electron
+energy contraction weights are `1/2` (restricted) and `(1/2,1,1/2)` (unrestricted).
+Its contractions preserve fermionic symmetries; this is not an eightfold
+symmetrized ERI derivative. CCS/CCD use the corresponding restricted cluster
+space. CC2/linearized/QCISD-model 2-RDMs and triples-corrected densities are not implemented.
+The current 2-RDM path materializes dense spin-orbital intermediates.
+
+For real UHF/ROHF `make_rdm1` and `make_rdm2` use spin-resolved MO frames;
+`solve_lambda` returns `(la,lb)` and `(laa,lab,lbb)`. Canonical UHF `(T)` streams
+distinct spin-orbital virtual triples and retains the converged-amplitude
+response. For noncanonical or ordinary ROHF inputs, explicitly select
+`mycc.ccsd_t(orbital_basis="semicanonical")`. This general-reference formula
+includes `F_vo*T2` and uses the shared tensor-sum inverse, with implicit response
+that remains defined at within-block orbital degeneracies. It is algebraically
+equivalent to explicit semicanonicalization, without differentiating individual
+orbital eigenvectors. The opt-in reference implementation stores six-index
+moments with `max_triples_elements=2_000_000` per tensor; it is not streamed.
+Its Cartesian-spectrum singularity guard is conservative. See
+[the formulation and limits](SEMICANONICAL.md).
+See [the forward comparison and roadmap](FORWARD_PARITY.md).
+
 The OpenMolcas `CCSDT` program name must not be confused with fully iterative
 CCSDT. Definitions and the inspected revision are in [OPENMOLCAS.md](OPENMOLCAS.md).
 
 Invalid denominators, nonconverged right states and failed adjoint solves are
 not silently converted to valid zero derivatives. Inspect result convergence
 and residuals; invalid implicit responses and low-level (T) corrections yield
-NaNs, while the facade rejects a failed/noncanonical (T) request explicitly.
+NaNs, while the facade rejects a failed correction or noncanonical input to the
+default canonical path explicitly.
 
 ## Scope and validation
 

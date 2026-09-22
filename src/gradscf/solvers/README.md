@@ -12,6 +12,7 @@ historical solver forwarding modules have been removed.
 | --- | --- | --- |
 | Symmetric/Hermitian Davidson | `eigen/davidson.py` | TDA, CIS/CI, stability, periodic TDA |
 | Real isolated-root eigenvector response | `eigen/response.py` | TDA and CI coefficient-dependent objectives |
+| Isolated spectral projector and trace response | `eigen/subspace.py` | Complete degenerate subspaces and basis-invariant observables |
 | Real RPA Davidson and metric energy derivatives | `eigen/rpa.py` | Full TDHF/TDDFT, periodic Gamma response |
 | Bounded complex dense RPA and metric energy derivatives | `eigen/rpa.py` | Small non-Gamma periodic response |
 | Regularized full-spectrum and inverse-square-root derivatives | `eigen/spectral.py` | SCF orbital diagonalization and overlap response |
@@ -77,7 +78,10 @@ optional: its default applies `matvec` over columns with `vmap`. A supplied
 constructs the transpose through JAX. It is not a conjugate-transpose alias.
 Construct `LinearOperator` inside a transformed function, or close over it;
 the callable container itself is not a dynamic JIT argument. Captured numerical
-parameters remain differentiable. Multiple linear RHS can use caller-side vmap.
+parameters remain differentiable. With `method="direct"`, `solve_linear` accepts
+RHS shape `(n,nrhs)` and solves all columns together with a shared bounded dense
+matrix and checked implicit transpose response. Iterative solves retain vector
+RHS; multiple iterative RHS can use caller-side `vmap`.
 
 The new `solve_hermitian` and `solve_linear` APIs accept real floating-point
 data. Dense symmetric inputs are checked rather than silently repaired;
@@ -103,13 +107,31 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   at a converged isolated root. Vectors are stopped. The
   `implicit_eigenvector` mode also solves the constrained eigenvector response.
   These Davidson rules promise first-order response only.
+- `solve_spectral_projector(operator, probes, config=EigenSolverConfig(nroots=k))`
+  returns `projection=P@probes` and `eigenvalue_sum` with first-order JVP/VJP.
+  It permits internal degeneracy and splitting, provided the entire selected
+  subspace is separated from the excluded spectrum. One extra boundary root
+  detects cut clusters; invalid or unresolved boundaries produce NaN derivatives.
+  It does not provide individual degenerate-state derivatives. See the
+  [derivation and boundary policy](DEGENERACY.md) and
+  [example](../../../examples/degenerate_subspace.py).
 - Failed eigenpairs remain inspectable; their derivatives are NaN. Failed
   linear or adjoint solves return NaNs. Residual predicates stay inside opaque
   linear solves so that the tangent map can still be transposed correctly.
-- RPA energy response uses the indefinite metric, not a Hermitian problem
-  obtained by symmetrizing the RPA matrix. The real Davidson and complex dense
-  paths expose eigenvalue-only response; X/Y response is not implemented.
-  RPA roots must be isolated, real-frequency and of positive metric norm.
+- Legacy RPA energy response uses the indefinite metric. The real structured
+  Davidson and complex dense paths retain eigenvalue-only response with stopped
+  X/Y. RPA roots must be isolated, real-frequency and of positive metric norm.
+- `solve_stable_rpa(A,B,config=EigenSolverConfig(method="dense",...))` adds a
+  bounded real symmetric reference path with isolated X/Y response. It requires
+  positive-definite A-B and A+B and uses the Cholesky-Hermitian reduction, not
+  symmetrization of the doubled RPA matrix. Both the reduced and reconstructed
+  physical residuals must pass. `RPAResult` reports values, column X/Y with
+  `X.T@X-Y.T@Y=I`, residuals, convergence, stability and response validity, plus
+  `min eig(A-B), min eig(A+B)`. Invalid stability returns NaN physical outputs.
+  Internal/boundary degeneracy invalidates derivatives of the whole requested
+  root set; a smaller isolated prefix can be requested. The default config uses
+  vector response; explicitly supplied configs honor their gradient_mode.
+  `eigenvalue_only` stops both X/Y, including their reconstruction dependence.
 - `regularized_eigh` preserves the existing SCF gap-broadening policy near
   degeneracy. `inverse_sqrt` differentiates the matrix function through a
   Sylvester equation at repeated positive eigenvalues. Existing SCF second,
@@ -141,6 +163,24 @@ python -m pytest -q tests/solvers tests/ci tests/test_tddft_eigensolvers.py \
 ```
 
 Generic non-Hermitian EOM-CC Davidson/Arnoldi, biorthogonal vector response,
-degenerate-subspace derivatives, and CC amplitude equations are future work.
+variable-metric subspace response, and higher-order projector derivatives are future work.
 The present RPA implementation is not a generic non-Hermitian EOM solver.
 GPU behavior has not been validated in this migration.
+
+## Symmetric tensor-sum inverse
+
+`solve_tensor_sum(factors, rhs)` solves the sum of symmetric matrix actions on
+the corresponding tensor axes. Factor k must have shape
+`(rhs.shape[k], rhs.shape[k])`. It returns the solution, true residual norm,
+convergence and minimum absolute Cartesian eigenvalue sum. No full Kronecker
+matrix is built. The small-factor spectral bases are numerical factorizations;
+`custom_linear_solve` differentiates the live operator and RHS, including when
+individual factors have repeated eigenvalues.
+
+The full tensor-sum spectrum must be resolved above `denominator_tol`. This
+generic solver does not infer physical symmetry sectors or apply a pseudoinverse.
+Invalid factors or failed primal/tangent/adjoint residual checks produce invalid
+solutions. Storage is proportional to the full RHS tensor and factor matrices;
+callers remain responsible for their tensor allocation budget. CC's opt-in
+semicanonical triples path supplies such a budget. See
+[`cc/SEMICANONICAL.md`](../cc/SEMICANONICAL.md).

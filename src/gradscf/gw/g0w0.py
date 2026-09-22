@@ -33,6 +33,7 @@ References
 from __future__ import annotations
 
 from collections.abc import Sequence
+from numbers import Integral
 
 import jax.numpy as jnp
 from jax.lax import Precision
@@ -44,6 +45,20 @@ from .polarizability import rho_response_iw
 from .qp import _df_dw_batch, sigma_cd_batch, solve_qp_batch
 from .screened import screened_w_imag_axis
 from .types import GWResult
+
+
+def _requested_orbitals(orbs, nmo):
+    indices = tuple(range(nmo)) if orbs is None else tuple(orbs)
+    if (
+        not indices
+        or any(
+            not isinstance(p, Integral) or isinstance(p, bool) or not 0 <= p < nmo
+            for p in indices
+        )
+        or len(set(indices)) != len(indices)
+    ):
+        raise ValueError("orbs must contain distinct in-range integer orbital indices")
+    return tuple(map(int, indices))
 
 
 def _mo_factors(df_factors: Array, mo_coeff: Array) -> Array:
@@ -227,8 +242,7 @@ def g0w0_cd_restricted(
     mo_coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
     nocc = int(nocc)
     nmo = mo_energy.shape[0]
-    if orbs is None:
-        orbs = range(nmo)
+    orbs = _requested_orbitals(orbs,nmo)
 
     b_mn = _mo_factors(df_factors, mo_coeff)
     b_ov = b_mn[:, :nocc, nocc:]
@@ -277,6 +291,8 @@ def g0w0_cd_restricted(
         converged_mask=converged_mask,
         nw=int(nw),
         qp_residual=residual,
+        qp_computed_mask=jnp.zeros_like(qp_energy,dtype=bool).at[jnp.asarray(orbs)].set(not evaluate_only),
+        screening_energy=poles,
     )
 
 
@@ -323,8 +339,7 @@ def g0w0_cd_unrestricted(
     c_a, c_b = (jnp.asarray(c, dtype=jnp.float64) for c in mo_coeff)
     nocc_a, nocc_b = int(nocc[0]), int(nocc[1])
     nmo = e_a.shape[0]
-    if orbs is None:
-        orbs = range(nmo)
+    orbs = _requested_orbitals(orbs,nmo)
 
     b_a = _mo_factors(df_factors, c_a)
     b_b = _mo_factors(df_factors, c_b)
@@ -418,6 +433,8 @@ def g0w0_cd_unrestricted(
         converged_mask=jnp.stack([mask_a, mask_b]),
         nw=int(nw),
         qp_residual=jnp.stack([residual_a, residual_b]),
+        qp_computed_mask=jnp.zeros((2,nmo),dtype=bool).at[:,jnp.asarray(orbs)].set(not evaluate_only),
+        screening_energy=jnp.stack([p_a, p_b]),
     )
 
 

@@ -66,7 +66,12 @@ def _evgw_loop(
         residual = result.qp_residual
         delta = jnp.max(jnp.abs(residual))
         if float(delta) < tol:
-            return replace(result, converged=True, converged_mask=jnp.abs(residual) < tol)
+            selected = kwargs.get("orbs")
+            selected = (jnp.arange(e_old.shape[-1]) if selected is None
+                        else jnp.asarray(tuple(selected), dtype=jnp.int32))
+            computed = jnp.zeros_like(e_old, dtype=bool).at[..., selected].set(True)
+            return replace(result, converged=True, converged_mask=jnp.abs(residual) < tol,
+                           qp_computed_mask=computed)
         e_old = e_old - (1.0 - damping) * residual
     raise ArithmeticError(
         f"evGW did not converge in {max_iter} iterations (last max|Dyson residual| = "

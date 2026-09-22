@@ -44,7 +44,7 @@ from .qp import qp_residual, solve_qp_orbital
 from .qsgw import qsgw_cd_restricted
 from .rgw import GW
 from .scgw import SCGWResult, scgw_cd_restricted, scgw_matsubara_restricted
-from .screened import screened_w_imag_axis
+from .screened import screened_w_imag_axis, StaticScreening, build_static_screening, apply_static_screening
 from .self_energy import sigma_cd, sigma_imag_part, sigma_residue_part
 from .types import GWResult
 from .ugw import UGW
@@ -65,6 +65,7 @@ __all__ = [
     "rho_response_iw",
     "rho_response_real",
     "screened_w_imag_axis",
+    "StaticScreening", "build_static_screening", "apply_static_screening",
     "sigma_cd",
     "sigma_imag_part",
     "sigma_residue_part",

@@ -12,6 +12,8 @@ from typing import Any
 
 
 _NAMESPACE_EXPORTS = {
+    "bse",
+    "gw",
     "cc",
     "solvers",
     "ci",

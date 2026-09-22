@@ -16,6 +16,7 @@ Method references and their connection to the implementation are recorded in
 | --- | --- |
 | `CIS(mf, singlet=True/False)` | Spin-adapted singles; excitation energies relative to HF |
 | `CIS_D(mf)` | Canonical RHF singlet CIS(D); corrected excitation energies |
+| `CID(mf)` / `UCID(mf)` | Reference plus all double substitutions, excluding singles |
 | `CISD(mf)` / `UCISD(mf)` | Reference plus all singles and doubles, fixed (N-alpha, N-beta) |
 | `CISDT(mf)` / `UCISDT(mf)` | Reference plus all excitations through triples |
 | `CISDTQ(mf)` / `UCISDTQ(mf)` | Reference plus all excitations through quadruples |
@@ -29,6 +30,10 @@ on closed-shell references exposes explicit singlet/triplet adaptation. This dif
 spin-adapted restricted CISD amplitudes in PySCF; raw CI coefficient arrays are
 not interchangeable. Truncated CI is generally not size extensive; see the CI
 review by [Sherrill and Schaefer (1999)](https://doi.org/10.1016/S0065-3276%2808%2960532-8).
+
+Quadratic CI is a separate nonlinear approximation: restricted `QCISD` and
+`QCISD(T)` live in [`gradscf.cc`](../cc/QCISD.md), where they reuse the common
+nonlinear amplitude solver. They are not aliases of variational `CISD` or `CCSD`.
 
 ```python
 from gradscf import gto, dft, ci
@@ -55,6 +60,14 @@ half that squared norm; the legacy GradSCF CIS(D) adapter converts explicitly.
 `frozen=[0, 1, 8]` freezes arbitrary occupied or virtual spatial orbitals.
 Frozen electrons remain in all determinants: their core energy and interactions
 with active electrons are retained rather than removed by array slicing.
+
+`CI(..., excitation_ranks=(0,2))` and the same argument to the space builders
+select the CID space directly; the default `None` retains the usual hierarchy.
+Determinant CI objects expose `spin_square(root=0)`, returning `<S^2>` and an
+effective multiplicity. UHF-backed objects use their actual alpha/beta orbital
+overlap; explicit unrestricted MO inputs must provide `overlap_ab`.
+This diagnoses spin without projecting it or changing the selected roots.
+See [CID and spin conventions](CID_SPIN.md).
 
 ## Functional and differentiable API
 
@@ -145,11 +158,37 @@ the Fock matrix is diagonal and consistent with the supplied orbital energies.
   construction stops at 1,000,000 stored diagonal/undirected connections.
   Dense verification is limited to 2048 determinants. Reducing the orbital
   space or excitation rank is preferable to simply increasing these limits.
-- GHF, complex orbitals, periodic CI, RDM/property APIs, and automatic
+- GHF, complex orbitals, periodic CI, and automatic
   spin selection for general CI roots are not implemented.
 - Named `CISD(T)` / `CISDT(Q)` corrections are not exported. They need a specific
   perturbative definition and reference implementation; these names are not
   inferred from the coupled-cluster hierarchy.
+
+## Reduced density matrices
+
+Determinant CI objects expose `make_rdm1(root=0)`, `make_rdm2(root=0)` and
+`make_rdm12(root=0)`. The functional forms accept `(coefficients, space)` and
+work under JIT/AD. The coefficients are normalized internally; zero or nonfinite
+vectors yield NaNs. No extra diagonalization or integral construction occurs.
+The facade requires a converged root and unchanged reference/rank/frozen inputs.
+CIS/TDA amplitudes and CIS(D) corrected results are not determinant vectors and
+do not inherit a density interpretation through these methods.
+
+Restricted densities are spin summed. Unrestricted 1/2-RDMs return `(a,b)` and
+`(aa,ab,bb)`, in their respective MO frames, with frozen electrons included.
+The convention is `dm1[p,q] = <a_q^+ a_p>` and
+`dm2[p,q,r,s] = <a_p^+ a_r^+ a_s a_q>`. Contract restricted ERIs with `dm2/2`;
+the unrestricted `(aa,ab,bb)` contraction factors are `(1/2,1,1/2)`.
+These are full fermionic densities, not individually pair-symmetrized ERI
+derivatives. Their trace and contraction are `Tr(dm1)=N` and
+`sum_r dm2[p,q,r,r]=(N-1)*dm1[q,p]` in the real spin-summed representation.
+Use `gradient_mode="implicit_eigenvector"` for integral derivatives of a density;
+the default energy-only mode intentionally stops CI coefficient response.
+
+The implementation stores static operator connections (up to 4,000,000 per
+density rank) and full MO density arrays. It remains a small-system reference
+implementation; transition densities, AO output and automatic total-spin selection
+are future work. See [forward parity and remaining gaps](../cc/FORWARD_PARITY.md).
 
 ## Reproduce the checks
 

@@ -1,4 +1,172 @@
-# Restricted ground-state CC validation — 2026-09-21
+# Ground-state CC validation
+
+## Restricted QCISD/(T) — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, increment based on `07a54e5`. Environment:
+arm64 CPU, JAX 0.8.1, PySCF 2.9.0 and JAX float64. No new solver implementation
+or PySCF runtime dependency was introduced.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/cc tests/ci tests/solvers/test_nonlinear.py
+```
+
+**147 passed, 2 warnings, 383.71 seconds**, with no skips. The warnings are
+PySCF's OpenMP-availability notices. This is a targeted regression selection,
+not the full repository suite. The 13 new QCI cases also passed independently
+in **36.94 seconds** and are included in the 147-case run.
+
+New coverage includes optimized PySCF random QCISD residuals/energies with and
+without noncanonical Fock perturbations (seed 67); H4/STO-3G full and frozen
+energies, amplitudes and triples; H2O/STO-3G energy/triples; quadratic residual
+degree (seed 68); noninteracting H4-fragment additivity; implicit energy/amplitude
+response and model-density finite differences; model/frozen-state, empty-space
+and unsupported-scope guards; nonconvergence AD and native facade integration.
+
+Independent review additionally checked LiH/STO-3G with nocc=2, nvir=4 and random
+noncanonical Fock/amplitude inputs. Residual maximum errors against optimized
+PySCF QCISD were 3.68e-16 and 3.33e-16; energy error was 3.82e-17 Hartree.
+With state/canonical tolerances relaxed only in that formula probe, the QCI
+triples expression including F_vo*T2 agreed with PySCF's slow formula to
+8.67e-19 Hartree. This probe does not broaden the public canonical-(T) contract.
+It is separate from the automated regression count.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/cc/restricted_qcisd.py
+```
+
+This example passed using GradSCF native RHF, H2O coordinates
+`O 0 0 0; H 0 -.757 .587; H 0 .757 .587` Angstrom, STO-3G,
+SCF `conv_tol=1e-12`, QCI `conv_tol=1e-12`, `residual_tol=1e-11`:
+
+| Quantity | Measured value |
+| --- | ---: |
+| RHF energy / Hartree | -74.96306312972915 |
+| QCISD energy / Hartree | -75.0125474982174 |
+| QCISD(T) correction / Hartree | -5.72851626487058e-5 |
+| QCISD(T) energy / Hartree | -75.01260478338006 |
+| QCI residual infinity norm | 2.95e-12 |
+| QCI model 1-RDM trace | 10.0 |
+| QCI adjoint converged | True |
+
+Example wall time was not separately measured; this is a numerical smoke test,
+not a performance benchmark. Unrestricted/ROHF QCI, semicanonical QCI triples,
+QCI 2-RDMs, triples densities, complete nuclear gradients and GPU/large-system
+performance are not covered. Definitions and boundaries are in [QCISD.md](QCISD.md).
+
+## Semicanonical real-reference triples — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, increment based on `748df39`. Same local
+arm64 CPU, JAX 0.8.1, PySCF 2.9.0 and float64 environment as the preceding stage.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/cc tests/ci tests/solvers
+```
+
+**174 passed, 2 warnings, 437.32 seconds**, no skips. The warnings are PySCF's
+OpenMP-availability warnings. After this invocation, review identified that an
+empty tensor RHS bypassed validation of other nonempty factors. A failing
+regression was added, the input check was moved before the empty-space return,
+and `tests/solvers/test_tensor_sum.py` passed separately (**3 passed, 2.78 seconds**).
+The final selection contains 175 distinct tests; all have been exercised across
+these invocations. The second run repeats two existing tensor-sum cases and
+adds the empty-input case, rather than constituting three additional tests.
+
+The new CC checks cover:
+
+- OH/STO-3G ROHF, R=0.97 Angstrom, no frozen orbitals, one frozen core per spin,
+  and an alpha-only frozen core, compared with independently semicanonicalized
+  PySCF UCCSD/(T). Energy tolerance: 2e-10 Hartree for the correction.
+- Random independent alpha/beta occupied and virtual rotations, seed 51,
+  with consistent integral/amplitude transformation: invariant (T) to 2e-12 Hartree.
+- RHF H4/STO-3G canonical equivalence (2e-11 Hartree), and JIT total-energy
+  response to noncanonical perturbations versus reconverged finite differences
+  (step 1e-4; absolute derivative tolerance 2e-7).
+- An interacting synthetic model, seed 52, with exact within-spin occupied and
+  virtual degeneracies; JIT triples response versus finite differences to 2e-9.
+- Empty triples and invalid-state/API/capacity rejection.
+
+The generic tensor solver was checked against a dense Kronecker matrix, including
+exact factor degeneracy and JVP/VJP agreement. Independent review also probed
+simultaneously varying factors/RHS and found value/first/second derivative errors
+of 8.33e-17, 0 and 1.73e-16 against a 12-by-12 dense solve. That extra probe does
+not establish full CCSD(T) second derivatives.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/cc/semicanonical_triples.py
+```
+
+This native GradSCF example passed with OH/STO-3G at 0.97 Angstrom, spin=1,
+SCF `conv_tol=1e-12`, CC `conv_tol=1e-12`, residual tolerance 1e-10:
+
+| Reference | CCSD / Hartree | Semicanonical (T) / Hartree | CCSD(T) / Hartree |
+| --- | ---: | ---: | ---: |
+| UHF | -74.3871842074733 | -2.3003890403e-7 | -74.3871844375122 |
+| ROHF | -74.38718434215826 | -1.6519820636e-7 | -74.38718450735647 |
+
+The input Fock off-diagonal maxima were 2.34e-10 and 0.02301698 Hartree.
+The UHF semicanonical correction also matched the default streamed correction
+within 1e-11 Hartree. No PySCF runtime is used by this example. Example time
+was not separately measured; this is validation, not a performance benchmark.
+Full-memory moments, the per-tensor capacity guard and the conservative full
+Cartesian-spectrum singularity check are explained in [SEMICANONICAL.md](SEMICANONICAL.md).
+GPU, large-basis scaling, spin-adapted ROCCSD and complete nuclear gradients
+remain outside the validated contract.
+
+## CI/CC forward properties — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, based on `52d2d93`. Environment:
+macOS 26.6.2 arm64 CPU, JAX 0.8.1, PySCF 2.9.0, float64.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/ci tests/cc tests/solvers/test_nonlinear.py
+```
+
+**126 passed, 2 warnings, 317.42 seconds**, with no skips. Both warnings report
+that the installed PySCF lacks OpenMP; they do not indicate a failed calculation.
+A subsequently added independent arbitrary-amplitude spin-density oracle test,
+`tests/cc/test_forward_properties.py::test_spin_density_parts_arbitrary_amplitudes_against_pyscf`,
+passed separately (**1 passed, 3.34 seconds**). Thus 127 distinct test cases were
+verified across these two invocations, not in one combined invocation.
+
+This includes 22 new cases: real CI 1/2-RDMs against FCI, arbitrary normalized
+vectors, frozen electrons and virtuals, UCC Lambda and density comparisons,
+R/U CCSD 2-RDM energy/particle-number identities, canonical UCCSD(T) against
+PySCF for OH/6-31G with/without a frozen core, restricted-limit agreement,
+JIT and fixed-MO response finite differences, empty spin/amplitude spaces,
+invalid/stale-state rejection and arbitrary same-spin density contractions.
+
+The initial baseline worktree lacked the native integral library (99 passed,
+4 failed during SCF initialization). Reusing the same compiled CPU library from
+the parent checkout resolved all four failures; those four tests passed before
+the full regression above. No mathematical backend fallback was used.
+
+The standalone `examples/cc/open_shell_properties.py` ran successfully with
+GradSCF native CPU UHF, OH at 0.97 Angstrom, STO-3G, spin=1, SCF `conv_tol=1e-12`,
+CI `conv_tol=1e-10`, CC `conv_tol=1e-12` and `residual_tol=1e-10`:
+
+| Quantity | Measured value |
+| --- | ---: |
+| UHF energy / Hartree | -74.3626691947672 |
+| UCISD energy / Hartree | -74.38718440414765 |
+| UCCSD energy / Hartree | -74.3871842074733 |
+| UCCSD(T) energy / Hartree | -74.3871844375122 |
+| UCISD density energy reconstruction error / Hartree | 1.99e-13 |
+| UCCSD density energy reconstruction error / Hartree | -7.11e-14 |
+| Alpha/beta density traces | 5 / 4 |
+| Lambda converged | True |
+
+No PySCF runtime is used in this example. It is a numerical smoke test, not a
+performance benchmark; example wall time was not separately measured. GPU,
+large-basis performance, general ROHF triples, complete nuclear gradients and
+CCSD(T) densities remain unvalidated/unimplemented as specified in
+[FORWARD_PARITY.md](FORWARD_PARITY.md). No full repository test-suite claim is made.
+
+## Restricted ground-state CC — 2026-09-21
 
 Environment: arm64 CPU (`TFRT_CPU_0`), JAX 0.8.1, PySCF 2.9.0, float64.
 Tests were run in the isolated `feat/cc-ground-state` worktree.

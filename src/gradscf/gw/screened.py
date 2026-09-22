@@ -25,6 +25,96 @@ import jax
 import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
+from typing import NamedTuple
+from math import isfinite
+from numbers import Integral
+from ..solvers import LinearSolverConfig, solve_linear
+from ..solvers.diagnostics import require_converged_derivative
+
+
+class StaticScreening(NamedTuple):
+    """Full auxiliary dielectric, not the self-energy's contracted W-v."""
+    dielectric: Array
+    valid: Array
+    min_gap: Array
+
+
+def build_static_screening(
+    mo_energy, mo_factors, *, occupied, virtual, gap_tol=1e-10, max_aux=1024
+):
+    """Closed-shell static RPA epsilon=I-Pi(0) for metric-whitened real factors.
+
+    Screening indices are independent of the optical excitation window. Empty
+    screening transitions give epsilon=I (bare interaction). Real symmetric
+    MO factors and positive screening gaps are required. Invalid numerical
+    inputs retain diagnostics with valid=False; there is no gap clipping model.
+    """
+    e, l = jnp.asarray(mo_energy), jnp.asarray(mo_factors)
+    if e.ndim != 1 or l.ndim != 3 or l.shape[1:] != (e.size, e.size):
+        raise ValueError("Screening requires energy (nmo,) and factors (naux,nmo,nmo)")
+    if jnp.iscomplexobj(e) or jnp.iscomplexobj(l):
+        raise NotImplementedError("Static molecular screening requires real inputs")
+    if (
+        not isfinite(gap_tol)
+        or gap_tol <= 0
+        or not isinstance(max_aux, Integral)
+        or max_aux < 1
+    ):
+        raise ValueError("Invalid static screening tolerance or auxiliary limit")
+    if l.shape[0] > max_aux:
+        raise ValueError("Static screening exceeds max_aux")
+    occ, vir = tuple(occupied), tuple(virtual)
+    if any(
+        not isinstance(p, Integral) or not 0 <= p < e.size for p in occ + vir
+    ) or len(set(occ + vir)) != len(occ) + len(vir):
+        raise ValueError("Screening indices must be distinct, disjoint and in range")
+    dtype = jnp.result_type(e, l, 1.0)
+    e, l = e.astype(dtype), l.astype(dtype)
+    oi, va = jnp.asarray(occ, dtype=jnp.int32), jnp.asarray(vir, dtype=jnp.int32)
+    gaps = e[va][None, :] - e[oi][:, None]
+    minimum = jnp.min(gaps, initial=jnp.inf)
+    scale = jnp.maximum(1.0, jnp.max(jnp.abs(l), initial=0.0))
+    valid = (
+        jnp.all(jnp.isfinite(l))
+        & jnp.all(jnp.isfinite(gaps))
+        & (minimum > gap_tol)
+        & (
+            jnp.max(jnp.abs(l - l.swapaxes(1, 2)), initial=0.0)
+            <= 64 * jnp.finfo(dtype).eps * scale
+        )
+    )
+    lov = l[:, oi[:, None], va[None, :]]
+    safe_gaps = jnp.where(gaps > gap_tol, gaps, 1.0)
+    dielectric = jnp.eye(l.shape[0], dtype=dtype) + 4 * jnp.einsum(
+        "Pia,Qia,ia->PQ", lov, lov, 1 / safe_gaps
+    )
+    return StaticScreening(dielectric, valid, minimum)
+
+
+def apply_static_screening(state, values):
+    """Apply the full screened auxiliary metric epsilon^-1 to one/block RHS.
+
+    Shared direct linear solves factor the matrix for a block of right sides;
+    they own primal, transpose and implicit response checks. No inverse is built.
+    """
+    values = jnp.asarray(values)
+    naux = state.dielectric.shape[0]
+    if values.ndim < 1 or values.shape[0] != naux:
+        raise ValueError("Screening RHS must have leading dimension naux")
+    columns = 1
+    for n in values.shape[1:]:
+        columns *= n
+    rhs = values.reshape(naux, columns)
+    out = solve_linear(
+        state.dielectric,
+        rhs,
+        config=LinearSolverConfig(
+            method="direct", rtol=1e-11, atol=1e-13, max_dense=max(1, naux)
+        ),
+    )
+    valid = state.valid & out.converged
+    result = require_converged_derivative(out.solution, valid)
+    return jnp.where(valid, result, jnp.nan).reshape(values.shape)
 
 
 def screened_w_imag_axis(
@@ -72,7 +162,8 @@ def screened_w_imag_axis(
     return jax.vmap(at_frequency)(freqs)
 
 
-__all__ = ["screened_w_imag_axis", "screened_w_imag_axis_matrix"]
+__all__ = ["screened_w_imag_axis", "screened_w_imag_axis_matrix",
+           "StaticScreening", "build_static_screening", "apply_static_screening"]
 
 
 def screened_w_imag_axis_matrix(

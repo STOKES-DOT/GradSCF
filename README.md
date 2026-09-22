@@ -158,6 +158,7 @@ derivative rules. Supported inputs and derivative orders depend on the path:
 | --- | --- | --- |
 | Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or unrolled modes; upstream integral/XC derivatives are required for the selected inputs |
 | TDA and CI | Eigenvalues; eigenvectors for coefficient-dependent objectives | Shared isolated-root response; CI coefficient AD requires `gradient_mode="implicit_eigenvector"` |
+| Spectral subspaces | Projector actions and sums of selected eigenvalues | [First-order JVP/VJP](src/gradscf/solvers/DEGENERACY.md) permits internal degeneracy; the boundary with excluded states must be resolved |
 | Ground-state CC | Energies and amplitudes versus MO integrals | Implicit response at converged roots; fixed topology and orbital ordering; first-order validated contract |
 | GW | Quasiparticle roots and selected matrix-scGW responses | Path-specific rules; evGW/qsGW outer self-consistency loops currently have no AD rule |
 | Native integrals | Geometry or density response on supported operators/layouts | Read the operator-specific contract; geometry, exponent, and coefficient derivatives are not interchangeable |
@@ -210,7 +211,8 @@ Additional neural dispersion models are available in
 - **GW:** [finite-temperature scGW](examples/scgw_matsubara_h2.py),
   [implicit scGW response](examples/scgw_implicit_response_h2.py).
 - **Numerical development:** [shared solver guide](src/gradscf/solvers/README.md)
-  and [operator/solver example](examples/shared_solvers.py).
+  and [operator/solver example](examples/shared_solvers.py);
+  [degenerate-subspace response](examples/degenerate_subspace.py).
 - **Integrals:** [native build and derivative contracts](src/gradscf/integrals/_native/README.md),
   [compact integrals and density fitting](src/gradscf/integrals/COMPRESSED.md).
 - **Migration:** [namespace changes](MIGRATION.md) from GradTDDFT to `gradscf`.
