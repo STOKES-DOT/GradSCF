@@ -43,6 +43,13 @@ class GWResult:
         Dyson residual at ``mo_energy`` for the supplied G/W pole spectrum
         (Ha). Unrequested orbitals are filled with zero. ``None`` for
         methods which do not store this diagnostic.
+    qp_computed_mask:
+        True where a QP calculation was actually requested and performed;
+        inspect converged_mask as well to require successful convergence.
+        G0W0 evaluate-only calls mark all entries False. evGW fills this mask
+        when its outer equations converge. None means coverage is not recorded
+        by the producing driver. MF-filled levels must not be inferred from
+        converged_mask or zero qp_residual alone.
     """
 
     mo_energy: jnp.ndarray
@@ -52,6 +59,10 @@ class GWResult:
     converged_mask: jnp.ndarray | None = None
     nw: int | None = None
     qp_residual: jnp.ndarray | None = None
+    # True only for levels whose QP energies were actually computed. Legacy
+    # convergence masks mark unrequested MF-filled levels True and are distinct.
+    # None means the producing driver has not supplied coverage metadata.
+    qp_computed_mask: jnp.ndarray | None = None
 
 
 __all__ = ["GWResult"]

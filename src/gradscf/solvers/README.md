@@ -78,7 +78,10 @@ optional: its default applies `matvec` over columns with `vmap`. A supplied
 constructs the transpose through JAX. It is not a conjugate-transpose alias.
 Construct `LinearOperator` inside a transformed function, or close over it;
 the callable container itself is not a dynamic JIT argument. Captured numerical
-parameters remain differentiable. Multiple linear RHS can use caller-side vmap.
+parameters remain differentiable. With `method="direct"`, `solve_linear` accepts
+RHS shape `(n,nrhs)` and solves all columns together with a shared bounded dense
+matrix and checked implicit transpose response. Iterative solves retain vector
+RHS; multiple iterative RHS can use caller-side `vmap`.
 
 The new `solve_hermitian` and `solve_linear` APIs accept real floating-point
 data. Dense symmetric inputs are checked rather than silently repaired;

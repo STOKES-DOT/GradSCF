@@ -64,13 +64,13 @@ def _empty_rep_tensor_like(overlap: Any) -> np.ndarray:
     return np.zeros((0, 0, 0, 0), dtype=np.asarray(overlap).dtype)
 
 
-def complete_restricted_response_inputs(inputs, spec, basis):
+def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True):
     """Add a missing dipole tensor without recomputing S/H/ERI/grid or SCF."""
     if inputs.dipole_integrals is not None:
         return inputs
     if inputs.integral_backend in {'native','cpu','libcint'}:
         from ..integrals import prepare_basis, make_plan
-        topology, parameters = prepare_basis(spec,basis,cart=True)
+        topology, parameters = prepare_basis(spec,basis,cart=cart)
         dipole = make_plan(topology,backend='native').evaluate('dipole',parameters)
     else:
         from ..integrals import dipole_matrix
