@@ -92,12 +92,19 @@ class CC:
         self.converged_lambda = bool(self.lambda_result.converged)
         return self.l1, self.l2
 
-    def triples(self, *, variant="ccsd(t)", orbital_basis="canonical",
+    def triples(self, *, variant=None, orbital_basis="canonical",
                 max_triples_elements=2_000_000):
-        """Return a correction with residual, canonicality and denominator diagnostics."""
+        """Return CCSD(T) or QCISD(T) for this model, with state diagnostics.
+
+        An explicit variant can select restricted CCSD+T(CCSD). Cross-model
+        amplitude reuse is rejected; functional callers select the variant explicitly.
+        """
         ref = self._ready()
-        if self.method != "ccsd":
-            raise ValueError("Noniterative triples require CCSD amplitudes")
+        if variant is None:
+            variant = "qcisd(t)" if self.method == "qcisd" else "ccsd(t)"
+        required = "qcisd" if variant == "qcisd(t)" else "ccsd"
+        if self.method != required:
+            raise ValueError("Noniterative triples require matching CCSD or QCISD amplitudes")
         result = evaluate_triples(
             ref.h1,
             ref.eri,
@@ -112,14 +119,18 @@ class CC:
         )
         if not bool(result.valid):
             raise ValueError(
-                "Triples require matching converged CCSD amplitudes, canonical orbitals "
+                "Triples require matching converged CCSD/QCISD amplitudes, canonical orbitals "
                 "(unless orbital_basis='semicanonical'), and a resolved denominator solve"
             )
         return result
 
     def ccsd_t(self, *, orbital_basis="canonical", max_triples_elements=2_000_000):
-        return self.triples(orbital_basis=orbital_basis,
+        return self.triples(variant="ccsd(t)", orbital_basis=orbital_basis,
                             max_triples_elements=max_triples_elements).energy
+
+    def qcisd_t(self):
+        """Canonical restricted QCISD(T), requiring converged QCISD amplitudes."""
+        return self.triples(variant="qcisd(t)").energy
 
     def make_rdm1(self):
         ref = self._ready()
@@ -148,6 +159,14 @@ class CC:
 class CCSD(CC):
     def __init__(self, mf, **kwargs):
         super().__init__(mf, method="ccsd", **kwargs)
+
+
+class QCISD(CC):
+    """Real restricted quadratic CI singles and doubles; distinct from CCSD."""
+    def __init__(self, mf, **kwargs):
+        if is_unrestricted_source(mf):
+            raise NotImplementedError("QCISD currently requires a restricted closed-shell reference")
+        super().__init__(mf, method="qcisd", **kwargs)
 
 
 class RCCSD(CCSD):

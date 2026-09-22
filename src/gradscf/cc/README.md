@@ -1,7 +1,9 @@
-# Ground-state coupled cluster
+# Ground-state coupled cluster and quadratic CI
 
 `gradscf.cc` provides real molecular CCS, CCD, CCSD, CC2, LCCD and LCCSD, plus
-the conventional CCSD(T) and Urban CCSD+T(CCSD) corrections. Numerical iterations, DIIS and implicit
+the conventional CCSD(T) and Urban CCSD+T(CCSD) corrections. Real restricted
+`QCISD` and canonical `QCISD(T)` are also available, with their own equations
+and triples weighting; see [QCISD.md](QCISD.md). Numerical iterations, DIIS and implicit
 root/adjoint solves are owned by `gradscf.solvers`. The CC module defines the
 Hamiltonian blocks, amplitude representation, residuals and energy contractions.
 
@@ -38,6 +40,8 @@ dm1 = mycc.make_rdm1()  # spin-summed MO density, including frozen cores
 dm2 = mycc.make_rdm2()  # chemists' order; includes the CC Lambda state
 ```
 
+`QCISD(mf).run()` (also `mf.QCISD().run()`) uses the shared nonlinear engine with
+the quadratic CI residual. Its `.qcisd_t()` adds the QCI triples correction.
 `CCS`, `CCD`, `CC2`, `LCCD`, and `LCCSD` use the same constructor convention;
 `RCCSD` explicitly requires a restricted reference. `CC(mf, method="cc2")` selects a model
 explicitly. Unsupported names are rejected, not mapped to CCSD. The facade
@@ -148,7 +152,7 @@ Restricted output is spin summed; UCC output is `(aa,ab,bb)`. Their two-electron
 energy contraction weights are `1/2` (restricted) and `(1/2,1,1/2)` (unrestricted).
 Its contractions preserve fermionic symmetries; this is not an eightfold
 symmetrized ERI derivative. CCS/CCD use the corresponding restricted cluster
-space. CC2/linearized-model 2-RDMs and CCSD(T) densities are not implemented.
+space. CC2/linearized/QCISD-model 2-RDMs and triples-corrected densities are not implemented.
 The current 2-RDM path materializes dense spin-orbital intermediates.
 
 For real UHF/ROHF `make_rdm1` and `make_rdm2` use spin-resolved MO frames;

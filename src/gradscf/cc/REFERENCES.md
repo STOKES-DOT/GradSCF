@@ -16,6 +16,7 @@ modified routines, hashes, and license are in [NOTICE.md](NOTICE.md).
 | UCCSD / UCCD | Spin-orbital CCSD equations; PySCF `gintermediates` cites Gauss–Stanton (1995), Table III | PySCF UCCSD energies and spin-block amplitudes, random-amplitude GCCSD residuals, and implicit-response finite differences; see [open-shell conventions](OPEN_SHELL.md) |
 | Real UCCSD(T), canonical and opt-in semicanonical | Watts, Gauss and Bartlett (1993), spin-orbital formula attributed by PySCF `gccsd_t`/`gccsd_t_slow` | Canonical OH/6-31G and explicitly semicanonical ROHF OH/STO-3G PySCF comparisons; frozen spaces, rotation invariance, restricted limit and first-order response including exact orbital degeneracy; see [formulation](SEMICANONICAL.md) |
 | CCSD 1/2-RDM | Real Hermitian part of the CC left/right expectation; 2-RDM contractions adapted from PySCF `gccsd_rdm` | R/U PySCF density comparisons, full energy reconstruction, contraction identities and outer-response finite differences |
+| Restricted QCISD/(T) | Pople, Head-Gordon and Raghavachari (1987); working contractions from PySCF QCI modules | Optimized PySCF random residual/energy, full/frozen H4 and H2O oracles; quadratic degree, fragment additivity, distinct triples weight and model response; see [QCISD.md](QCISD.md) |
 
 ## Bibliography
 
@@ -76,3 +77,12 @@ of the cross-check are recorded in [OPENMOLCAS.md](OPENMOLCAS.md).
    keyword documentation. The implemented real collinear formula includes the
    non-HF `F_vo*T2` term with an opt-in semicanonical-equivalent tensor inverse.
    This citation does not claim all formulations or nuclear gradients in the paper.
+
+9. J. A. Pople, M. Head-Gordon, and K. Raghavachari,
+   “Quadratic configuration interaction. A general technique for determining
+   electron correlation energies,” *J. Chem. Phys.* **87**, 5968–5975 (1987).
+   [DOI: 10.1063/1.453520](https://doi.org/10.1063/1.453520).
+   Bibliographic identity checked against the
+   [publisher's issue listing](https://pubs.aip.org/aip/jcp/issue/87/10).
+   The executable formulas were inspected in the attributed PySCF sources;
+   no independent full-text audit of the original paper is claimed.

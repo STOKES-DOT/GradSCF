@@ -21,7 +21,7 @@ ROHF orbitals are not generally stationary for independent alpha/beta orbital
 rotations, so `UCIS` rejects nonzero spin Fock occupied-virtual blocks. Variational
 rank-truncated CI and UCCSD can use these noncanonical reference orbitals.
 
-Unrestricted CC2, LCCSD, LCCD, spin-flip CIS, complex orbitals and spin-mixed
+Unrestricted/ROHF QCISD/(T), unrestricted CC2, LCCSD, LCCD, spin-flip CIS, complex orbitals and spin-mixed
 GHF are not exposed as implemented methods. `CIS_D` remains restricted.
 
 UCCSD/UCCD now expose Lambda and MO 1/2-RDMs, including spin-dependent frozen

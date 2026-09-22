@@ -8,7 +8,8 @@
 # specific language governing permissions and limitations under the License.
 # Adapted from PySCF 2.9.0 cc/ccsd_t_slow.py; see NOTICE.md and LICENSE.pyscf.
 # Original author: Qiming Sun <osirpt.sun@gmail.com>
-"""Restricted noniterative triples, streamed over virtual triples with JAX AD."""
+# QCISD(T) weight/contractions: PySCF qcisd_t_slow, Qiming Sun and Timothy Berkelbach.
+"""CC/QCI noniterative triples; canonical streaming and opt-in CC tensor solve."""
 from math import isfinite
 from itertools import permutations
 import numpy as np
@@ -47,13 +48,14 @@ def evaluate_triples(
     orbital_basis="canonical",
     max_triples_elements=2_000_000,
 ):
-    """Canonical R/U CCSD(T), or restricted Urban +T(CCSD), with diagnostics.
+    """CCSD(T), restricted Urban +T(CCSD), or canonical restricted QCISD(T).
 
     Urban et al. (1985), doi:10.1063/1.449067, retains only the connected
     WT2 contribution. Raghavachari et al. (1989),
     doi:10.1016/S0009-2614(89)87395-6, adds the singles-dependent term.
     Definitions were cross-checked against OpenMolcas CCT3; no Fortran was copied.
-    result must retain its CCSD implicit amplitude response for total derivatives.
+    QCISD(T) requires QCI amplitudes/residuals and the QCI singles weight.
+    result must retain its selected model's amplitude response for derivatives.
     No shifts are applied to the physical triples denominators.
     orbital_basis='semicanonical' selects the general-reference formula,
     including F_vo*T2, through the common tensor-sum inverse. That bounded
@@ -78,7 +80,7 @@ def evaluate_triples(
             denominator_tol=denominator_tol, max_virtual_triples=max_virtual_triples,
             variant=variant, residual_tol=residual_tol, canonical_tol=canonical_tol,
             orbital_basis=orbital_basis, max_triples_elements=max_triples_elements)
-    variants = ("ccsd+t(ccsd)", "ccsd(t)")
+    variants = ("ccsd+t(ccsd)", "ccsd(t)", "qcisd(t)")
     if variant not in variants:
         raise ValueError(f"Unknown triples variant {variant!r}; choose {variants}")
     for value in (denominator_tol, residual_tol, canonical_tol):
@@ -86,11 +88,12 @@ def evaluate_triples(
             raise ValueError("Triples tolerances must be finite and positive")
     if not isinstance(max_virtual_triples, int) or max_virtual_triples < 1:
         raise ValueError("max_virtual_triples must be a positive integer")
+    model = "qcisd" if variant == "qcisd(t)" else "ccsd"
     ints = prepare_integrals(h1, eri, nocc=nocc, frozen=frozen)
     no, nv = ints.nocc, ints.nvir
     space = AmplitudeSpace(no, nv)
     space.pack(result.t1, result.t2)  # Validate before any empty-space shortcut.
-    cc_residual = space.pack(*residual(result.t1, result.t2, ints))
+    cc_residual = space.pack(*residual(result.t1, result.t2, ints, model=model))
     cc_norm = jnp.max(jnp.abs(cc_residual), initial=0.0)
     canonical_error = jnp.max(
         jnp.abs(ints.fock - jnp.diag(ints.mo_energy)), initial=0.0
@@ -100,7 +103,7 @@ def evaluate_triples(
     )
     state_valid = (
         result.converged
-        & (result.method_id == METHODS.index("ccsd"))
+        & (result.method_id == METHODS.index(model))
         & (cc_norm <= residual_tol)
         & (canonical_error <= canonical_tol)
         & (symmetry_error <= residual_tol)
@@ -113,7 +116,7 @@ def evaluate_triples(
             & (minimum > denominator_tol)
             & jnp.isfinite(connected + singles)
         )
-        applied_singles = singles if variant == "ccsd(t)" else jnp.zeros_like(singles)
+        applied_singles = singles if variant != "ccsd+t(ccsd)" else jnp.zeros_like(singles)
         correction = connected + applied_singles
         return TriplesResult(
             jnp.where(valid, correction, jnp.nan),
@@ -151,9 +154,11 @@ def evaluate_triples(
         w = jnp.einsum(
             "if,fkj->ijk", vvov[a, b], t2[c], precision="highest"
         ) - jnp.einsum("ijm,mk->ijk", vooo[a], t2[b, c], precision="highest")
-        # Canonical closed-shell convention. The open-shell/noncanonical U*T2
-        # extension in OpenMolcas's third variant is not exported here.
+        # Preserve canonical CCSD's convention. QCI uses the full upstream V
+        # contraction, with F_vo*T2 normally vanishing for canonical RHF.
         v = jnp.einsum("ij,k->ijk", vvoo[a, b], t1[c])
+        if model == "qcisd":
+            v += jnp.einsum("ij,k->ijk", t2[a, b], ints.fock[no+c, :no])
         return w, v
 
     def body(index, carry):
@@ -166,7 +171,8 @@ def evaluate_triples(
         denominator = jnp.where(jnp.abs(d) > denominator_tol, d, 1.0) * multiplicity
         ws, vs = jax.vmap(wv)(abc[indices])
         zw = jax.vmap(_r3)(ws) / denominator[None, ...]
-        zv = jax.vmap(_r3)(0.5 * vs) / denominator[None, ...]
+        singles_weight = 1.0 if model == "qcisd" else 0.5
+        zv = jax.vmap(_r3)(singles_weight * vs) / denominator[None, ...]
         value_w = jnp.asarray(0.0, dtype=dtype)
         value_v = jnp.asarray(0.0, dtype=dtype)
         for iq, q in enumerate(perms):

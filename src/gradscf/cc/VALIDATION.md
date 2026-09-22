@@ -1,5 +1,60 @@
 # Ground-state CC validation
 
+## Restricted QCISD/(T) — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, increment based on `07a54e5`. Environment:
+arm64 CPU, JAX 0.8.1, PySCF 2.9.0 and JAX float64. No new solver implementation
+or PySCF runtime dependency was introduced.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/cc tests/ci tests/solvers/test_nonlinear.py
+```
+
+**147 passed, 2 warnings, 383.71 seconds**, with no skips. The warnings are
+PySCF's OpenMP-availability notices. This is a targeted regression selection,
+not the full repository suite. The 13 new QCI cases also passed independently
+in **36.94 seconds** and are included in the 147-case run.
+
+New coverage includes optimized PySCF random QCISD residuals/energies with and
+without noncanonical Fock perturbations (seed 67); H4/STO-3G full and frozen
+energies, amplitudes and triples; H2O/STO-3G energy/triples; quadratic residual
+degree (seed 68); noninteracting H4-fragment additivity; implicit energy/amplitude
+response and model-density finite differences; model/frozen-state, empty-space
+and unsupported-scope guards; nonconvergence AD and native facade integration.
+
+Independent review additionally checked LiH/STO-3G with nocc=2, nvir=4 and random
+noncanonical Fock/amplitude inputs. Residual maximum errors against optimized
+PySCF QCISD were 3.68e-16 and 3.33e-16; energy error was 3.82e-17 Hartree.
+With state/canonical tolerances relaxed only in that formula probe, the QCI
+triples expression including F_vo*T2 agreed with PySCF's slow formula to
+8.67e-19 Hartree. This probe does not broaden the public canonical-(T) contract.
+It is separate from the automated regression count.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/cc/restricted_qcisd.py
+```
+
+This example passed using GradSCF native RHF, H2O coordinates
+`O 0 0 0; H 0 -.757 .587; H 0 .757 .587` Angstrom, STO-3G,
+SCF `conv_tol=1e-12`, QCI `conv_tol=1e-12`, `residual_tol=1e-11`:
+
+| Quantity | Measured value |
+| --- | ---: |
+| RHF energy / Hartree | -74.96306312972915 |
+| QCISD energy / Hartree | -75.0125474982174 |
+| QCISD(T) correction / Hartree | -5.72851626487058e-5 |
+| QCISD(T) energy / Hartree | -75.01260478338006 |
+| QCI residual infinity norm | 2.95e-12 |
+| QCI model 1-RDM trace | 10.0 |
+| QCI adjoint converged | True |
+
+Example wall time was not separately measured; this is a numerical smoke test,
+not a performance benchmark. Unrestricted/ROHF QCI, semicanonical QCI triples,
+QCI 2-RDMs, triples densities, complete nuclear gradients and GPU/large-system
+performance are not covered. Definitions and boundaries are in [QCISD.md](QCISD.md).
+
 ## Semicanonical real-reference triples — 2026-09-22
 
 Branch: `feat/ci-cc-forward-parity`, increment based on `748df39`. Same local

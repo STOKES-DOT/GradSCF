@@ -30,6 +30,10 @@ spin-adapted restricted CISD amplitudes in PySCF; raw CI coefficient arrays are
 not interchangeable. Truncated CI is generally not size extensive; see the CI
 review by [Sherrill and Schaefer (1999)](https://doi.org/10.1016/S0065-3276%2808%2960532-8).
 
+Quadratic CI is a separate nonlinear approximation: restricted `QCISD` and
+`QCISD(T)` live in [`gradscf.cc`](../cc/QCISD.md), where they reuse the common
+nonlinear amplitude solver. They are not aliases of variational `CISD` or `CCSD`.
+
 ```python
 from gradscf import gto, dft, ci
 

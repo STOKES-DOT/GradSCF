@@ -23,9 +23,9 @@ class CCConfig:
 
     def __post_init__(self):
         object.__setattr__(self, "method", self.method.lower())
-        if self.method not in {"ccs", "ccd", "ccsd", "cc2", "lccd", "lccsd"}:
+        if self.method not in {"ccs", "ccd", "ccsd", "cc2", "lccd", "lccsd", "qcisd"}:
             raise ValueError(
-                "Unsupported CC method; supported: CCS, CCD, CCSD, CC2, LCCD, LCCSD"
+                "Unsupported CC method; supported: CCS, CCD, CCSD, CC2, LCCD, LCCSD, QCISD"
             )
         if any(
             not isfinite(x) or x <= 0
