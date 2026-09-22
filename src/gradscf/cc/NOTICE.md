@@ -13,6 +13,7 @@ Other original GradSCF files retain the repository's license.
 | `_spin_equations.py` | [`pyscf/cc/gccsd.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/gccsd.py), `update_amps` and energy contractions | Real JAX physical residual with full Fock diagonal; no denominator division, solver loop, logging or PySCF object |
 | `_spin_intermediates.py` | [`pyscf/cc/gintermediates.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/gintermediates.py), `make_tau` and six `cc_` intermediates | JAX operations on in-core antisymmetrized spin-orbital blocks |
 | `_spin_triples.py` | [`pyscf/cc/gccsd_t.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/gccsd_t.py), `kernel` | Real canonical collinear inputs, static JAX loop, spin/Pauli-allowed denominator diagnostics, convergence/symmetry checks, separated connected/singles terms |
+| `_spin_triples.py`, `_general_correction` | [`pyscf/cc/gccsd_t_slow.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/gccsd_t_slow.py), `kernel` moment contractions | JAX W/V moments including F_vo*T2; common tensor resolvent replaces diagonal division to support noncanonical inputs and degenerate-factor response; explicit capacity guard |
 | `_spin_density.py` | [`pyscf/cc/gccsd_rdm.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/gccsd_rdm.py), `_gamma1_intermediates`, `_gamma2_intermediates`, active portions of `_make_rdm1/2` | Pure real JAX contractions and functional block assembly; reference/frozen terms restored separately by GradSCF |
 
 SHA-256 hashes of the installed upstream source files used in this adaptation:
@@ -24,6 +25,7 @@ ccsd_t_slow.py   4fd3638e0176639781ecb138575a226912c99301a1923b60d20351eec36ac96
 gccsd.py         6f01125b4dbac4af88034655cf3ac4ca8535c0c76336a5ae1e19e67f6840c42f
 gintermediates.py f8cbb93d5bc92eca817d3e29dd79795843fff9dcaef2f5ec0d8394555136083e
 gccsd_t.py       e9c07fc2ccbb3f31364d66330e6d4c83607a63a5929844cb81f0940c0802b4f3
+gccsd_t_slow.py  4b09954250221dab24ee8e62c5616bb83c01155c97f4c01ee292015d9b24425e
 gccsd_rdm.py     abdda0be8065755cf28767a646ca72b70fdae3c080ee9dc4ca47e8ca3696548f
 ```
 

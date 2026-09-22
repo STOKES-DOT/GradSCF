@@ -44,6 +44,8 @@ def evaluate_triples(
     variant="ccsd(t)",
     residual_tol=1e-8,
     canonical_tol=1e-7,
+    orbital_basis="canonical",
+    max_triples_elements=2_000_000,
 ):
     """Canonical R/U CCSD(T), or restricted Urban +T(CCSD), with diagnostics.
 
@@ -53,12 +55,29 @@ def evaluate_triples(
     Definitions were cross-checked against OpenMolcas CCT3; no Fortran was copied.
     result must retain its CCSD implicit amplitude response for total derivatives.
     No shifts are applied to the physical triples denominators.
+    orbital_basis='semicanonical' selects the general-reference formula,
+    including F_vo*T2, through the common tensor-sum inverse. That bounded
+    reference path stores (nocc_spin*nvir_spin)**3 elements per triples tensor;
+    it is not the canonical streaming algorithm. See SEMICANONICAL.md.
     """
+    if orbital_basis not in {"canonical", "semicanonical"}:
+        raise ValueError("orbital_basis must be 'canonical' or 'semicanonical'")
+    if orbital_basis == "semicanonical" and variant != "ccsd(t)":
+        raise NotImplementedError("Semicanonical triples currently implement only CCSD(T)")
+    if orbital_basis == "semicanonical" and not isinstance(nocc, (tuple, list)):
+        # The general-reference formula is shared in the spin-orbital kernel.
+        # Restricted and unrestricted amplitudes use different storage, not
+        # different occupied/virtual rotation conventions.
+        same_spin = result.t2-result.t2.swapaxes(2, 3)
+        result = result._replace(t1=(result.t1, result.t1),
+                                  t2=(same_spin, result.t2, same_spin))
+        h1, eri, nocc = (h1, h1), (eri, eri, eri), (nocc, nocc)
     if isinstance(nocc, (tuple, list)):
         from ._spin_triples import evaluate_ucc_triples
         return evaluate_ucc_triples(h1, eri, result, nocc=nocc, frozen=frozen,
             denominator_tol=denominator_tol, max_virtual_triples=max_virtual_triples,
-            variant=variant, residual_tol=residual_tol, canonical_tol=canonical_tol)
+            variant=variant, residual_tol=residual_tol, canonical_tol=canonical_tol,
+            orbital_basis=orbital_basis, max_triples_elements=max_triples_elements)
     variants = ("ccsd+t(ccsd)", "ccsd(t)")
     if variant not in variants:
         raise ValueError(f"Unknown triples variant {variant!r}; choose {variants}")
@@ -184,6 +203,8 @@ def triples_correction(
     variant="ccsd(t)",
     residual_tol=1e-8,
     canonical_tol=1e-7,
+    orbital_basis="canonical",
+    max_triples_elements=2_000_000,
 ):
     """Scalar correction; use evaluate_triples for decomposition and diagnostics."""
     return evaluate_triples(
@@ -197,4 +218,6 @@ def triples_correction(
         variant=variant,
         residual_tol=residual_tol,
         canonical_tol=canonical_tol,
+        orbital_basis=orbital_basis,
+        max_triples_elements=max_triples_elements,
     ).energy

@@ -123,7 +123,7 @@ For CCSD(T), add `triples_correction(h1, eri, result, nocc=...)` to the returned
 CCSD total energy **inside the differentiated function**. This retains the
 CCSD amplitude response and the direct dependence of the correction; a CCSD-only
 Lambda is not substituted for the derivative of the combined objective.
-The (T) path requires a canonical active Fock matrix and resolved denominators.
+The default (T) path requires a canonical active Fock matrix and resolved denominators.
 It streams symmetry-unique virtual triples and caps their count at 20,000 by
 default. It does not allocate the full six-index triples amplitude tensor.
 
@@ -154,8 +154,15 @@ The current 2-RDM path materializes dense spin-orbital intermediates.
 For real UHF/ROHF `make_rdm1` and `make_rdm2` use spin-resolved MO frames;
 `solve_lambda` returns `(la,lb)` and `(laa,lab,lbb)`. Canonical UHF `(T)` streams
 distinct spin-orbital virtual triples and retains the converged-amplitude
-response. Noncanonical/ordinary ROHF `(T)` inputs are rejected; automatic
-semicanonicalization and a general ROHF triples definition remain future work.
+response. For noncanonical or ordinary ROHF inputs, explicitly select
+`mycc.ccsd_t(orbital_basis="semicanonical")`. This general-reference formula
+includes `F_vo*T2` and uses the shared tensor-sum inverse, with implicit response
+that remains defined at within-block orbital degeneracies. It is algebraically
+equivalent to explicit semicanonicalization, without differentiating individual
+orbital eigenvectors. The opt-in reference implementation stores six-index
+moments with `max_triples_elements=2_000_000` per tensor; it is not streamed.
+Its Cartesian-spectrum singularity guard is conservative. See
+[the formulation and limits](SEMICANONICAL.md).
 See [the forward comparison and roadmap](FORWARD_PARITY.md).
 
 The OpenMolcas `CCSDT` program name must not be confused with fully iterative
@@ -164,7 +171,8 @@ CCSDT. Definitions and the inspected revision are in [OPENMOLCAS.md](OPENMOLCAS.
 Invalid denominators, nonconverged right states and failed adjoint solves are
 not silently converted to valid zero derivatives. Inspect result convergence
 and residuals; invalid implicit responses and low-level (T) corrections yield
-NaNs, while the facade rejects a failed/noncanonical (T) request explicitly.
+NaNs, while the facade rejects a failed correction or noncanonical input to the
+default canonical path explicitly.
 
 ## Scope and validation
 

@@ -153,3 +153,21 @@ Generic non-Hermitian EOM-CC Davidson/Arnoldi, biorthogonal vector response,
 variable-metric subspace response, and higher-order projector derivatives are future work.
 The present RPA implementation is not a generic non-Hermitian EOM solver.
 GPU behavior has not been validated in this migration.
+
+## Symmetric tensor-sum inverse
+
+`solve_tensor_sum(factors, rhs)` solves the sum of symmetric matrix actions on
+the corresponding tensor axes. Factor k must have shape
+`(rhs.shape[k], rhs.shape[k])`. It returns the solution, true residual norm,
+convergence and minimum absolute Cartesian eigenvalue sum. No full Kronecker
+matrix is built. The small-factor spectral bases are numerical factorizations;
+`custom_linear_solve` differentiates the live operator and RHS, including when
+individual factors have repeated eigenvalues.
+
+The full tensor-sum spectrum must be resolved above `denominator_tol`. This
+generic solver does not infer physical symmetry sectors or apply a pseudoinverse.
+Invalid factors or failed primal/tangent/adjoint residual checks produce invalid
+solutions. Storage is proportional to the full RHS tensor and factor matrices;
+callers remain responsible for their tensor allocation budget. CC's opt-in
+semicanonical triples path supplies such a budget. See
+[`cc/SEMICANONICAL.md`](../cc/SEMICANONICAL.md).

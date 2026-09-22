@@ -92,7 +92,8 @@ class CC:
         self.converged_lambda = bool(self.lambda_result.converged)
         return self.l1, self.l2
 
-    def triples(self, *, variant="ccsd(t)"):
+    def triples(self, *, variant="ccsd(t)", orbital_basis="canonical",
+                max_triples_elements=2_000_000):
         """Return a correction with residual, canonicality and denominator diagnostics."""
         ref = self._ready()
         if self.method != "ccsd":
@@ -106,15 +107,19 @@ class CC:
             denominator_tol=self.denominator_tol,
             residual_tol=self.residual_tol,
             variant=variant,
+            orbital_basis=orbital_basis,
+            max_triples_elements=max_triples_elements,
         )
         if not bool(result.valid):
             raise ValueError(
-                "Triples require matching converged CCSD amplitudes, canonical orbitals and resolved denominators"
+                "Triples require matching converged CCSD amplitudes, canonical orbitals "
+                "(unless orbital_basis='semicanonical'), and a resolved denominator solve"
             )
         return result
 
-    def ccsd_t(self):
-        return self.triples().energy
+    def ccsd_t(self, *, orbital_basis="canonical", max_triples_elements=2_000_000):
+        return self.triples(orbital_basis=orbital_basis,
+                            max_triples_elements=max_triples_elements).energy
 
     def make_rdm1(self):
         ref = self._ready()

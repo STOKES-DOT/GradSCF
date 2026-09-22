@@ -77,7 +77,13 @@ class LambdaResult(NamedTuple):
 
 
 class TriplesResult(NamedTuple):
-    """Noniterative correction and Hartree-valued diagnostics; no T3 iteration."""
+    """Noniterative correction and Hartree-valued diagnostics; no T3 iteration.
+
+    canonical_error measures the input active Fock off-diagonal entries. A
+    semicanonical calculation may be valid with nonzero canonical_error.
+    In that mode singles_component includes both T1*V and F_vo*T2 terms, and
+    min_abs_denominator covers the full Cartesian tensor-sum spectrum.
+    """
 
     energy: object
     connected_component: object

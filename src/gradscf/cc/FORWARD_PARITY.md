@@ -54,7 +54,7 @@ the CC hierarchy: each needs its own definition and numerical reference.
 | UHF/ROHF UCCSD/UCCD | Available | Add explicit Lambda and spin-resolved 1-RDMs |
 | Restricted conventional (T), Urban +T(CCSD) | Available | Preserve existing paths |
 | Canonical UHF CCSD(T) | Missing | Add streamed spin-orbital triples, diagnostics and amplitude response |
-| General ROHF/noncanonical triples | Missing | Still missing; reject rather than use diagonal Fock entries as if canonical |
+| Real ROHF/noncanonical triples | Missing | Opt-in semicanonical-equivalent tensor resolvent, including F_vo*T2; capacity and conservative spectrum guards |
 | R/U CCSD/CCD 2-RDM | Missing | Add true fermionic density with Lambda and frozen-core restoration |
 | CI/CC property state freshness | CC guarded; no CI density interface | Share reference fingerprints; reject stale CI densities |
 | Optimized tensor CI / low-memory CC | Missing | Still missing; full MO/spin tensors remain in use |
@@ -98,7 +98,7 @@ The CCSD 2-RDM also covers its CCS/CCD cluster restrictions. CC2/linearized-mode
 All these densities are orbital-unrelaxed; nuclear gradients require additional
 orbital/integral response.
 
-UCCSD(T) uses distinct virtual spin-orbital triples, occupied-cube intermediates,
+Default canonical UCCSD(T) uses distinct virtual spin-orbital triples, occupied-cube intermediates,
 physical unshifted denominators and explicit spin/Pauli masks. It validates the
 current CCSD residual, active Fock canonicality and amplitude antisymmetry, even
 when the triples space is empty. Invalid low-level corrections return NaNs with
@@ -106,10 +106,16 @@ when the triples space is empty. Invalid low-level corrections return NaNs with
 virtual triples. No full T3 tensor, PySCF runtime, denominator clipping that
 changes the valid theory, or independent solver implementation is introduced.
 
+The subsequent `orbital_basis="semicanonical"` increment adds a bounded
+six-index reference path for real ROHF/noncanonical input. It uses the
+general-reference `F_vo*T2` term and a shared tensor-sum inverse, avoiding
+eigenvector derivatives at degenerate Fock eigenvalues. Its memory use and
+conservative Cartesian-spectrum policy differ from the default streamed
+canonical path; see [SEMICANONICAL.md](SEMICANONICAL.md).
+
 ## Next stages
 
-1. Finish conventional ground-state breadth: define and validate a general ROHF
-   triples/semicanonical convention, QCISD/(T), CID, CI spin diagnostics and
+1. Finish conventional ground-state breadth: QCISD/(T), CID, CI spin diagnostics and
    selection, AO densities/one-electron property conveniences, robust checkpoint
    restart and correlated-gradient boundaries. Add each method with an oracle.
 2. Add EOM-EE/IP/EA then SF, left/right states, transition densities and oscillator

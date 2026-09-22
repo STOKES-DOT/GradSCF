@@ -1,5 +1,66 @@
 # Ground-state CC validation
 
+## Semicanonical real-reference triples — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, increment based on `748df39`. Same local
+arm64 CPU, JAX 0.8.1, PySCF 2.9.0 and float64 environment as the preceding stage.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/cc tests/ci tests/solvers
+```
+
+**174 passed, 2 warnings, 437.32 seconds**, no skips. The warnings are PySCF's
+OpenMP-availability warnings. After this invocation, review identified that an
+empty tensor RHS bypassed validation of other nonempty factors. A failing
+regression was added, the input check was moved before the empty-space return,
+and `tests/solvers/test_tensor_sum.py` passed separately (**3 passed, 2.78 seconds**).
+The final selection contains 175 distinct tests; all have been exercised across
+these invocations. The second run repeats two existing tensor-sum cases and
+adds the empty-input case, rather than constituting three additional tests.
+
+The new CC checks cover:
+
+- OH/STO-3G ROHF, R=0.97 Angstrom, no frozen orbitals, one frozen core per spin,
+  and an alpha-only frozen core, compared with independently semicanonicalized
+  PySCF UCCSD/(T). Energy tolerance: 2e-10 Hartree for the correction.
+- Random independent alpha/beta occupied and virtual rotations, seed 51,
+  with consistent integral/amplitude transformation: invariant (T) to 2e-12 Hartree.
+- RHF H4/STO-3G canonical equivalence (2e-11 Hartree), and JIT total-energy
+  response to noncanonical perturbations versus reconverged finite differences
+  (step 1e-4; absolute derivative tolerance 2e-7).
+- An interacting synthetic model, seed 52, with exact within-spin occupied and
+  virtual degeneracies; JIT triples response versus finite differences to 2e-9.
+- Empty triples and invalid-state/API/capacity rejection.
+
+The generic tensor solver was checked against a dense Kronecker matrix, including
+exact factor degeneracy and JVP/VJP agreement. Independent review also probed
+simultaneously varying factors/RHS and found value/first/second derivative errors
+of 8.33e-17, 0 and 1.73e-16 against a 12-by-12 dense solve. That extra probe does
+not establish full CCSD(T) second derivatives.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python examples/cc/semicanonical_triples.py
+```
+
+This native GradSCF example passed with OH/STO-3G at 0.97 Angstrom, spin=1,
+SCF `conv_tol=1e-12`, CC `conv_tol=1e-12`, residual tolerance 1e-10:
+
+| Reference | CCSD / Hartree | Semicanonical (T) / Hartree | CCSD(T) / Hartree |
+| --- | ---: | ---: | ---: |
+| UHF | -74.3871842074733 | -2.3003890403e-7 | -74.3871844375122 |
+| ROHF | -74.38718434215826 | -1.6519820636e-7 | -74.38718450735647 |
+
+The input Fock off-diagonal maxima were 2.34e-10 and 0.02301698 Hartree.
+The UHF semicanonical correction also matched the default streamed correction
+within 1e-11 Hartree. No PySCF runtime is used by this example. Example time
+was not separately measured; this is validation, not a performance benchmark.
+Full-memory moments, the per-tensor capacity guard and the conservative full
+Cartesian-spectrum singularity check are explained in [SEMICANONICAL.md](SEMICANONICAL.md).
+GPU, large-basis scaling, spin-adapted ROCCSD and complete nuclear gradients
+remain outside the validated contract.
+
 ## CI/CC forward properties — 2026-09-22
 
 Branch: `feat/ci-cc-forward-parity`, based on `52d2d93`. Environment:

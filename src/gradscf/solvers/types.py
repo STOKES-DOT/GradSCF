@@ -60,6 +60,13 @@ class LinearResult(NamedTuple):
     status: Array
 
 
+class TensorSumResult(NamedTuple):
+    solution: Array
+    residual_norm: Array
+    converged: Array
+    min_abs_denominator: Array
+
+
 class EigenResult(NamedTuple):
     values: Array
     vectors: Array
