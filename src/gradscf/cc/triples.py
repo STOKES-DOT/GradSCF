@@ -45,7 +45,7 @@ def evaluate_triples(
     residual_tol=1e-8,
     canonical_tol=1e-7,
 ):
-    """Canonical RHF CCSD(T) or Urban CCSD+T(CCSD), with state diagnostics.
+    """Canonical R/U CCSD(T), or restricted Urban +T(CCSD), with diagnostics.
 
     Urban et al. (1985), doi:10.1063/1.449067, retains only the connected
     WT2 contribution. Raghavachari et al. (1989),
@@ -54,6 +54,11 @@ def evaluate_triples(
     result must retain its CCSD implicit amplitude response for total derivatives.
     No shifts are applied to the physical triples denominators.
     """
+    if isinstance(nocc, (tuple, list)):
+        from ._spin_triples import evaluate_ucc_triples
+        return evaluate_ucc_triples(h1, eri, result, nocc=nocc, frozen=frozen,
+            denominator_tol=denominator_tol, max_virtual_triples=max_virtual_triples,
+            variant=variant, residual_tol=residual_tol, canonical_tol=canonical_tol)
     variants = ("ccsd+t(ccsd)", "ccsd(t)")
     if variant not in variants:
         raise ValueError(f"Unknown triples variant {variant!r}; choose {variants}")

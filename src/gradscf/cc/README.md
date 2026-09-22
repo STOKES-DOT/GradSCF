@@ -9,7 +9,9 @@ Real UHF/ROHF-based `UCCSD` and `UCCD` are also available. `CCSD(mf)` and
 `CCD(mf)` select the equations from the reference. See
 [Open-shell post-HF](OPEN_SHELL.md) for spin-block amplitudes, frozen orbitals,
 implicit response and the current in-core limits. The remaining methods and
-triples/property examples below apply to restricted closed-shell references.
+Urban triples and non-CCSD/CCD model examples below apply to restricted
+closed-shell references. Canonical UHF CCSD(T), UCCSD/UCCD Lambda and spin-resolved
+densities are available through the same functional and facade methods.
 
 Method citations are in [REFERENCES.md](REFERENCES.md). Some contraction code
 is adapted from PySCF 2.9.0 under Apache-2.0; see [NOTICE.md](NOTICE.md).
@@ -33,6 +35,7 @@ print(mycc.e_tot + e_triples)
 urban = mycc.triples(variant="ccsd+t(ccsd)")
 print(mycc.e_tot + urban.energy, urban.min_abs_denominator)
 dm1 = mycc.make_rdm1()  # spin-summed MO density, including frozen cores
+dm2 = mycc.make_rdm2()  # chemists' order; includes the CC Lambda state
 ```
 
 `CCS`, `CCD`, `CC2`, `LCCD`, and `LCCSD` use the same constructor convention;
@@ -138,6 +141,22 @@ It includes Lambda, restores frozen-core occupations and retains T/Lambda respon
 under an outer derivative. This density is orbital-unrelaxed and belongs to the
 selected CC model, not CCSD(T). The facade solves Lambda automatically and rejects
 a failed response. This is not a nuclear-gradient interface.
+
+`make_rdm2` returns the real Hermitian part of the CCSD left/right two-particle
+density, `dm2[p,q,r,s] = <a_p^+ a_r^+ a_s a_q>`, including frozen-core terms.
+Restricted output is spin summed; UCC output is `(aa,ab,bb)`. Their two-electron
+energy contraction weights are `1/2` (restricted) and `(1/2,1,1/2)` (unrestricted).
+Its contractions preserve fermionic symmetries; this is not an eightfold
+symmetrized ERI derivative. CCS/CCD use the corresponding restricted cluster
+space. CC2/linearized-model 2-RDMs and CCSD(T) densities are not implemented.
+The current 2-RDM path materializes dense spin-orbital intermediates.
+
+For real UHF/ROHF `make_rdm1` and `make_rdm2` use spin-resolved MO frames;
+`solve_lambda` returns `(la,lb)` and `(laa,lab,lbb)`. Canonical UHF `(T)` streams
+distinct spin-orbital virtual triples and retains the converged-amplitude
+response. Noncanonical/ordinary ROHF `(T)` inputs are rejected; automatic
+semicanonicalization and a general ROHF triples definition remain future work.
+See [the forward comparison and roadmap](FORWARD_PARITY.md).
 
 The OpenMolcas `CCSDT` program name must not be confused with fully iterative
 CCSDT. Definitions and the inspected revision are in [OPENMOLCAS.md](OPENMOLCAS.md).

@@ -1,4 +1,56 @@
-# Restricted ground-state CC validation — 2026-09-21
+# Ground-state CC validation
+
+## CI/CC forward properties — 2026-09-22
+
+Branch: `feat/ci-cc-forward-parity`, based on `52d2d93`. Environment:
+macOS 26.6.2 arm64 CPU, JAX 0.8.1, PySCF 2.9.0, float64.
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  python -m pytest -q tests/ci tests/cc tests/solvers/test_nonlinear.py
+```
+
+**126 passed, 2 warnings, 317.42 seconds**, with no skips. Both warnings report
+that the installed PySCF lacks OpenMP; they do not indicate a failed calculation.
+A subsequently added independent arbitrary-amplitude spin-density oracle test,
+`tests/cc/test_forward_properties.py::test_spin_density_parts_arbitrary_amplitudes_against_pyscf`,
+passed separately (**1 passed, 3.34 seconds**). Thus 127 distinct test cases were
+verified across these two invocations, not in one combined invocation.
+
+This includes 22 new cases: real CI 1/2-RDMs against FCI, arbitrary normalized
+vectors, frozen electrons and virtuals, UCC Lambda and density comparisons,
+R/U CCSD 2-RDM energy/particle-number identities, canonical UCCSD(T) against
+PySCF for OH/6-31G with/without a frozen core, restricted-limit agreement,
+JIT and fixed-MO response finite differences, empty spin/amplitude spaces,
+invalid/stale-state rejection and arbitrary same-spin density contractions.
+
+The initial baseline worktree lacked the native integral library (99 passed,
+4 failed during SCF initialization). Reusing the same compiled CPU library from
+the parent checkout resolved all four failures; those four tests passed before
+the full regression above. No mathematical backend fallback was used.
+
+The standalone `examples/cc/open_shell_properties.py` ran successfully with
+GradSCF native CPU UHF, OH at 0.97 Angstrom, STO-3G, spin=1, SCF `conv_tol=1e-12`,
+CI `conv_tol=1e-10`, CC `conv_tol=1e-12` and `residual_tol=1e-10`:
+
+| Quantity | Measured value |
+| --- | ---: |
+| UHF energy / Hartree | -74.3626691947672 |
+| UCISD energy / Hartree | -74.38718440414765 |
+| UCCSD energy / Hartree | -74.3871842074733 |
+| UCCSD(T) energy / Hartree | -74.3871844375122 |
+| UCISD density energy reconstruction error / Hartree | 1.99e-13 |
+| UCCSD density energy reconstruction error / Hartree | -7.11e-14 |
+| Alpha/beta density traces | 5 / 4 |
+| Lambda converged | True |
+
+No PySCF runtime is used in this example. It is a numerical smoke test, not a
+performance benchmark; example wall time was not separately measured. GPU,
+large-basis performance, general ROHF triples, complete nuclear gradients and
+CCSD(T) densities remain unvalidated/unimplemented as specified in
+[FORWARD_PARITY.md](FORWARD_PARITY.md). No full repository test-suite claim is made.
+
+## Restricted ground-state CC — 2026-09-21
 
 Environment: arm64 CPU (`TFRT_CPU_0`), JAX 0.8.1, PySCF 2.9.0, float64.
 Tests were run in the isolated `feat/cc-ground-state` worktree.

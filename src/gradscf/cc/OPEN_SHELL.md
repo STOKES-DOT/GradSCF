@@ -21,9 +21,16 @@ ROHF orbitals are not generally stationary for independent alpha/beta orbital
 rotations, so `UCIS` rejects nonzero spin Fock occupied-virtual blocks. Variational
 rank-truncated CI and UCCSD can use these noncanonical reference orbitals.
 
-Unrestricted CC2, LCCSD, LCCD, triples corrections, explicit Lambda and density
-facades, spin-flip CIS, complex orbitals and spin-mixed GHF are not exposed as
-implemented methods. Restricted `CIS_D` and `(T)` do not accept unrestricted inputs.
+Unrestricted CC2, LCCSD, LCCD, spin-flip CIS, complex orbitals and spin-mixed
+GHF are not exposed as implemented methods. `CIS_D` remains restricted.
+
+UCCSD/UCCD now expose Lambda and MO 1/2-RDMs, including spin-dependent frozen
+orbitals. `ccsd_t()` / `triples_correction` also accept canonical real UHF CCSD
+states. The entire active Fock matrix must be diagonal within `canonical_tol`;
+ordinary ROHF or rotated noncanonical inputs are rejected, not silently treated
+as canonical. Automatic semicanonicalization and a general ROHF triples
+formulation are not implemented. Only the conventional `(T)` variant is exposed
+for unrestricted inputs. No CCSD(T) density or nuclear-gradient facade is claimed.
 
 ## Hamiltonian and coordinates
 

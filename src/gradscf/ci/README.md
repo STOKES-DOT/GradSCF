@@ -145,11 +145,37 @@ the Fock matrix is diagonal and consistent with the supplied orbital energies.
   construction stops at 1,000,000 stored diagonal/undirected connections.
   Dense verification is limited to 2048 determinants. Reducing the orbital
   space or excitation rank is preferable to simply increasing these limits.
-- GHF, complex orbitals, periodic CI, RDM/property APIs, and automatic
+- GHF, complex orbitals, periodic CI, and automatic
   spin selection for general CI roots are not implemented.
 - Named `CISD(T)` / `CISDT(Q)` corrections are not exported. They need a specific
   perturbative definition and reference implementation; these names are not
   inferred from the coupled-cluster hierarchy.
+
+## Reduced density matrices
+
+Determinant CI objects expose `make_rdm1(root=0)`, `make_rdm2(root=0)` and
+`make_rdm12(root=0)`. The functional forms accept `(coefficients, space)` and
+work under JIT/AD. The coefficients are normalized internally; zero or nonfinite
+vectors yield NaNs. No extra diagonalization or integral construction occurs.
+The facade requires a converged root and unchanged reference/rank/frozen inputs.
+CIS/TDA amplitudes and CIS(D) corrected results are not determinant vectors and
+do not inherit a density interpretation through these methods.
+
+Restricted densities are spin summed. Unrestricted 1/2-RDMs return `(a,b)` and
+`(aa,ab,bb)`, in their respective MO frames, with frozen electrons included.
+The convention is `dm1[p,q] = <a_q^+ a_p>` and
+`dm2[p,q,r,s] = <a_p^+ a_r^+ a_s a_q>`. Contract restricted ERIs with `dm2/2`;
+the unrestricted `(aa,ab,bb)` contraction factors are `(1/2,1,1/2)`.
+These are full fermionic densities, not individually pair-symmetrized ERI
+derivatives. Their trace and contraction are `Tr(dm1)=N` and
+`sum_r dm2[p,q,r,r]=(N-1)*dm1[q,p]` in the real spin-summed representation.
+Use `gradient_mode="implicit_eigenvector"` for integral derivatives of a density;
+the default energy-only mode intentionally stops CI coefficient response.
+
+The implementation stores static operator connections (up to 4,000,000 per
+density rank) and full MO density arrays. It remains a small-system reference
+implementation; transition densities, AO output and general spin diagnostics
+are future work. See [forward parity and remaining gaps](../cc/FORWARD_PARITY.md).
 
 ## Reproduce the checks
 

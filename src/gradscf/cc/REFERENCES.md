@@ -14,6 +14,8 @@ modified routines, hashes, and license are in [NOTICE.md](NOTICE.md).
 | CCSD+T(CCSD) | Urban et al. (1985); pure connected WT2 term distinguished in OpenMolcas CCT3 | Independent determinant-space triple moments and a connected-only PySCF oracle |
 | Lambda/implicit response | Stationary Lagrangian E + lambda^T R; general CC response theory in Bartlett–Musiał (2007) | Nonredundant coordinate adjoint, spin-adapted dual conversion, and PySCF CCSD l1/l2 comparison |
 | UCCSD / UCCD | Spin-orbital CCSD equations; PySCF `gintermediates` cites Gauss–Stanton (1995), Table III | PySCF UCCSD energies and spin-block amplitudes, random-amplitude GCCSD residuals, and implicit-response finite differences; see [open-shell conventions](OPEN_SHELL.md) |
+| Canonical UCCSD(T) | Watts, Gauss and Bartlett (1993), spin-orbital formula attributed by PySCF `gccsd_t` | OH/6-31G all-electron/frozen-core comparison to PySCF UCCSD(T), restricted limit, JIT and reconverged finite differences; no general ROHF/noncanonical correction is claimed |
+| CCSD 1/2-RDM | Real Hermitian part of the CC left/right expectation; 2-RDM contractions adapted from PySCF `gccsd_rdm` | R/U PySCF density comparisons, full energy reconstruction, contraction identities and outer-response finite differences |
 
 ## Bibliography
 
@@ -64,3 +66,12 @@ of the cross-check are recorded in [OPENMOLCAS.md](OPENMOLCAS.md).
    [author's publication list](https://www.tc.uni-mainz.de/publikationen/publikationen-juergen-gauss/).
    The Table III attribution is inherited from the inspected PySCF source;
    this work does not claim an independent full-text audit of that table.
+
+8. J. D. Watts, J. Gauss, and R. J. Bartlett,
+   “Coupled-cluster methods with noniterative triple excitations for restricted
+   open-shell Hartree-Fock and other general single determinant reference
+   functions. Energies and analytical gradients,” *J. Chem. Phys.* **98**,
+   8718–8733 (1993). [DOI: 10.1063/1.464480](https://doi.org/10.1063/1.464480).
+   The attribution is present in the inspected PySCF source and the Gaussian
+   keyword documentation. Only its canonical collinear specialization is
+   implemented here; this citation does not claim all formulations in the paper.

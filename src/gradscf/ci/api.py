@@ -8,7 +8,10 @@ from ..integrals.mo import spin_orbital_integrals
 from .solver import restricted_fock
 from .corrections import cis_d_correction
 from .types import CIConfig
+from .properties import make_rdm1, make_rdm2, make_rdm12
 from ..scf.reference import unrestricted_reference_from_source, is_unrestricted_source
+from ..scf.reference import reference_state_signature, UnrestrictedReference
+from ..integrals.mo import frozen_indices, unrestricted_frozen_indices
 
 
 class CI:
@@ -37,6 +40,14 @@ class CI:
         self.max_determinants = max_determinants
         self.result = self.reference = self.space = None
         self.e_tot = self.e_corr = self.ci = self.converged = None
+        self._state_key = None
+
+    def _physical_state_key(self):
+        ref = self.reference
+        frozen = (unrestricted_frozen_indices(ref.h1[0].shape[0], ref.nocc, self.frozen)
+                  if isinstance(ref, UnrestrictedReference)
+                  else frozen_indices(ref.h1.shape[0], ref.nocc, self.frozen))
+        return self.max_excitation, frozen, reference_state_signature(self.mf)
 
     def _config(self):
         return CIConfig(nroots=self.nroots, solver=self.solver, conv_tol=self.conv_tol,
@@ -52,6 +63,7 @@ class CI:
                                    frozen=self.frozen, max_determinants=self.max_determinants)
         self.result = solve_ci(ref.h1, ref.eri, self.space,
                                nuclear_repulsion=ref.nuclear_repulsion, config=self._config())
+        self._state_key = self._physical_state_key()
         self.e_tot = self.result.total_energies
         self.e_corr = self.result.correlation_energies
         self.ci = self.result.coefficients
@@ -64,6 +76,26 @@ class CI:
     def run(self):
         self.kernel()
         return self
+
+    def _density_vector(self, root):
+        if self.result is None or self.space is None or not hasattr(self.result, "coefficients"):
+            raise RuntimeError("Run determinant CI before evaluating its density")
+        if self._physical_state_key() != self._state_key:
+            raise RuntimeError("CI reference, excitation rank or frozen space changed; run kernel() again")
+        if not isinstance(root, (int, np.integer)) or not 0 <= root < len(self.result.converged):
+            raise ValueError("root must select an available CI root")
+        if not bool(self.result.converged[root]):
+            raise RuntimeError("Converge the selected CI root before evaluating its density")
+        return self.result.coefficients[:, root]
+
+    def make_rdm1(self, *, root=0):
+        return make_rdm1(self._density_vector(root), self.space)
+
+    def make_rdm2(self, *, root=0):
+        return make_rdm2(self._density_vector(root), self.space)
+
+    def make_rdm12(self, *, root=0):
+        return make_rdm12(self._density_vector(root), self.space)
 
 
 class CISD(CI):
@@ -90,6 +122,7 @@ class UCI(CI):
                                     max_determinants=self.max_determinants)
         self.result = solve_ci(ref.h1, ref.eri, self.space,
                                nuclear_repulsion=ref.nuclear_repulsion, config=self._config())
+        self._state_key = self._physical_state_key()
         self.e_tot, self.e_corr, self.ci = (self.result.total_energies,
                                           self.result.correlation_energies,
                                           self.result.coefficients)
