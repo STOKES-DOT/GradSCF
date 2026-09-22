@@ -118,10 +118,20 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
 - Failed eigenpairs remain inspectable; their derivatives are NaN. Failed
   linear or adjoint solves return NaNs. Residual predicates stay inside opaque
   linear solves so that the tangent map can still be transposed correctly.
-- RPA energy response uses the indefinite metric, not a Hermitian problem
-  obtained by symmetrizing the RPA matrix. The real Davidson and complex dense
-  paths expose eigenvalue-only response; X/Y response is not implemented.
-  RPA roots must be isolated, real-frequency and of positive metric norm.
+- Legacy RPA energy response uses the indefinite metric. The real structured
+  Davidson and complex dense paths retain eigenvalue-only response with stopped
+  X/Y. RPA roots must be isolated, real-frequency and of positive metric norm.
+- `solve_stable_rpa(A,B,config=EigenSolverConfig(method="dense",...))` adds a
+  bounded real symmetric reference path with isolated X/Y response. It requires
+  positive-definite A-B and A+B and uses the Cholesky-Hermitian reduction, not
+  symmetrization of the doubled RPA matrix. Both the reduced and reconstructed
+  physical residuals must pass. `RPAResult` reports values, column X/Y with
+  `X.T@X-Y.T@Y=I`, residuals, convergence, stability and response validity, plus
+  `min eig(A-B), min eig(A+B)`. Invalid stability returns NaN physical outputs.
+  Internal/boundary degeneracy invalidates derivatives of the whole requested
+  root set; a smaller isolated prefix can be requested. The default config uses
+  vector response; explicitly supplied configs honor their gradient_mode.
+  `eigenvalue_only` stops both X/Y, including their reconstruction dependence.
 - `regularized_eigh` preserves the existing SCF gap-broadening policy near
   degeneracy. `inverse_sqrt` differentiates the matrix function through a
   Sylvester equation at repeated positive eigenvalues. Existing SCF second,

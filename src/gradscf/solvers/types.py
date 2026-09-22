@@ -92,3 +92,20 @@ class SpectralProjectorResult(NamedTuple):
     converged: Array
     response_valid: Array
     status: Array
+
+
+class RPAResult(NamedTuple):
+    """Stable real RPA roots, column amplitudes and nondifferentiable diagnostics.
+
+    stability_margins contains min eig(A-B), min eig(A+B). Unstable or invalid
+    blocks return NaN physical outputs. response_valid additionally tests the
+    isolated-root gap, including the extra excluded root when available.
+    """
+    values: Array
+    x: Array
+    y: Array
+    residual_norms: Array
+    converged: Array
+    stable: Array
+    response_valid: Array
+    stability_margins: Array
