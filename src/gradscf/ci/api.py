@@ -2,7 +2,8 @@
 import numpy as np
 
 from .integrals import reference_from_source
-from .space import make_ci_space, make_uci_space
+from .space import make_ci_space, make_uci_space, _selected_ranks
+from .spin import spin_square
 from .solver import solve_ci, solve_cis, solve_ucis
 from ..integrals.mo import spin_orbital_integrals
 from .solver import restricted_fock
@@ -25,9 +26,10 @@ class CI:
     def __init__(self, mf, *, max_excitation=2, frozen=None, nroots=1,
                  solver="davidson", conv_tol=1e-9, max_cycle=100, max_space=None,
                  gradient_mode="eigenvalue_only", adjoint_tol=1e-10,
-                 adjoint_max_cycle=100, max_determinants=5000):
+                 adjoint_max_cycle=100, max_determinants=5000, excitation_ranks=None):
         self.mf = mf
         self.max_excitation = max_excitation
+        self.excitation_ranks = _selected_ranks(max_excitation, excitation_ranks)
         self.frozen = frozen
         self.nroots = nroots
         self.solver = solver
@@ -47,7 +49,8 @@ class CI:
         frozen = (unrestricted_frozen_indices(ref.h1[0].shape[0], ref.nocc, self.frozen)
                   if isinstance(ref, UnrestrictedReference)
                   else frozen_indices(ref.h1.shape[0], ref.nocc, self.frozen))
-        return self.max_excitation, frozen, reference_state_signature(self.mf)
+        return (self.max_excitation, _selected_ranks(self.max_excitation, self.excitation_ranks),
+                frozen, reference_state_signature(self.mf))
 
     def _config(self):
         return CIConfig(nroots=self.nroots, solver=self.solver, conv_tol=self.conv_tol,
@@ -60,7 +63,8 @@ class CI:
             return UCI.kernel(self)
         self.reference = ref = reference_from_source(self.mf)
         self.space = make_ci_space(ref.h1.shape[0], ref.nocc, max_excitation=self.max_excitation,
-                                   frozen=self.frozen, max_determinants=self.max_determinants)
+                                   frozen=self.frozen, max_determinants=self.max_determinants,
+                                   excitation_ranks=self.excitation_ranks)
         self.result = solve_ci(ref.h1, ref.eri, self.space,
                                nuclear_repulsion=ref.nuclear_repulsion, config=self._config())
         self._state_key = self._physical_state_key()
@@ -97,6 +101,25 @@ class CI:
     def make_rdm12(self, *, root=0):
         return make_rdm12(self._density_vector(root), self.space)
 
+    def spin_square(self, *, root=0, overlap_ab=None):
+        """Total-spin diagnostic; SCF-backed UHF supplies its actual MO overlap."""
+        vector = self._density_vector(root)
+        if isinstance(self.reference, UnrestrictedReference) and overlap_ab is None:
+            if not hasattr(self.mf, "mo_coeff"):
+                raise ValueError("An explicit UnrestrictedReference requires overlap_ab")
+            coeff = np.asarray(self.mf.mo_coeff)
+            if coeff.ndim == 2:  # ROHF: a common orthonormal spatial frame.
+                overlap_ab = np.eye(coeff.shape[1])
+            else:
+                overlap_ab = coeff[0].T @ np.asarray(self.mf.reference.overlap_matrix) @ coeff[1]
+        return spin_square(vector, self.space, overlap_ab=overlap_ab)
+
+
+class CID(CI):
+    """Reference plus all double substitutions; no single substitutions."""
+    def __init__(self, mf, **kwargs):
+        super().__init__(mf, max_excitation=2, excitation_ranks=(0, 2), **kwargs)
+
 
 class CISD(CI):
     def __init__(self, mf, **kwargs):
@@ -119,7 +142,8 @@ class UCI(CI):
         self.reference = ref = unrestricted_reference_from_source(self.mf)
         self.space = make_uci_space(ref.h1[0].shape[0], ref.nocc,
                                     max_excitation=self.max_excitation, frozen=self.frozen,
-                                    max_determinants=self.max_determinants)
+                                    max_determinants=self.max_determinants,
+                                    excitation_ranks=self.excitation_ranks)
         self.result = solve_ci(ref.h1, ref.eri, self.space,
                                nuclear_repulsion=ref.nuclear_repulsion, config=self._config())
         self._state_key = self._physical_state_key()
@@ -131,6 +155,11 @@ class UCI(CI):
             self.e_tot, self.e_corr, self.ci = self.e_tot[0], self.e_corr[0], self.ci[:, 0]
             self.converged = bool(self.converged[0])
         return self.e_corr, self.ci
+
+
+class UCID(UCI):
+    def __init__(self, mf, **kwargs):
+        super().__init__(mf, max_excitation=2, excitation_ranks=(0, 2), **kwargs)
 
 
 class UCISD(UCI):
@@ -151,10 +180,14 @@ class UCISDTQ(UCI):
 class UCIS(UCI):
     """Spin-conserving UHF/TDA singles; no singlet/triplet label."""
     def __init__(self, mf, **kwargs):
+        if kwargs.get("excitation_ranks") is not None:
+            raise ValueError("UCIS has a fixed singles space; excitation_ranks is not supported")
         super().__init__(mf, max_excitation=1, **kwargs)
         self.e = self.amplitudes = None
 
     def kernel(self):
+        if self.excitation_ranks is not None:
+            raise ValueError("UCIS has a fixed singles space; excitation_ranks is not supported")
         self.reference = ref = unrestricted_reference_from_source(self.mf)
         h, g = spin_orbital_integrals(ref.h1, ref.eri)
         n = h.shape[0]//2
@@ -173,6 +206,8 @@ class UCIS(UCI):
 class CIS(CI):
     """Spin-adapted HF singles. e is an array of excitation energies in Hartree."""
     def __init__(self, mf, *, singlet=None, **kwargs):
+        if kwargs.get("excitation_ranks") is not None:
+            raise ValueError("CIS has a fixed singles space; excitation_ranks is not supported")
         if is_unrestricted_source(mf) and singlet is not None:
             raise ValueError("Unrestricted CIS has no singlet/triplet selection; use UCIS")
         super().__init__(mf, max_excitation=1, **kwargs)
@@ -180,6 +215,8 @@ class CIS(CI):
         self.e = self.amplitudes = None
 
     def kernel(self):
+        if self.excitation_ranks is not None:
+            raise ValueError("CIS has a fixed singles space; excitation_ranks is not supported")
         if is_unrestricted_source(self.mf):
             return UCIS.kernel(self)
         self.reference = ref = reference_from_source(self.mf)

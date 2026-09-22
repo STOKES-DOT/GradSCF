@@ -109,6 +109,11 @@ class _BaseKS:
 
         return CISD(self, **kwargs)
 
+    def CID(self, **kwargs: Any) -> Any:
+        from ..ci import CID
+
+        return CID(self, **kwargs)
+
     def CISDT(self, **kwargs: Any) -> Any:
         from ..ci import CISDT
 

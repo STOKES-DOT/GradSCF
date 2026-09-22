@@ -16,6 +16,7 @@ Method references and their connection to the implementation are recorded in
 | --- | --- |
 | `CIS(mf, singlet=True/False)` | Spin-adapted singles; excitation energies relative to HF |
 | `CIS_D(mf)` | Canonical RHF singlet CIS(D); corrected excitation energies |
+| `CID(mf)` / `UCID(mf)` | Reference plus all double substitutions, excluding singles |
 | `CISD(mf)` / `UCISD(mf)` | Reference plus all singles and doubles, fixed (N-alpha, N-beta) |
 | `CISDT(mf)` / `UCISDT(mf)` | Reference plus all excitations through triples |
 | `CISDTQ(mf)` / `UCISDTQ(mf)` | Reference plus all excitations through quadruples |
@@ -59,6 +60,14 @@ half that squared norm; the legacy GradSCF CIS(D) adapter converts explicitly.
 `frozen=[0, 1, 8]` freezes arbitrary occupied or virtual spatial orbitals.
 Frozen electrons remain in all determinants: their core energy and interactions
 with active electrons are retained rather than removed by array slicing.
+
+`CI(..., excitation_ranks=(0,2))` and the same argument to the space builders
+select the CID space directly; the default `None` retains the usual hierarchy.
+Determinant CI objects expose `spin_square(root=0)`, returning `<S^2>` and an
+effective multiplicity. UHF-backed objects use their actual alpha/beta orbital
+overlap; explicit unrestricted MO inputs must provide `overlap_ab`.
+This diagnoses spin without projecting it or changing the selected roots.
+See [CID and spin conventions](CID_SPIN.md).
 
 ## Functional and differentiable API
 
@@ -178,7 +187,7 @@ the default energy-only mode intentionally stops CI coefficient response.
 
 The implementation stores static operator connections (up to 4,000,000 per
 density rank) and full MO density arrays. It remains a small-system reference
-implementation; transition densities, AO output and general spin diagnostics
+implementation; transition densities, AO output and automatic total-spin selection
 are future work. See [forward parity and remaining gaps](../cc/FORWARD_PARITY.md).
 
 ## Reproduce the checks

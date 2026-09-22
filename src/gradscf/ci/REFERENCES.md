@@ -18,6 +18,8 @@ different purposes and are identified separately below.
 | PySCF CISD, HF-TDA and FCI test oracles; public API conventions | Sun2020 | Reference software attribution, separate from the theoretical definition of CI or CIS(D) |
 | `make_uci_space`, UCISD/UCISDT/UCISDTQ | Slater1929; Condon1930; Sherrill1999 | The same determinant CI hierarchy in a fixed (N-alpha,N-beta) sector with separate orbital frames; no new perturbation model or spin adaptation |
 | `solve_ucis` | Singles projection of the same Hamiltonian, subtracting the HF determinant energy | PySCF UHF/TDA comparison for a stationary UHF reference; this does not implement spin-flip CIS or a ROHF response theory |
+| `CID`, `UCID`, explicit excitation ranks | Reference plus all double substitutions; same Slater–Condon Hamiltonian and variational principle | Independent rank-projected PySCF FCI matrix, including frozen spaces; no pair-only or CCD interpretation |
+| `spin_square` | S^2 = Sz^2 + (S+ S- + S- S+)/2, contracted with normalized mixed-spin 2-RDM and cross-frame overlaps | PySCF `fci.spin_op` oracle for common/distinct frames, pure-spin states and frozen electrons; diagnostics only |
 
 The production singlet CIS(D) adapter reuses the existing repository function
 `gradscf.tddft.cisd.restricted_cisd_second_order_correction`. The project-level

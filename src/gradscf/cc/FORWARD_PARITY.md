@@ -49,7 +49,8 @@ the CC hierarchy: each needs its own definition and numerical reference.
 | --- | --- | --- |
 | Restricted CIS, singlet CIS(D) | Available | Unchanged |
 | UHF/ROHF determinant CI through arbitrary rank | Available, small spaces | Add normalized 1/2-RDMs and per-root facade access |
-| Spin selection for general CI roots | Fixed M_s only | Still missing; CIS singlet/triplet adaptation is separate |
+| CID/UCID | Missing | Reference plus doubles-only spaces, with retained-space budget checks |
+| General CI spin diagnostics/selection | Fixed M_s only | Add <S^2> and effective multiplicity using actual cross-spin overlaps; total-spin selection remains missing |
 | Restricted CCS/CCD/CCSD/CC2/LCCD/LCCSD | Available | Preserve their current definitions |
 | Restricted QCISD/QCISD(T) | Missing | Add quadratic residual/energy, canonical QCI triples, model adjoint/1-RDM and first-order response; U/ROHF QCI remains missing |
 | UHF/ROHF UCCSD/UCCD | Available | Add explicit Lambda and spin-resolved 1-RDMs |
@@ -116,7 +117,7 @@ canonical path; see [SEMICANONICAL.md](SEMICANONICAL.md).
 
 ## Next stages
 
-1. Finish conventional ground-state breadth: unrestricted/ROHF QCI, CID, CI spin diagnostics and
+1. Finish conventional ground-state breadth: unrestricted/ROHF QCI, exact CI spin
    selection, AO densities/one-electron property conveniences, robust checkpoint
    restart and correlated-gradient boundaries. Add each method with an oracle.
 2. Add EOM-EE/IP/EA then SF, left/right states, transition densities and oscillator
