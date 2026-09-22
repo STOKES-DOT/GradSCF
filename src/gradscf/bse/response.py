@@ -3,12 +3,12 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ..solvers import EigenSolverConfig, solve_hermitian
+from ..solvers import EigenSolverConfig, solve_hermitian, solve_stable_rpa
 from ..solvers.diagnostics import require_converged_derivative
 from ..gw.screened import build_static_screening
 from .space import make_bse_space
 from .types import BSEConfig, BSEResult
-from .kernel import build_tda_operator
+from .kernel import build_tda_operator, build_bse_operators
 
 
 def run_bse(
@@ -22,7 +22,7 @@ def run_bse(
     qp_converged_mask=None,
     config=None,
 ):
-    """Real static TDA-BSE with explicit QP and screening spectra.
+    """Real static BSE with explicit QP and screening spectra.
 
     Unspecified QP masks mean explicitly supplied energies, not inferred GW
     convergence. GW adapters must provide actual computed/converged masks.
@@ -70,6 +70,48 @@ def run_bse(
         - qp[jnp.asarray(space.occupied)][:, None]
         > 0
     )
+    if not cfg.tda:
+        a, b = build_bse_operators(
+            qp, l, space, state, singlet=cfg.singlet, block_size=cfg.block_size
+        )
+        identity = jnp.eye(space.size, dtype=a.dtype)
+        solved = solve_stable_rpa(
+            a.apply(identity),
+            b.apply(identity),
+            config=EigenSolverConfig(
+                method="dense",
+                nroots=cfg.nroots,
+                atol=cfg.conv_tol,
+                max_dense=cfg.max_dense,
+                gradient_mode=cfg.gradient_mode,
+                adjoint_tol=cfg.adjoint_tol,
+                adjoint_maxiter=cfg.adjoint_max_cycle,
+            ),
+            gap_tol=cfg.gap_tol,
+        )
+        response_valid = solved.response_valid & valid
+        energies = require_converged_derivative(solved.values, response_valid)
+        shape = (cfg.nroots, len(space.occupied), len(space.virtual))
+        x, y = [
+            require_converged_derivative(
+                v.T.reshape(shape), response_valid[:, None, None]
+            )
+            for v in (solved.x, solved.y)
+        ]
+        return BSEResult(
+            energies,
+            x,
+            y,
+            solved.residual_norms,
+            solved.converged & valid,
+            jnp.broadcast_to(solved.stable, energies.shape),
+            response_valid,
+            state.valid,
+            state.min_gap,
+            cfg.singlet,
+            cfg.gradient_mode == "implicit_eigenvector",
+            solved.stability_margins,
+        )
     op = build_tda_operator(
         qp, l, space, state, singlet=cfg.singlet, block_size=cfg.block_size
     )

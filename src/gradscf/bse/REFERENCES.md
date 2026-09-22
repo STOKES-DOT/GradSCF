@@ -13,19 +13,23 @@
    existing GradSCF GW module documentation.
 3. [QuAcK](https://github.com/pfloos/QuAcK), commit
    `2236bfcda24ff0971358f5107636b506dd201bb1` (2026-09-02).
-   The unmodified Fortran routines `phRLR_A.f90` and
-   `RGW_phBSE_static_kernel_A.f90` were compiled and run as an external oracle.
+   The unmodified Fortran routines `phRLR_A.f90`, `phRLR_B.f90`,
+   `RGW_phBSE_static_kernel_A.f90` and `RGW_phBSE_static_kernel_B.f90` were
+   compiled and run as an external kernel oracle.
    QuAcK's KA is a **screening correction**, not full W or the complete BSE A.
    Independent NumPy full direct-RPA poles and excitation densities supply its
    input. Adding its bare resonant block and KA is compared with GradSCF's
    auxiliary-inverse formulation. Source hashes, compiler and commands are in
-   `tests/bse/data/quack_static_seed83.json`.
+   `tests/bse/data/quack_static_seed83.json` (original TDA run) and
+   `tests/bse/data/quack_full_static_seed83.json` (A/B/full-BSE comparison).
+   The full-BSE reference eigenvalues use NumPy on the doubled matrix formed
+   from those actual Fortran blocks; a QuAcK eigensolver was not executed.
 4. [MOLGW BSE tutorial](https://www.molgw.org/tuto_bse/) and
    [VOTCA-XTP architecture](https://www.votca.org/xtp/Architecture.html).
    Consulted for molecular workflow and matrix-free organization only. No
    MOLGW or VOTCA executable was run during this implementation.
 5. [PySCF user documentation](https://pyscf.org/user/tddft.html).
-   Installed PySCF 2.9.0 supplies the HF/CIS unscreened-limit oracle, not a BSE
+   Installed PySCF 2.9.0 supplies the HF/CIS and HF/TDHF unscreened-limit oracles, not a BSE
    oracle. Its version has no `pyscf.gw.bse`; the newer online BSE code was
    inspected during planning but is not the executed acceptance reference.
 

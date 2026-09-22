@@ -26,9 +26,9 @@ class BSEConfig:
     seed: int = 0
 
     def __post_init__(self):
-        if not self.tda:
+        if not self.tda and self.solver != "dense":
             raise NotImplementedError(
-                "This stage implements TDA-BSE; full BSE is not yet supported"
+                "Full BSE currently requires solver='dense' with an explicit max_dense bound"
             )
         if type(self.singlet) is not bool or type(self.tda) is not bool:
             raise ValueError("singlet and tda must be booleans")
@@ -73,3 +73,4 @@ class BSEResult:
     min_screening_gap: object
     singlet: bool
     amplitude_response: bool
+    stability_margins: object = None

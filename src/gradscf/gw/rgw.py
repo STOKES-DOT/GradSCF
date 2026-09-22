@@ -104,6 +104,7 @@ class GW:
             self.result.mo_coeff,
             self.result.qp_computed_mask,
             self.result.converged_mask,
+            self.result.screening_energy,
             self._ao_factors,
             dipole,
         )
@@ -129,6 +130,8 @@ class GW:
         mf = self._scf
         if self.result.qp_computed_mask is None or self.result.converged_mask is None:
             raise ValueError("GW result does not contain QP coverage/convergence metadata")
+        if self.result.screening_energy is None:
+            raise ValueError("GW result does not contain a recorded screening spectrum")
         available = getattr(mf._scf_inputs, "dipole_integrals", None)
         if available is not None:
             self._dipole_ao = available
@@ -141,7 +144,7 @@ class GW:
             self._dipole_ao = completed.dipole_integrals
         return dict(
             qp_energy=self.result.mo_energy,
-            screening_energy=mf.scf_result.mo_energy,
+            screening_energy=self.result.screening_energy,
             mo_factors=_mo_factors(self._ao_factors, self.result.mo_coeff),
             mo_coeff=self.result.mo_coeff,
             ao_factors=self._ao_factors,

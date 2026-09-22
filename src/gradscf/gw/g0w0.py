@@ -292,6 +292,7 @@ def g0w0_cd_restricted(
         nw=int(nw),
         qp_residual=residual,
         qp_computed_mask=jnp.zeros_like(qp_energy,dtype=bool).at[jnp.asarray(orbs)].set(not evaluate_only),
+        screening_energy=poles,
     )
 
 
@@ -433,6 +434,7 @@ def g0w0_cd_unrestricted(
         nw=int(nw),
         qp_residual=jnp.stack([residual_a, residual_b]),
         qp_computed_mask=jnp.zeros((2,nmo),dtype=bool).at[:,jnp.asarray(orbs)].set(not evaluate_only),
+        screening_energy=jnp.stack([p_a, p_b]),
     )
 
 

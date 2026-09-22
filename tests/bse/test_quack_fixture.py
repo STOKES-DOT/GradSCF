@@ -32,3 +32,33 @@ def test_static_tda_matches_quack_fixture(singlet):
     np.testing.assert_allclose(
         np.linalg.eigvalsh(actual), np.linalg.eigvalsh(expected), atol=2e-12, rtol=0
     )
+
+
+@pytest.mark.parametrize("singlet", [True, False])
+def test_full_bse_matches_executed_quack_coupling_fixture(singlet):
+    from gradscf import bse
+    from gradscf.gw.screened import build_static_screening
+
+    path = Path(__file__).parent / "data/quack_full_static_seed83.npz"
+    label = "singlet" if singlet else "triplet"
+    with np.load(path) as data:
+        qp, e, l = [
+            jnp.asarray(data[name])
+            for name in ("qp_energy", "screening_energy", "factors")
+        ]
+        expected_b = data[f"b_{label}"]
+        expected_roots = data[f"full_roots_{label}"]
+    space = bse.make_bse_space(5, 2)
+    state = build_static_screening(e, l, occupied=space.occupied, virtual=space.virtual)
+    _, bo = bse.build_bse_operators(qp, l, space, state, singlet=singlet, block_size=2)
+    np.testing.assert_allclose(bo.apply(jnp.eye(6)), expected_b, atol=2e-13, rtol=0)
+    out = bse.run_bse(
+        qp,
+        e,
+        l,
+        space,
+        config=bse.BSEConfig(tda=False, solver="dense", nroots=6, singlet=singlet),
+    )
+    np.testing.assert_allclose(
+        out.excitation_energies, expected_roots, atol=2e-12, rtol=0
+    )

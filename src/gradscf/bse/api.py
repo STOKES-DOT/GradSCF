@@ -1,4 +1,4 @@
-"""Eager molecular TDA-BSE facade; functional numerical path is run_bse."""
+"""Eager molecular BSE facade; functional numerical path is run_bse."""
 
 from dataclasses import fields
 import numpy as np

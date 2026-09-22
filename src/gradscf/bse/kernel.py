@@ -1,4 +1,4 @@
-"""Factorized static TDA-BSE kernel; no electron-hole matrix or private solver."""
+"""Factorized static BSE kernels; no electron-hole matrix or private solver."""
 
 import jax.numpy as jnp
 from ..solvers import LinearOperator
@@ -73,3 +73,49 @@ def build_tda_operator(
         diagonal=diagonal,
         matmat=apply,
     )
+
+
+def build_bse_operators(
+    qp_energy, mo_factors, space, screening, *, singlet=True, block_size=16
+):
+    """Return resonant A and coupling B actions in common (i,a) ordering.
+
+    B[ia,jb] = kappa (ia|jb) - W[ib,aj]. Screened occupied-virtual
+    factors are stored; contractions are blocked over auxiliary functions.
+    """
+    a = build_tda_operator(
+        qp_energy, mo_factors, space, screening, singlet=singlet, block_size=block_size
+    )
+    l = jnp.asarray(mo_factors)
+    oi, va = jnp.asarray(space.occupied), jnp.asarray(space.virtual)
+    no, nv = len(space.occupied), len(space.virtual)
+    lov = l[:, oi[:, None], va[None, :]]
+    screened = jnp.concatenate(
+        [
+            apply_static_screening(screening, lov[:, start : start + block_size, :])
+            for start in range(0, no, block_size)
+        ],
+        axis=1,
+    )
+    kappa = 2.0 if singlet else 0.0
+    diagonal = jnp.sum(kappa * lov**2 - lov * screened, axis=0).reshape(-1)
+
+    def apply(values):
+        x = values.reshape(no, nv, -1)
+        charge = jnp.einsum("Pjb,jbk->Pk", lov, x)
+        y = kappa * jnp.einsum("Pia,Pk->iak", lov, charge)
+        for start in range(0, l.shape[0], block_size):
+            partial = jnp.einsum(
+                "Pja,jbk->Pabk", screened[start : start + block_size], x
+            )
+            y -= jnp.einsum("Pib,Pabk->iak", lov[start : start + block_size], partial)
+        return require_converged_derivative(y.reshape(space.size, -1), screening.valid)
+
+    b = LinearOperator(
+        a.shape,
+        a.dtype,
+        lambda x: apply(x[:, None])[:, 0],
+        diagonal=diagonal,
+        matmat=apply,
+    )
+    return a, b

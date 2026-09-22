@@ -21,6 +21,38 @@ class BSEReference:
     qp_computed_mask: object = None
     qp_converged_mask: object = None
 
+    @classmethod
+    def from_gw_result(cls, result, *, mo_factors, nocc, dipole_mo=None):
+        """Build a fixed-frame snapshot from a recorded restricted CD result.
+
+        G0W0 and converged evGW record their actual screening pole spectrum.
+        Caller-supplied factors/dipoles must be in result.mo_coeff's frame.
+        Unknown screening or QP coverage is rejected, never inferred. This
+        adapter does not add evGW outer fixed-point differentiation.
+        """
+        from ..gw.types import GWResult
+
+        if not isinstance(result, GWResult):
+            raise TypeError("Expected a GWResult")
+        if result.screening_energy is None:
+            raise ValueError("GW result has no recorded screening spectrum")
+        if result.qp_computed_mask is None or result.converged_mask is None:
+            raise ValueError("GW result has no QP coverage/convergence metadata")
+        qp, screening = jnp.asarray(result.mo_energy), jnp.asarray(
+            result.screening_energy
+        )
+        if qp.ndim != 1 or screening.shape != qp.shape or jnp.iscomplexobj(qp):
+            raise NotImplementedError("BSE requires a real restricted GW result")
+        return cls(
+            qp,
+            screening,
+            mo_factors,
+            nocc,
+            dipole_mo,
+            result.qp_computed_mask,
+            result.converged_mask,
+        )
+
 
 def source_signature(source):
     if isinstance(source, BSEReference):

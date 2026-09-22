@@ -1,15 +1,18 @@
-# Static molecular TDA-BSE
+# Static molecular GW-BSE
 
-`gradscf.bse` implements static GW-BSE in the Tamm-Dancoff approximation for
-finite molecules, real closed-shell orbitals and integer occupations. Singlet
+`gradscf.bse` implements static GW-BSE for finite molecules, real closed-shell
+orbitals and integer occupations. TDA has a matrix-free Davidson path; stable
+full BSE has a bounded dense reference path. Singlet
 and triplet energies, transition moments and length-gauge oscillator strengths
 are supported. First-order response of isolated roots includes QP energies,
 screening energies, factors, amplitudes and supplied dipoles. The numerical
 eigenproblem and screening linear solves belong to `gradscf.solvers`.
 
-This is the P0/P1 implementation of [the development plan](../gw/BSE_PLAN.md).
-Full BSE (`tda=False`), open-shell/complex/periodic references, dynamic kernels
-and degenerate-cluster properties are not exposed as implemented methods.
+This implements P0/P1 plus the bounded full-BSE reference and amplitude response
+from [the development plan](../gw/BSE_PLAN.md). The current increment and its
+remaining scope are recorded in [FULL_BSE_PLAN.md](FULL_BSE_PLAN.md).
+Open-shell/complex/periodic references, dynamic kernels and degenerate-cluster
+properties are not exposed as implemented methods.
 
 ## Public workflow
 
@@ -25,7 +28,11 @@ print(response.oscillator_strength())  # dimensionless
 ```
 
 `kernel()` returns `(energies, (X,Y))`; `run()` returns the object. Amplitudes
-have shape `(nroots,nocc_window,nvir_window)` and `Y=0` in this TDA stage.
+have shape `(nroots,nocc_window,nvir_window)`. TDA has `Y=0`; full BSE returns
+both amplitudes. Request full BSE explicitly with
+`bse.BSE(mygw, tda=False, solver="dense", max_dense=256).run()`. The default
+Davidson method is currently TDA-only: full BSE never silently converts a
+matrix-free request into a dense allocation.
 An explicit `BSEReference(qp_energy, screening_energy, mo_factors, nocc,
 dipole_mo=...)` can replace the GW facade. These explicit inputs must describe
 one common orthonormal orbital frame; they are not verified by running GW.
@@ -39,8 +46,16 @@ GW-backed input uses G0W0's original MF spectrum for W0. No QP re-screening is
 silently introduced. QP energies of every selected level must be covered by
 both `qp_computed_mask` and `converged_mask`; the legacy GW result marks
 unrequested MF-filled levels converged, so that flag alone is insufficient.
-The new coverage field also records evaluation-only and evGW semantics, but
-automatic evGW/qsGW/scGW-to-BSE adapters are not part of this stage.
+`GWResult.screening_energy` records the actual pole spectrum used in W by the
+restricted/unrestricted CD drivers. A restricted result can be converted with
+`BSEReference.from_gw_result(result, mo_factors=..., nocc=..., dipole_mo=...)`.
+This preserves QP coverage/convergence masks and the recorded screening spectrum;
+missing metadata is rejected. For converged evGW, that spectrum equals the final
+QP spectrum, including any frozen unrequested MF levels. Factors and dipoles
+must be in the returned orbital frame. This supports fixed-frame evGW output as
+BSE input; it does not differentiate the evGW outer fixed point. qsGW/scGW
+results without this provenance still require a separately justified explicit
+reference and are not automatically adapted.
 
 The eager interface checks source fingerprints. SCF/GW inputs, GW settings,
 explicit arrays or BSE window/configuration changes invalidate cached results.
@@ -69,8 +84,8 @@ screening is the gapped imaginary-axis limit; no optical broadening parameter
 enters its denominator. The spectral broadening helper in `tools.spectra` can
 be used after the discrete excitations have been calculated.
 
-TDA vectors obey `sum_ia X[ia]**2=1`. For singlets,
-`mu = sqrt(2) sum_ia X[ia] dipole[ia]` and `f=(2/3)*Omega*sum_xyz mu**2`
+Vectors obey `sum_ia (X[ia]**2-Y[ia]**2)=1`, reducing to unit X norm in TDA.
+For singlets, `mu = sqrt(2) sum_ia (X[ia]+Y[ia]) dipole[ia]` and `f=(2/3)*Omega*sum_xyz mu**2`
 in atomic units. Triplet electric-dipole transitions from a singlet ground state
 have zero strength without SOC. This differs from the half-norm restricted
 TD-SCF amplitude convention; existing TD-SCF property routines are not called
@@ -110,9 +125,20 @@ guard/requested roots, positive selected frequencies and resolved internal and
 boundary gaps. Exact/near degeneracies keep inspectable forward results but
 invalidate individual-root derivatives. TDA cluster projector observables are
 a later interface; there is no implicit root-count expansion or gap broadening.
-`stable` denotes positive selected TDA frequencies, not an independent global
-stability certificate for the starting mean field. Negative roots are retained
-as diagnostics and rejected for optical property evaluation, not filtered away.
+In TDA, `stable` denotes positive selected frequencies, not an independent
+global stability certificate for the starting mean field. Negative TDA roots
+are retained as diagnostics and rejected for optical property evaluation.
+
+Full BSE instead checks positive definiteness of both `A-B` and `A+B`, with
+absolute stability tolerance 1e-10 Hartree. `stability_margins` reports their
+minimum eigenvalues; it is `None` for TDA. Stable full-BSE vectors come from
+Cholesky-Hermitian reduction and include the reduction/reconstruction response.
+Nonpositive or unresolved stability margins give NaN physical outputs and false
+convergence/response status. No complex mode is converted to a real frequency.
+A full-BSE request containing any unresolved internal/boundary degeneracy
+invalidates derivatives for the **whole requested root set**, consistently for
+JVP and VJP. A smaller isolated prefix can still be differentiated. Forward
+values for stable degenerate roots remain available.
 
 The verified contract is first-order fixed-MO response and a G0W0+BSE composition
 on a valid QP branch. It is not a full nuclear/basis derivative, a full evGW/qsGW
@@ -133,7 +159,10 @@ factors to MO factors. They are capacity controls, not measured peak-memory
 bounds; screening, factors, workspaces and AD intermediates coexist. The legacy
 GW calculation before this adapter has its own storage requirements.
 
-`solver="dense"` is a bounded oracle with `max_dense=256`. Davidson requires
+`solver="dense"` is a bounded oracle with `max_dense=256`. Full BSE requires
+this mode and materializes A and B only after checking the transition-space
+limit. Its shared stable RPA solver uses n-by-n matrices, not a doubled dense
+physical matrix; several such matrices and AD intermediates coexist. Davidson requires
 space for the requested roots plus its guard root and uses deterministic
 full-support guesses (seed 0 by default). Shared direct linear solves now accept
 multiple RHS columns, allowing one factorization per screening slab with checked
@@ -141,5 +170,6 @@ implicit and transposed solves. Large-auxiliary matrix-free screening, true RI
 versus spectral-ERI-factor benchmarks, GPU scaling and out-of-core operation
 remain future work.
 
-Run [water_tda.py](../../../examples/bse/water_tda.py) for a native example.
+Run [water_tda.py](../../../examples/bse/water_tda.py) or
+[water_full.py](../../../examples/bse/water_full.py) for native examples.
 Executed checks and limitations are in [VALIDATION.md](VALIDATION.md).

@@ -3,7 +3,9 @@
 Date: 2026-09-22. Repository inspected at `a924509` on `release/v1.0.0`.
 Status: P0/P1 real closed-shell static TDA implementation completed and tested
 in `feat/molecular-bse`. See the [implemented API](../bse/README.md) and
-[executed validation](../bse/VALIDATION.md). Later stages below remain proposals.
+[executed validation](../bse/VALIDATION.md). The next increment adds bounded stable full BSE and fixed-frame GW-result
+screening provenance; see [its scope](../bse/FULL_BSE_PLAN.md). Scalable full
+BSE and remaining later-stage items below remain proposals.
 Scope decision: the user selected finite molecules and closed-shell references
 as the first priority on 2026-09-22.
 
@@ -187,7 +189,7 @@ No eigensolver, Davidson, GMRES or numerical AD-rule copy belongs in `bse`.
 The module is separate from `gw` because it represents a two-particle response;
 it is also separate from `tdscf`'s density-functional kernel implementation.
 
-Illustrative proposed facade, not currently executable:
+Implemented TDA facade:
 
 ```python
 mf = dft.RKS(mol, xc="hf").run()
@@ -292,4 +294,5 @@ errors are resolved; do not require accidental bitwise agreement between codes.
 
 Record backend, dtype, seed, dimensions, memory controls, exact command, elapsed
 time, peak-memory measurement method and all numerical errors with artifacts.
-No external benchmark or derivative validation has been completed by this plan.
+The original plan did not itself establish numerical results. Executed checks
+are recorded separately in [VALIDATION.md](../bse/VALIDATION.md).
