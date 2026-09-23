@@ -259,11 +259,22 @@ class RKS(_BaseKS):
         return _cache_signature((self.compute_local_hfx_features,self.compute_local_hfx_aux,
             self.hfx_omega_values,self.hfx_chunk_size,self.execution_device))
 
-    def multistart(self, *, amplitudes=(.05, .15, .4), seed=20260923):
+    def multistart(self, *, amplitudes=(.05, .15, .4), seed=20260923, seeds=None, require_stable=False):
         """Select an explicit lowest-energy candidate without mutating this object."""
         from .multistart import run_restricted_multistart
 
-        return run_restricted_multistart(self, amplitudes=amplitudes, seed=seed)
+        return run_restricted_multistart(self, amplitudes=amplitudes, seed=seed,
+                                        seeds=seeds, require_stable=require_stable)
+
+    def diagnostics(self, *, gradient_tol=None):
+        from .diagnostics import restricted_scf_diagnostics
+
+        return restricted_scf_diagnostics(self, gradient_tol=gradient_tol)
+
+    def stability(self, **kwargs):
+        from .stability import restricted_stability
+
+        return restricted_stability(self, **kwargs)
 
     def kernel(self) -> Any:
         self._configure_jax_cache()

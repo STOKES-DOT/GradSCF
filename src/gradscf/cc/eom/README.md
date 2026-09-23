@@ -200,3 +200,27 @@ and incomplete finite multistart coverage in stretched F2.
 EE/EA bibliographic metadata checked against publisher-deposited Crossref
 records; IP metadata checked against the authors' university record.
 Scientific attribution is separate from the Apache source-code attribution.
+
+## Layered precision reports
+
+```python
+report = eom.diagnostics(scf_gradient_tol=1e-11,
+                         cc_residual_tol=1e-11, eom_residual_tol=1e-9)
+print(report.scf.gradient_norm, report.scf.stationary)
+print(report.cc.residual_norm, report.cc_ok)
+print(report.eom.residual_norms, report.eom_ok, report.all_passed)
+```
+
+This host-side report references the existing CC and EOM result objects and
+uses the fresh stored [SCF diagnostic](../../scf/STABILITY.md); it neither reruns
+solvers nor duplicates CC equations. CC uses its independent packed-coordinate
+infinity residual norm. EOM checks right, normalized-left and guard residuals,
+together with its existing forward convergence flags. Separate derivative and
+spectral-completeness flags remain available on `report.eom`.
+
+Default targets are the current solver settings. A stricter report target only
+checks the stored result: it does not change configuration or silently relax a
+threshold. `all_passed` is None when an explicit MO Hamiltonian has no attached
+SCF state; otherwise it combines the stationarity and residual checks. Passing
+these checks is neither an energy-error bound nor a ground-state/stability or AD
+certificate. See [the precision validation](PRECISION_VALIDATION.md).

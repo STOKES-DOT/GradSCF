@@ -3,7 +3,7 @@
 from dataclasses import fields
 import numpy as np
 from ...scf.reference import _array_signature
-from .types import EOMConfig
+from .types import EOMConfig, EOMPrecisionDiagnostics
 from .amplitudes import EOMAmplitudeSpace
 from .operators import run_eom
 
@@ -97,6 +97,34 @@ class _EOM:
     def run(self):
         self.kernel()
         return self
+
+    def diagnostics(
+        self, *, scf_gradient_tol=None, cc_residual_tol=None, eom_residual_tol=None
+    ):
+        """Read fresh stored layer results; never rerun or silently tighten solvers."""
+        from ...scf.facade import RKS
+
+        self.check_source()
+        cc_tol = (
+            self.ground.residual_tol
+            if cc_residual_tol is None
+            else float(cc_residual_tol)
+        )
+        eom_tol = self.conv_tol if eom_residual_tol is None else float(eom_residual_tol)
+        targets = (cc_tol, eom_tol) + (
+            () if scf_gradient_tol is None else (float(scf_gradient_tol),)
+        )
+        if any(not np.isfinite(t) or t <= 0 for t in targets):
+            raise ValueError("Residual targets must be finite and positive")
+        source = self.ground.mf
+        scf = (
+            source.diagnostics(gradient_tol=scf_gradient_tol)
+            if isinstance(source, RKS)
+            else None
+        )
+        return EOMPrecisionDiagnostics(
+            scf, self.ground.result, self.result, cc_tol, eom_tol
+        )
 
     def amplitudes(self, root=0):
         self.check_source()

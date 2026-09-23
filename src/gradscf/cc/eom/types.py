@@ -2,8 +2,13 @@
 
 from dataclasses import dataclass
 from math import isfinite
-from typing import NamedTuple
+from typing import NamedTuple, TYPE_CHECKING
+import numpy as np
 from jaxtyping import Array
+
+if TYPE_CHECKING:
+    from ...scf.diagnostics import RestrictedSCFDiagnostics
+    from ..types import CCResult
 
 
 @dataclass(frozen=True)
@@ -78,3 +83,42 @@ class EOMResult(NamedTuple):
     spectral_gaps: Array
     guard_residual_norms: Array
     restarts: Array
+
+
+@dataclass(frozen=True)
+class EOMPrecisionDiagnostics:
+    """Existing layer results plus residual targets; not an energy-error bound."""
+
+    scf: "RestrictedSCFDiagnostics | None"
+    cc: "CCResult"
+    eom: EOMResult
+    cc_tolerance: float
+    eom_tolerance: float
+
+    @property
+    def cc_ok(self):
+        return bool(
+            self.cc.converged
+            and np.isfinite(self.cc.residual_norm)
+            and self.cc.residual_norm <= self.cc_tolerance
+        )
+
+    @property
+    def eom_ok(self):
+        return bool(
+            np.all(self.eom.converged)
+            and all(
+                np.all(np.isfinite(r)) and np.all(r <= self.eom_tolerance)
+                for r in (
+                    self.eom.residual_norms,
+                    self.eom.left_residual_norms,
+                    self.eom.guard_residual_norms,
+                )
+            )
+        )
+
+    @property
+    def all_passed(self):
+        if self.scf is None:
+            return None
+        return bool(self.scf.stationary and self.cc_ok and self.eom_ok)

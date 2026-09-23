@@ -84,6 +84,13 @@
 
 ### SCF and native integrals
 
+- Extend the existing restricted multistart to multiple explicit seeds with one
+  baseline and optional internal-stability filtering; retain all attempts.
+- Share real RKS/UKS curvature analysis through the public Hermitian solver,
+  reusing occupation rotations and each model's existing energy evaluator.
+- Add fresh stored-state SCF stationarity and SCF/CC/EOM residual reports;
+  these expose upstream precision failures without changing solver tolerances.
+
 - Add RHF/UHF, ROHF/ROKS, and GHF/GKS workflows and opt-in UHF/UKS
   internal-stability analysis with bounded lower-energy restarts.
 - Consolidate convergence, DIIS, and energy/Fock assembly; reuse converged
