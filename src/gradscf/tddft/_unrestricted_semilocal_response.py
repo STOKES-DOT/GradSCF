@@ -190,7 +190,7 @@ def build_unrestricted_semilocal_response_action(
 
 @dataclass(frozen=True)
 class UnrestrictedSemilocalResponseFunctional:
-    """Traditional spin-polarized LDA/GGA response represented as grid HVPs."""
+    """Spin-polarized LDA/GGA response, with the exact zero semilocal HF limit."""
 
     xc_spec: str
 
@@ -198,13 +198,13 @@ class UnrestrictedSemilocalResponseFunctional:
         spec = str(self.xc_spec).lower()
         parse_xc(spec)
         kind = str(xc_type(spec)).upper()
-        if kind not in {"LDA", "GGA"}:
+        if kind not in {"HF", "LDA", "GGA"}:
             raise NotImplementedError(
-                "Unrestricted semilocal response supports LDA/GGA only."
+                "Unrestricted response supports HF and LDA/GGA only."
             )
         object.__setattr__(self, "xc_spec", spec)
         object.__setattr__(self, "exact_exchange_fraction", float(hybrid_coeff(spec)))
-        object.__setattr__(self, "response_feature_kind", kind)
+        object.__setattr__(self, "response_feature_kind", "LDA" if kind == "HF" else kind)
 
     def spin_grid_response_hvp(
         self,
@@ -212,6 +212,10 @@ class UnrestrictedSemilocalResponseFunctional:
         tangent_a: Array,
         tangent_b: Array,
     ) -> tuple[Array, Array]:
+        if str(xc_type(self.xc_spec)).upper() == "HF":
+            # HF has no semilocal XC Hessian. Nonlocal exchange is assembled
+            # separately using exact_exchange_fraction in the response action.
+            return jnp.zeros_like(tangent_a), jnp.zeros_like(tangent_b)
         features, grad_a, grad_b = grid_features_with_spin_gradients_for_molecule(
             molecule
         )

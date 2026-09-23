@@ -35,6 +35,9 @@
   implicit Hermitian Davidson AD wrappers. Use the unified subspace target for
   projector actions and cluster energy sums; raw Ritz arrays are diagnostics.
 
+- Fix native unrestricted HF TDA/TDHF routing by representing its semilocal
+  response as exactly zero while retaining nonlocal exact exchange.
+
 ### Molecular GW and BSE
 
 - Add real closed-shell static singlet/triplet TDA-BSE with factorized Davidson
