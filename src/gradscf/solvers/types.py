@@ -97,8 +97,10 @@ class SpectralProjectorResult(NamedTuple):
 class RPAResult(NamedTuple):
     """Stable real RPA roots, column amplitudes and nondifferentiable diagnostics.
 
-    stability_margins contains min eig(A-B), min eig(A+B). Unstable or invalid
-    blocks return NaN physical outputs. response_valid additionally tests the
+    Dense stability_margins contains min eig(A-B), min eig(A+B); Davidson
+    reports lowest Ritz estimates, with stability_residual_norms and no global
+    certificate (stability_certified=False). Unstable or unresolved stability
+    checks return NaN physical outputs. response_valid additionally tests the
     isolated-root gap, including the extra excluded root when available.
     """
     values: Array
@@ -109,3 +111,5 @@ class RPAResult(NamedTuple):
     stable: Array
     response_valid: Array
     stability_margins: Array
+    stability_certified: Array | bool = False
+    stability_residual_norms: Array | None = None

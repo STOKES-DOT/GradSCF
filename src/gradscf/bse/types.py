@@ -26,10 +26,6 @@ class BSEConfig:
     seed: int = 0
 
     def __post_init__(self):
-        if not self.tda and self.solver != "dense":
-            raise NotImplementedError(
-                "Full BSE currently requires solver='dense' with an explicit max_dense bound"
-            )
         if type(self.singlet) is not bool or type(self.tda) is not bool:
             raise ValueError("singlet and tda must be booleans")
         if self.solver not in {"dense", "davidson"} or self.gradient_mode not in {
@@ -74,3 +70,5 @@ class BSEResult:
     singlet: bool
     amplitude_response: bool
     stability_margins: object = None
+    stability_certified: object = False
+    stability_residual_norms: object = None

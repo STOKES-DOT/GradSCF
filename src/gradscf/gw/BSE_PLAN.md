@@ -4,8 +4,9 @@ Date: 2026-09-22. Repository inspected at `a924509` on `release/v1.0.0`.
 Status: P0/P1 real closed-shell static TDA implementation completed and tested
 in `feat/molecular-bse`. See the [implemented API](../bse/README.md) and
 [executed validation](../bse/VALIDATION.md). The next increment adds bounded stable full BSE and fixed-frame GW-result
-screening provenance; see [its scope](../bse/FULL_BSE_PLAN.md). Scalable full
-BSE and remaining later-stage items below remain proposals.
+screening provenance; see [its scope](../bse/FULL_BSE_PLAN.md). The [matrix-free continuation](../bse/MATRIX_FREE_BSE.md) now supplies real
+full-BSE Davidson and isolated amplitude response. Large molecular/GPU scaling
+and remaining later-stage items below remain proposals.
 Scope decision: the user selected finite molecules and closed-shell references
 as the first priority on 2026-09-22.
 

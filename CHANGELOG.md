@@ -31,7 +31,9 @@
 - Add bounded stable full BSE (`tda=False, solver="dense"`) with coupling
   blocks, metric-normalized X/Y and first-order amplitude response through a
   shared Cholesky-Hermitian RPA solver. Report stability margins and reject
-  invalid derivatives; scalable full-BSE Davidson remains deferred.
+  invalid derivatives. Add matrix-free full-BSE Davidson with a projected H/J
+  pencil and a checked preconditioned metric adjoint. Distinguish iterative
+  stability estimates from dense certification.
 - Record QP-computation coverage and the actual screening spectrum in CD GW
   results. Add checked G0W0/evGW result snapshots for fixed-frame BSE inputs,
   without claiming evGW outer fixed-point differentiation.

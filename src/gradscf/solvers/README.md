@@ -132,6 +132,16 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   root set; a smaller isolated prefix can be requested. The default config uses
   vector response; explicitly supplied configs honor their gradient_mode.
   `eigenvalue_only` stops both X/Y, including their reconstruction dependence.
+- `solve_rpa(A,B,config=EigenSolverConfig(method="davidson",...))` accepts real
+  symmetric matrices or `LinearOperator` actions and diagonal estimates. It
+  uses a paired Davidson basis, a projected H/J pencil, and a metric-constrained
+  checked GMRES adjoint for isolated X/Y response. No full physical matrix is
+  formed. Stability margins are lowest Ritz estimates with explicit residuals;
+  `stability_certified=False` distinguishes them from dense full-spectrum checks.
+  `response_valid` checks primal/gap eligibility; adjoint convergence is checked
+  when AD is requested and failure produces NaN. Dense dispatch reuses
+  `solve_stable_rpa` and enforces its dimension cap. See the
+  [metric derivation and limitations](../bse/MATRIX_FREE_BSE.md).
 - `regularized_eigh` preserves the existing SCF gap-broadening policy near
   degeneracy. `inverse_sqrt` differentiates the matrix function through a
   Sylvester equation at repeated positive eigenvalues. Existing SCF second,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import jax
 import jax.numpy as jnp
+from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array
 from ..diagnostics import require_converged_derivative
 from .davidson import (
@@ -33,8 +34,9 @@ def _davidson_lowest_tdhf(
     preconditioner_floor: float = 1e-8,
     preconditioner_level_shift: float = 0.0,
     orth_eps: float = 1e-10,
+    initial_vectors: Array | None = None,
 ) -> tuple[Array, Array, Array, Array]:
-    """PySCF-style real TDHF/TDDFT Davidson solver in JAX.
+    """Real structured Davidson for stable TDHF/TDDFT problems in JAX.
 
     ``vind`` follows PySCF ``gen_tdhf_operation``: input rows are ``[X, Y]`` and
     output rows are ``[AX + BY, -(BX + AY)]``.
@@ -62,9 +64,17 @@ def _davidson_lowest_tdhf(
             applied = jnp.asarray(vind(rows), dtype=dtype).reshape(-1, 2 * dim)
         return applied[:, :dim].T, -applied[:, dim:].T
 
-    guess_dim = min(dim, max_subspace, nroots)
-    guess_idx = jnp.argsort(diag)[:guess_dim]
-    guess_v = jnp.eye(dim, dtype=dtype)[:, guess_idx]
+    if initial_vectors is None:
+        guess_dim = min(dim, max_subspace, nroots)
+        guess_idx = jnp.argsort(diag)[:guess_dim]
+        guess_v = jax.nn.one_hot(guess_idx, dim, dtype=dtype).T
+    else:
+        guess_v = jax.lax.stop_gradient(jnp.asarray(initial_vectors, dtype=dtype))
+        if (guess_v.ndim != 2 or guess_v.shape[0] != dim
+                or not nroots <= guess_v.shape[1] <= max_subspace):
+            raise ValueError("initial_vectors must fit the requested RPA subspace")
+        guess_dim = guess_v.shape[1]
+        guess_v, _ = jnp.linalg.qr(guess_v, mode="reduced")
     guess_w = jnp.zeros_like(guess_v)
     guess_u1, guess_u2 = apply_pair(guess_v, guess_w)
 
@@ -115,30 +125,44 @@ def _davidson_lowest_tdhf(
         projected_action = jnp.concatenate([primary_action, dual_action], axis=0)
         projected_active = jnp.concatenate([active_in, active_in])
         active_outer = projected_active[:, None] & projected_active[None, :]
-        projected_matrix = _matmul(projected_basis, projected_action.T)
-        projected_matrix = jnp.where(active_outer, projected_matrix, 0.0)
+        # Preserve the RPA metric under projection. Q.T R Q is not a
+        # structure-preserving reduction when range(Q) is not J-invariant.
+        # Instead solve (Q.T H Q)c = omega (Q.T J Q)c. H is positive definite
+        # for the stable problem; Cholesky turns the inverse-frequency pencil
+        # into a small real symmetric eigenproblem, without forming physical H.
+        physical_metric = jnp.concatenate(
+            [jnp.ones(dim, dtype=dtype), -jnp.ones(dim, dtype=dtype)]
+        )
+        projected_h = _symmetrize(
+            _matmul(projected_basis, (projected_action * physical_metric).T)
+        )
+        projected_j = _symmetrize(
+            _matmul(projected_basis * physical_metric, projected_basis.T)
+        )
         inactive_sign = jnp.concatenate(
-            [jnp.ones((max_subspace,), dtype=dtype), -jnp.ones((max_subspace,), dtype=dtype)]
+            [
+                jnp.ones((max_subspace,), dtype=dtype),
+                -jnp.ones((max_subspace,), dtype=dtype),
+            ]
         )
-        projected_matrix += jnp.diag(
-            (~projected_active).astype(dtype) * inactive_sign * inactive_shift
-        )
-        eigvals, eigvecs = jnp.linalg.eig(jax.lax.stop_gradient(projected_matrix))
-        eigvals_real = jnp.real(eigvals)
-        eigvals_imag = jnp.imag(eigvals)
-        root_valid = (
-            jnp.isfinite(eigvals_real)
-            & jnp.isfinite(eigvals_imag)
-            & (jnp.abs(eigvals_imag) <= jnp.sqrt(eps_arr))
-            & (eigvals_real > eps_arr)
-            & (eigvals_real < 0.5 * inactive_shift)
-        )
-        order = jnp.argsort(jnp.where(root_valid, eigvals_real, jnp.inf))
+        projected_h = jnp.where(active_outer, projected_h, 0.0)
+        projected_j = jnp.where(active_outer, projected_j, 0.0)
+        projected_h += jnp.diag((~projected_active).astype(dtype) * inactive_shift)
+        projected_j += jnp.diag((~projected_active).astype(dtype) * inactive_sign)
+        chol = jnp.linalg.cholesky(jax.lax.stop_gradient(projected_h))
+        reduced = solve_triangular(chol, jax.lax.stop_gradient(projected_j), lower=True)
+        reduced = solve_triangular(chol, reduced.T, lower=True).T
+        inverse_values, vectors = jnp.linalg.eigh(_symmetrize(reduced))
+        root_valid = jnp.isfinite(inverse_values) & (inverse_values > 2.0 / inactive_shift)
+        frequencies = 1.0 / jnp.where(root_valid, inverse_values, 1.0)
+        order = jnp.argsort(jnp.where(root_valid, frequencies, jnp.inf))
         selected = order[:nroots]
         selected_valid = root_valid[selected]
-        omega = jnp.where(selected_valid, eigvals_real[selected], eps_arr)
-        coefficients = jnp.real(eigvecs[:, selected])
-        coefficients = jnp.where(selected_valid[None, :], coefficients, 0.0)
+        omega = jnp.where(selected_valid, frequencies[selected], eps_arr)
+        coefficients = solve_triangular(chol.T, vectors[:, selected], lower=False)
+        coefficients = jnp.where(
+            selected_valid[None, :], coefficients * jnp.sqrt(omega)[None, :], 0.0
+        )
         primary_coeff = coefficients[:max_subspace]
         dual_coeff = coefficients[max_subspace:]
         x_full = _matmul(v_in, primary_coeff) + _matmul(w_in, dual_coeff)
@@ -147,8 +171,7 @@ def _davidson_lowest_tdhf(
         r_x = applied_x - x_full * omega[None, :]
         r_y = applied_y + y_full * omega[None, :]
         residual_norms = jnp.sqrt(
-            jnp.sum(jnp.abs(r_x) ** 2, axis=0)
-            + jnp.sum(jnp.abs(r_y) ** 2, axis=0)
+            jnp.sum(jnp.abs(r_x) ** 2, axis=0) + jnp.sum(jnp.abs(r_y) ** 2, axis=0)
         )
         residual_norms = jnp.where(selected_valid, residual_norms, jnp.inf)
         return omega, x_full, y_full, r_x, r_y, residual_norms
@@ -187,8 +210,11 @@ def _davidson_lowest_tdhf(
             )
             x = jax.lax.dynamic_slice(new_x, (0, col_idx), (dim, 1)).reshape(dim)
             y = jax.lax.dynamic_slice(new_y, (0, col_idx), (dim, 1)).reshape(dim)
-            x, y = orthogonalize_pair(x, y, v_in, w_in)
-            x, y = orthogonalize_pair(x, y, x_cols, y_cols)
+            # Reorthogonalize small residual corrections before normalization;
+            # one pass can amplify roundoff into false independent directions.
+            for _ in range(2):
+                x, y = orthogonalize_pair(x, y, v_in, w_in)
+                x, y = orthogonalize_pair(x, y, x_cols, y_cols)
             plus_norm2 = jnp.sum(jnp.abs(x + y) ** 2)
             minus_norm2 = jnp.sum(jnp.abs(x - y) ** 2)
             independent = jnp.minimum(plus_norm2, minus_norm2) > orth_eps_arr**2
@@ -235,6 +261,7 @@ def _davidson_lowest_tdhf(
                 keepdims=False,
             )
             target = basis_dim_in + offset
+            accept = accept & (target < max_subspace)
             x = jax.lax.dynamic_slice(x_pairs, (0, col_idx), (dim, 1))
             y = jax.lax.dynamic_slice(y_pairs, (0, col_idx), (dim, 1))
             u1 = jax.lax.dynamic_slice(pair_u1, (0, col_idx), (dim, 1))
@@ -262,7 +289,7 @@ def _davidson_lowest_tdhf(
 
             return jax.lax.cond(accept, do_update, lambda z: z, carry)
 
-        v_out, w_out, u1_out, u2_out, active_out, _ = jax.lax.fori_loop(
+        v_out, w_out, u1_out, u2_out, active_out, accepted_count = jax.lax.fori_loop(
             0,
             x_pairs.shape[1],
             scatter_body,
@@ -275,7 +302,7 @@ def _davidson_lowest_tdhf(
                 jnp.asarray(0, dtype=index_dtype),
             ),
         )
-        return v_out, w_out, u1_out, u2_out, active_out, basis_dim_in + pair_count
+        return v_out, w_out, u1_out, u2_out, active_out, basis_dim_in + accepted_count
 
     def _restart_from_roots(x_full: Array, y_full: Array):
         return _append_new_pairs(
@@ -348,16 +375,16 @@ def _davidson_lowest_tdhf(
                 denom_sign * preconditioner_floor,
                 denom_base,
             )
-            residual_stacked = jnp.concatenate([r_x, r_y], axis=0)
+            residual_stacked = jnp.concatenate([r_x, -r_y], axis=0)
             correction = residual_stacked / denom
             new_x = correction[:dim, :]
             new_y = correction[dim:, :]
             new_mask = ~jnp.isfinite(residual_norms) | (residual_norms > tol_arr)
             no_new = ~jnp.any(new_mask)
-            overflow = basis_dim_it + jnp.sum(new_mask.astype(index_dtype)) > jnp.asarray(
-                max_subspace,
-                dtype=index_dtype,
-            )
+            # Fill the remaining slots before restarting. Restarting whenever
+            # a whole correction block does not fit wastes the tail of the
+            # allocated subspace (e.g. repeatedly using only 6 of 8 slots).
+            overflow = basis_dim_it >= jnp.asarray(max_subspace, dtype=index_dtype)
 
             def keep_current(_):
                 return v_it, w_it, u1_it, u2_it, active_it, basis_dim_it

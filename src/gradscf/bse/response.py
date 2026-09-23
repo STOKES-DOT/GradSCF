@@ -3,7 +3,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ..solvers import EigenSolverConfig, solve_hermitian, solve_stable_rpa
+from ..solvers import EigenSolverConfig, solve_hermitian, solve_rpa
 from ..solvers.diagnostics import require_converged_derivative
 from ..gw.screened import build_static_screening
 from .space import make_bse_space
@@ -74,13 +74,14 @@ def run_bse(
         a, b = build_bse_operators(
             qp, l, space, state, singlet=cfg.singlet, block_size=cfg.block_size
         )
-        identity = jnp.eye(space.size, dtype=a.dtype)
-        solved = solve_stable_rpa(
-            a.apply(identity),
-            b.apply(identity),
+        solved = solve_rpa(
+            a,
+            b,
             config=EigenSolverConfig(
-                method="dense",
+                method=cfg.solver,
                 nroots=cfg.nroots,
+                maxiter=cfg.max_cycle,
+                max_subspace=cfg.max_space,
                 atol=cfg.conv_tol,
                 max_dense=cfg.max_dense,
                 gradient_mode=cfg.gradient_mode,
@@ -88,6 +89,7 @@ def run_bse(
                 adjoint_maxiter=cfg.adjoint_max_cycle,
             ),
             gap_tol=cfg.gap_tol,
+            seed=cfg.seed,
         )
         response_valid = solved.response_valid & valid
         energies = require_converged_derivative(solved.values, response_valid)
@@ -111,6 +113,8 @@ def run_bse(
             cfg.singlet,
             cfg.gradient_mode == "implicit_eigenvector",
             solved.stability_margins,
+            solved.stability_certified,
+            solved.stability_residual_norms,
         )
     op = build_tda_operator(
         qp, l, space, state, singlet=cfg.singlet, block_size=cfg.block_size
