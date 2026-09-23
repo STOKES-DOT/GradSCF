@@ -34,7 +34,8 @@ from .multistart import (
 )
 from .uhf import UHF, UHFConfig, UHFResult, run_uhf, run_uhf_from_integrals
 from .stability import (
-    OrbitalStabilityResult, restricted_stability,
+    OrbitalStabilityResult, restricted_stability, unrestricted_stability,
+    StabilityAttempt, SCFStabilizationResult, stabilize_scf,
     UnrestrictedStabilityResult, UnrestrictedStabilizationResult,
     UHFStabilityResult, UHFStabilizationResult, uhf_stability, stabilize_uhf_from_integrals,
     uks_stability, stabilize_uks_from_integrals,
@@ -64,6 +65,7 @@ from gradscf.integrals.assembly import (
 from .diagnostics import RestrictedSCFDiagnostics, restricted_scf_diagnostics
 
 __all__ = [
+    "StabilityAttempt", "SCFStabilizationResult", "stabilize_scf", "unrestricted_stability",
     "OrbitalStabilityResult", "restricted_stability", "RestrictedSCFDiagnostics", "restricted_scf_diagnostics",
     "RestrictedSCFAttempt", "RestrictedMultistartResult", "run_restricted_multistart",
     "OrbitalOptimizationResult",

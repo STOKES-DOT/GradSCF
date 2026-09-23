@@ -84,6 +84,14 @@
 
 ### SCF and native integrals
 
+- Add an explicit restricted spin-breaking stability channel with full-reference
+  stationarity checks, sharing existing UKS energies and the curvature solver.
+- Share bounded signed negative-mode trials between facade and integral APIs;
+  only finite converged energy-lowering candidates are accepted, with complete
+  attempt histories. RKS->UKS promotion requires the explicit spin channel.
+- Reuse fresh solved sources without rerunning SCF and validate public energy
+  aliases before following a mode, protecting energy acceptance from stale data.
+
 - Extend the existing restricted multistart to multiple explicit seeds with one
   baseline and optional internal-stability filtering; retain all attempts.
 - Share real RKS/UKS curvature analysis through the public Hermitian solver,

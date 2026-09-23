@@ -21,6 +21,20 @@ from .rks import RKSConfig, run_rks_from_integrals
 from .uks import UKSConfig
 
 
+_SCF_RESULT_FIELDS = (
+    'reference', 'scf_result', '_scf_inputs', '_cached_scf_key', '_cached_response_key',
+    'e_tot', 'mo_energy', 'mo_coeff', 'mo_occ', 'cycles', 'converged',
+)
+
+
+def _fresh_scf_like(source, target, **overrides):
+    """Copy compatible SCF input controls, never solved-state payloads."""
+    options = {f.name: getattr(source, f.name) for f in fields(target)
+               if f.init and f.name not in _SCF_RESULT_FIELDS and hasattr(source, f.name)}
+    options.update(overrides)
+    return target(**options)
+
+
 def _cache_signature(value):
     """Snapshot numerical inputs by value, including arrays inside raw bases."""
     if is_dataclass(value):
@@ -278,13 +292,17 @@ class RKS(_BaseKS):
 
     def kernel(self) -> Any:
         self._configure_jax_cache()
-        for name in ('reference','scf_result','_scf_inputs','_cached_scf_key','_cached_response_key',
-                     'e_tot','mo_energy','mo_coeff','mo_occ','cycles','converged'):
+        for name in _SCF_RESULT_FIELDS:
             setattr(self,name,None)
         result = self._build_scf_result(self._spec())
         self._sync_from_scf_result(result)
         self._cached_scf_key = self._scf_signature()
         return self.e_tot
+
+    def stabilize(self, **kwargs):
+        from .stability import stabilize_scf
+
+        return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "RKS":
         self.jk_backend = "df"
@@ -347,6 +365,16 @@ class UKS(_BaseKS):
         self._cached_scf_key = self._scf_signature()
         self._cached_response_key = self._response_signature()
         return self.e_tot
+
+    def stability(self, **kwargs):
+        from .stability import unrestricted_stability
+
+        return unrestricted_stability(self, **kwargs)
+
+    def stabilize(self, **kwargs):
+        from .stability import stabilize_scf
+
+        return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "UKS":
         self.jk_backend='df'

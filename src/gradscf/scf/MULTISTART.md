@@ -91,3 +91,9 @@ spin/complex symmetry breaking. Unsupported backend errors propagate explicitly.
 Single-seed calls, empty additional-start lists, input immutability and ordinary
 `run()` behavior are preserved. The implementation has one baseline, one candidate
 summary/selection path and one nested seed/amplitude loop.
+
+For directed descent rather than random exploration, `mf.stabilize()` reuses the
+shared [negative-mode following engine](STABILITY.md). `require_stable=True`
+continues to filter only restricted-internal stability by default; explicitly
+request `mf.stability(channel="spin")` or `mf.stabilize(channel="spin")` when
+spin symmetry breaking should be examined or allowed.

@@ -1,4 +1,4 @@
-"""Read-only restricted SCF stationarity diagnostics from a fresh stored state."""
+"""Shared SCF snapshot checks and restricted stationarity diagnostics."""
 
 from dataclasses import dataclass
 import numpy as np
@@ -17,6 +17,21 @@ class RestrictedSCFDiagnostics:
     stationary: bool
 
 
+def _check_scf_snapshot(source, stored, energy_attribute):
+    """One freshness contract for both facade layouts and energy acceptance."""
+    if source._cached_scf_key != source._scf_signature():
+        raise RuntimeError("SCF inputs or settings changed; run SCF again")
+    for name in ("mo_coeff", "mo_occ"):
+        if _array_signature(getattr(source, name)) != _array_signature(
+            getattr(stored, name)
+        ):
+            raise RuntimeError("SCF orbital arrays changed; run SCF again")
+    if _array_signature(source.e_tot) != _array_signature(
+        getattr(stored, energy_attribute)
+    ):
+        raise RuntimeError("SCF energy changed; run SCF again")
+
+
 def _restricted_scf_state(source):
     from .facade import RKS
 
@@ -24,14 +39,8 @@ def _restricted_scf_state(source):
         raise TypeError("Restricted diagnostics require a GradSCF RKS source")
     if source.scf_result is None or source._scf_inputs is None:
         raise RuntimeError("Run SCF before requesting diagnostics")
-    if source._cached_scf_key != source._scf_signature():
-        raise RuntimeError("SCF inputs or settings changed; run SCF again")
     result = source.scf_result
-    for name in ("mo_coeff", "mo_occ"):
-        if _array_signature(getattr(source, name)) != _array_signature(
-            getattr(result, name)
-        ):
-            raise RuntimeError("SCF orbital arrays changed; run SCF again")
+    _check_scf_snapshot(source, result, "total_energy")
     if jnp.iscomplexobj(result.mo_coeff):
         raise NotImplementedError("Restricted diagnostics require real orbitals")
     return result, source._scf_inputs
@@ -62,3 +71,16 @@ def restricted_scf_diagnostics(source, *, gradient_tol=None):
     return RestrictedSCFDiagnostics(
         gradient, tol, orth, electrons, converged, stationary
     )
+
+
+def _unrestricted_scf_state(source):
+    from .facade import UKS
+    from .roks import ROKS
+
+    if not isinstance(source, UKS) or isinstance(source, ROKS):
+        raise TypeError("Unrestricted stability requires a UKS/UHF facade")
+    reference = source.reference
+    if reference is None:
+        raise RuntimeError("Run unrestricted SCF before stability analysis")
+    _check_scf_snapshot(source, reference, "mf_energy")
+    return reference
