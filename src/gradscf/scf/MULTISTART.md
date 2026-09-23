@@ -58,3 +58,9 @@ backend/dependency requirements.
 
 See [the native example](../../../examples/cc/nitrogen_multistart.py) and
 [the associated EOM validation](../cc/eom/ROBUSTNESS_VALIDATION.md).
+
+The [extended EOM study](../cc/eom/STRESS_VALIDATION.md) supplies a concrete
+counterexample to treating one finite search as exhaustive: stretched F2 at
+2.2 Angstrom requires broader seeds/rotation amplitudes than the default set to
+reach the known lower HF branch. Keep all attempts and interpret `selected` as
+lowest among those tried, not a global-ground-state assertion.

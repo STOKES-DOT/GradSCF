@@ -177,7 +177,10 @@ forward bases only and does not add derivatives of degenerate roots or vectors.
 For N2's higher-energy native HF branch, the opt-in
 [restricted multistart API](../../scf/MULTISTART.md) records all attempts and
 selects the lowest finite converged candidate. Single-run SCF defaults remain
-unchanged. See [the robustness followup](ROBUSTNESS_VALIDATION.md).
+unchanged. See [the robustness followup](ROBUSTNESS_VALIDATION.md) and
+[extended molecular stress study](STRESS_VALIDATION.md). The latter retains
+initial reference-convergence failures and documents SCF precision sensitivity
+and incomplete finite multistart coverage in stretched F2.
 
 ## Method references
 

@@ -46,10 +46,18 @@ CASES = [
 ]
 
 
-def run_case(case, *, mean_field=None):
+def run_case(
+    case, *, mean_field=None, reference_mean_field=None, reference_cc=None, frozen=None
+):
     name, basis, atom = case
     start = perf_counter()
-    row = {"molecule": name, "basis": basis, "atom_angstrom": atom, "sectors": {}}
+    row = {
+        "molecule": name,
+        "basis": basis,
+        "atom_angstrom": atom,
+        "frozen": frozen,
+        "sectors": {},
+    }
     if mean_field is None:
         mf = dft.RKS(
             gto.M(atom=atom, basis=basis, unit="Angstrom"), xc="hf", conv_tol=1e-12
@@ -59,10 +67,22 @@ def run_case(case, *, mean_field=None):
     row["scf_source"] = (
         "native_hcore" if mean_field is None else "supplied_native_restart"
     )
-    mycc = cc.CCSD(mf, conv_tol=1e-12, residual_tol=1e-11, max_cycle=200).run()
+    mycc = cc.CCSD(
+        mf, frozen=frozen, conv_tol=1e-12, residual_tol=1e-11, max_cycle=200
+    ).run()
     pm = py_gto.M(atom=atom, basis=basis, unit="Angstrom", verbose=0)
-    pref = py_scf.RHF(pm).run(conv_tol=1e-13)
-    pcc = pref.CCSD().run(conv_tol=1e-13, conv_tol_normt=1e-12, max_cycle=200)
+    pref = (
+        py_scf.RHF(pm).run(conv_tol=1e-13)
+        if reference_mean_field is None
+        else reference_mean_field
+    )
+    pcc = (
+        pref.CCSD(frozen=frozen).run(
+            conv_tol=1e-13, conv_tol_normt=1e-12, max_cycle=200
+        )
+        if reference_cc is None
+        else reference_cc
+    )
     row.update(
         hf_energy=float(mf.e_tot),
         ccsd_energy=float(mycc.e_tot),
