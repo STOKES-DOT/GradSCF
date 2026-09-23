@@ -239,3 +239,20 @@ This command includes the final RPA interval-option rejection tests. Earlier
 checkpoint counts overlap with it. The complete repository suite, remote/GPU
 backends, higher derivatives and the deferred P4/P5 interfaces were not run or
 implemented by this increment.
+
+## PySCF forward correspondence (2026-09-23)
+
+A dedicated suite now records 31 successful comparisons against PySCF 2.9.0,
+using CPU float64: matched response operators (HF/PBE/B3LYP and open-shell HF),
+complete Be degenerate subspaces, CISD/UCISD with common MO integrals, and two
+independently converged native HF/TDA chains. See [PYSCF_FORWARD.md](PYSCF_FORWARD.md)
+for the numerical tables, reference-initialization controls, reproducible script,
+raw artifact and scope limits. The production version measured is `8084557`.
+
+The comparison uncovered a native UHF HF-string routing error; the exact zero
+semilocal HF branch was added without removing nonlocal exchange. Its focused
+regressions passed 13 tests. Two separately attempted pre-existing GGA-HVP tests
+could not execute their kernels because optional jax_xc is missing; native
+PBE/B3LYP kernel equivalence is not claimed. The report also retains an OH case
+where default PySCF guesses miss a qualifying low root, rather than silently
+reporting that default settings always give the same requested spectrum.
