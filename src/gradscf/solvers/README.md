@@ -184,7 +184,7 @@ python -m pytest -q tests/solvers tests/ci tests/test_tddft_eigensolvers.py \
   tests/test_scf_higher_order.py tests/test_scf_implicit_and_xc_energy.py
 ```
 
-Generic non-Hermitian EOM-CC Davidson/Arnoldi, biorthogonal vector response,
+Biorthogonal non-Hermitian vector response,
 variable-metric subspace response, and higher-order projector derivatives are future work.
 The present RPA implementation is not a generic non-Hermitian EOM solver.
 GPU behavior has not been validated in this migration.
@@ -206,3 +206,41 @@ solutions. Storage is proportional to the full RHS tensor and factor matrices;
 callers remain responsible for their tensor allocation budget. CC's opt-in
 semicanonical triples path supplies such a budget. See
 [`cc/SEMICANONICAL.md`](../cc/SEMICANONICAL.md).
+
+## Generic non-Hermitian dense and Davidson solvers
+
+`solve_nonhermitian(A, config=NonHermitianSolverConfig(...))` accepts a real
+square matrix or `LinearOperator` without symmetrization. `method="dense"`
+(default) has `max_dense=256`; `method="davidson"` bounds the search space with
+`max_space=40`, `maxiter=100`, `guard_roots=1`, `seed=0`. Supply an operator's
+approximate diagonal for preconditioning, or omit it for residual expansion.
+Default diagonal guesses receive independent small full-support perturbations;
+`initial_vectors` preserves explicit guesses and adds seeded exploration.
+If preconditioned corrections are all dependent, raw residuals expand the basis.
+The transposed action uses `operator.T`, which can be derived by JAX.
+
+Both methods return left/right vectors with `L.T @ R = I`, true residuals,
+conditioning, spectral gaps and first-order energy response. Iteration/restart
+counts, guard residuals, and `spectrum_complete` expose what was computed.
+Davidson rejects convergence if guard roots fail, uses O(n*m+m²) storage and
+never silently materializes a physical dense matrix or falls back to dense.
+Its projected roots/gaps are **estimates**, not a global spectral ordering or
+isolation certificate when `spectrum_complete=False`. `response_valid` is then
+conditional on the selected branch being isolated outside the sampled space.
+This matches the explicit partial-spectrum boundary used by iterative RPA.
+
+Isolated real eigenvalue JVP/VJP uses `d omega = L.T (dA) R`. Numerical vectors
+and raw spectra have stopped AD. Complex selected roots have NaN real outputs;
+negative real roots remain selectable. Failed requested/guard residuals,
+observed unresolved gaps or excessive conditioning invalidate derivatives for
+the complete requested set. Vector/cluster and higher-order response are not
+provided. The caller owns CC amplitude response and sector interpretation;
+see [EOM-CCSD](../cc/eom/README.md).
+
+Real clusters unresolved at matrix-scaled roundoff are represented by real
+left/right SVD null-space bases. Their full cluster overlap is solved before
+truncating requested roots, so a conjugate numerical representation cannot lose
+rank merely by taking real parts. This repair occurs in the projected matrix for
+Davidson and the bounded physical matrix for dense solving. It preserves the
+original eigenvalues and all physical residual/conditioning checks; it is not
+Hermitianization, a pseudoinverse, or a new degenerate-root AD policy.

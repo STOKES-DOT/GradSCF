@@ -23,6 +23,32 @@
   reproducibility artifacts, and the existing NPZ target-bundle format marker.
 - Retire the old import namespaces without a compatibility alias.
 
+### Closed-shell EOM-CCSD
+
+- Repair roundoff-degenerate real Ritz bases with complete cluster duals before
+  root truncation, fixing CO's rank-deficient left states while retaining the
+  invalid isolated-root AD policy and true residual checks.
+- Add explicit restricted SCF multistart with native orbital-rotation guesses,
+  all-attempt summaries and lowest-converged-candidate selection; ordinary
+  single-run defaults and the source object are preserved.
+
+- Add a shared restarted non-Hermitian Davidson solver for all three sectors,
+  with right/left/guard residual checks, orbital-difference preconditioning and
+  first-order energy AD without a physical dense EOM matrix. Expose subspace
+  dimensions, restarts and incomplete spectral certification explicitly.
+- Validate water/6-31G (EE dimension 860) against the full PySCF action spectrum;
+  distinguish the oracle's complete spectrum from roots found by its default
+  two-root iterative guess.
+
+- Add singlet EE and doublet IP/EA sectors, with frozen-space support,
+  biorthogonal left/right states and first-order isolated-energy JVP/VJP
+  including the converged CC amplitude response.
+- Add a bounded dense real non-Hermitian reference to `gradscf.solvers`;
+  retain complex/gap/conditioning diagnostics and reject invalid derivatives.
+  Vector/cluster response and transition properties remain outside this implementation.
+- Add native GradSCF spectrum/response examples, independent PySCF action and
+  energy comparisons, and H2 particle-number FCI checks.
+
 ### Shared Hermitian eigensolver
 
 - Unify isolated-state and spectral-subspace differentiation behind
@@ -57,6 +83,21 @@
 
 
 ### SCF and native integrals
+
+- Add an explicit restricted spin-breaking stability channel with full-reference
+  stationarity checks, sharing existing UKS energies and the curvature solver.
+- Share bounded signed negative-mode trials between facade and integral APIs;
+  only finite converged energy-lowering candidates are accepted, with complete
+  attempt histories. RKS->UKS promotion requires the explicit spin channel.
+- Reuse fresh solved sources without rerunning SCF and validate public energy
+  aliases before following a mode, protecting energy acceptance from stale data.
+
+- Extend the existing restricted multistart to multiple explicit seeds with one
+  baseline and optional internal-stability filtering; retain all attempts.
+- Share real RKS/UKS curvature analysis through the public Hermitian solver,
+  reusing occupation rotations and each model's existing energy evaluator.
+- Add fresh stored-state SCF stationarity and SCF/CC/EOM residual reports;
+  these expose upstream precision failures without changing solver tolerances.
 
 - Add RHF/UHF, ROHF/ROKS, and GHF/GKS workflows and opt-in UHF/UKS
   internal-stability analysis with bounded lower-energy restarts.

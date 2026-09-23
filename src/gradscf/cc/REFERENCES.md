@@ -1,4 +1,4 @@
-# Ground-state CC references and implemented equations
+# CC references and implemented equations
 
 Theory, source-code adaptation, and test oracles are recorded separately.
 BibTeX entries are in [references.bib](references.bib); the source version,
@@ -17,6 +17,10 @@ modified routines, hashes, and license are in [NOTICE.md](NOTICE.md).
 | Real UCCSD(T), canonical and opt-in semicanonical | Watts, Gauss and Bartlett (1993), spin-orbital formula attributed by PySCF `gccsd_t`/`gccsd_t_slow` | Canonical OH/6-31G and explicitly semicanonical ROHF OH/STO-3G PySCF comparisons; frozen spaces, rotation invariance, restricted limit and first-order response including exact orbital degeneracy; see [formulation](SEMICANONICAL.md) |
 | CCSD 1/2-RDM | Real Hermitian part of the CC left/right expectation; 2-RDM contractions adapted from PySCF `gccsd_rdm` | R/U PySCF density comparisons, full energy reconstruction, contraction identities and outer-response finite differences |
 | Restricted QCISD/(T) | Pople, Head-Gordon and Raghavachari (1987); working contractions from PySCF QCI modules | Optimized PySCF random residual/energy, full/frozen H4 and H2O oracles; quadratic degree, fragment additivity, distinct triples weight and model response; see [QCISD.md](QCISD.md) |
+
+EOM-EE/IP/EA-CCSD method references, coordinate conventions and response
+equations are recorded in [eom/README.md](eom/README.md); their BibTeX entries
+are included in the common bibliography.
 
 ## Bibliography
 
