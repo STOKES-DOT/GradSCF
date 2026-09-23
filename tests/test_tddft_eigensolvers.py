@@ -5,10 +5,6 @@ import pytest
 
 from gradscf.tddft.casida import solve_casida_from_tdhf_operator
 from gradscf.solvers.eigen.davidson import _davidson_search_nroots
-from gradscf.solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
-from gradscf.solvers.eigen.response import (
-    implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
-)
 from gradscf.tddft.tda import solve_tda_from_operator
 from gradscf.tddft.types import TDAResult, TDDFTResult
 from gradscf.tddft.unrestricted import (
@@ -17,6 +13,51 @@ from gradscf.tddft.unrestricted import (
     solve_unrestricted_casida_from_tdhf_operator,
     solve_unrestricted_tda_from_operator,
 )
+
+
+from gradscf.solvers import EigenSolverConfig, EigenResponseConfig, LinearSolverConfig, LinearOperator, solve_hermitian
+
+
+def _eigenpairs(
+    matrix,
+    *,
+    nroots,
+    size=None,
+    diag=None,
+    tol=1e-5,
+    max_iter=100,
+    max_subspace=None,
+    collapse_subspace=None,
+    eigenvector_adjoint_tol=1e-6,
+    eigenvector_adjoint_max_iter=64,
+    target="eigenvalues"
+):
+    if callable(matrix):
+        apply = matrix
+        matrix = LinearOperator(
+            (size, size),
+            diag.dtype,
+            lambda v: apply(v[:, None])[:, 0],
+            diagonal=diag,
+            matmat=apply,
+        )
+    out = solve_hermitian(
+        matrix,
+        config=EigenSolverConfig(
+            nroots=nroots,
+            atol=tol,
+            maxiter=max_iter,
+            max_subspace=max_subspace,
+            collapse_subspace=collapse_subspace,
+        ),
+        response=EigenResponseConfig(
+            target=target,
+            linear_config=LinearSolverConfig(
+                rtol=eigenvector_adjoint_tol, maxiter=eigenvector_adjoint_max_iter
+            ),
+        ),
+    )
+    return out.values, out.vectors, jnp.all(out.converged)
 
 
 def _numpy_tda_reference(flat_a: np.ndarray, nstates: int) -> np.ndarray:
@@ -72,14 +113,7 @@ def test_implicit_eigenvector_gradient_matches_dense_single_root():
     def implicit_loss(raw_matrix):
         sym = 0.5 * (raw_matrix + raw_matrix.T)
         _, vectors, _ = (
-            implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-                sym,
-                nroots=1,
-                tol=1e-7,
-                max_iter=40,
-                eigenvector_adjoint_tol=1e-7,
-                eigenvector_adjoint_max_iter=16,
-            )
+            _eigenpairs(sym, nroots=1, tol=1e-07, max_iter=40, eigenvector_adjoint_tol=1e-07, eigenvector_adjoint_max_iter=16, target="eigenpairs")
         )
         return (vectors[:, 0] @ probe) ** 2
 
@@ -113,14 +147,7 @@ def test_implicit_eigenvector_multi_root_gradient_matches_dense():
     def implicit_loss(raw_matrix):
         sym = 0.5 * (raw_matrix + raw_matrix.T)
         values, vectors, _ = (
-            implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-                sym,
-                nroots=3,
-                tol=1e-7,
-                max_iter=50,
-                eigenvector_adjoint_tol=1e-7,
-                eigenvector_adjoint_max_iter=20,
-            )
+            _eigenpairs(sym, nroots=3, tol=1e-07, max_iter=50, eigenvector_adjoint_tol=1e-07, eigenvector_adjoint_max_iter=20, target="eigenpairs")
         )
         transition = vectors.T @ probe
         return jnp.sum(weights * values * transition**2)
@@ -144,18 +171,12 @@ def test_implicit_eigenvector_mode_preserves_eigenvalue_gradient():
     matrix = matrix.at[0, 1].set(0.04).at[1, 0].set(0.04)
 
     def old_loss(raw_matrix):
-        values, _, _ = implicit_differential_davidson_lowest_symmetric(
-            raw_matrix,
-            nroots=2,
-        )
+        values, _, _ = _eigenpairs(raw_matrix, nroots=2)
         return jnp.sum(values)
 
     def new_loss(raw_matrix):
         values, _, _ = (
-            implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-                raw_matrix,
-                nroots=2,
-            )
+            _eigenpairs(raw_matrix, nroots=2, target="eigenpairs")
         )
         return jnp.sum(values)
 
@@ -170,11 +191,7 @@ def test_implicit_eigenvector_mode_preserves_eigenvalue_gradient():
 def test_implicit_eigenvector_solver_is_jittable():
     matrix = jnp.diag(jnp.asarray([0.7, 1.0, 1.4, 1.9], dtype=jnp.float32))
     solve = jax.jit(
-        lambda raw: implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-            raw,
-            nroots=2,
-            eigenvector_adjoint_max_iter=12,
-        )
+        lambda raw: _eigenpairs(raw, nroots=2, eigenvector_adjoint_max_iter=12, target="eigenpairs")
     )
 
     values, vectors, converged = solve(matrix)
@@ -289,7 +306,7 @@ def test_tda_flags_roots_below_pyscf_positive_threshold_as_nonconverged():
     assert not bool(np.asarray(result.converged))
 
 
-def test_operator_solvers_use_requested_root_count_by_default():
+def test_unified_tda_explores_hidden_low_energy_sector():
     flat_a = np.asarray(
         [
             [2.0, 0.0, 0.0, 0.0],
@@ -318,7 +335,8 @@ def test_operator_solvers_use_requested_root_count_by_default():
         davidson_max_iter=20,
     )
 
-    np.testing.assert_allclose(np.asarray(tda.excitation_energies), np.asarray([2.0]))
+    np.testing.assert_allclose(np.asarray(tda.excitation_energies), _numpy_tda_reference(flat_a, 1), atol=1e-10)
+    # Legacy structured RPA starting guesses are outside this Hermitian migration.
     np.testing.assert_allclose(np.asarray(casida.excitation_energies), np.asarray([2.0]))
 
 
@@ -345,14 +363,7 @@ def test_davidson_restart_matches_numpy_on_random_symmetric_matrix():
     matrix = 0.5 * (matrix + matrix.T)
 
     ref_eigvals, _ = np.linalg.eigh(matrix)
-    eigvals, _, converged = implicit_differential_davidson_lowest_symmetric(
-        jnp.asarray(matrix),
-        nroots=4,
-        tol=1e-5,
-        max_iter=120,
-        max_subspace=12,
-        collapse_subspace=8,
-    )
+    eigvals, _, converged = _eigenpairs(jnp.asarray(matrix), nroots=4, tol=1e-05, max_iter=120, max_subspace=12, collapse_subspace=8)
 
     assert converged
     np.testing.assert_allclose(
@@ -370,16 +381,7 @@ def test_davidson_callable_matches_numpy_on_random_symmetric_matrix():
     matrix = 0.5 * (matrix + matrix.T)
 
     ref_eigvals, _ = np.linalg.eigh(matrix)
-    eigvals, _, converged = implicit_differential_davidson_lowest_symmetric(
-        lambda vectors: jnp.asarray(matrix) @ vectors,
-        nroots=5,
-        size=dim,
-        diag=jnp.diag(jnp.asarray(matrix)),
-        tol=1e-5,
-        max_iter=120,
-        max_subspace=14,
-        collapse_subspace=10,
-    )
+    eigvals, _, converged = _eigenpairs(lambda vectors: jnp.asarray(matrix) @ vectors, nroots=5, size=dim, diag=jnp.diag(jnp.asarray(matrix)), tol=1e-05, max_iter=120, max_subspace=14, collapse_subspace=10)
 
     assert converged
     np.testing.assert_allclose(
@@ -697,16 +699,7 @@ def test_davidson_callable_is_jittable():
     diag = jnp.diag(jnp.asarray(matrix))
 
     compiled = jax.jit(
-        lambda d: implicit_differential_davidson_lowest_symmetric(
-            lambda vectors: jnp.asarray(matrix) @ vectors,
-            nroots=4,
-            size=dim,
-            diag=d,
-            tol=1e-5,
-            max_iter=80,
-            max_subspace=20,
-            collapse_subspace=12,
-        )
+        lambda d: _eigenpairs(lambda vectors: jnp.asarray(matrix) @ vectors, nroots=4, size=dim, diag=d, tol=1e-05, max_iter=80, max_subspace=20, collapse_subspace=12)
     )
     eigvals, eigvecs, converged = compiled(diag)
 
@@ -729,16 +722,7 @@ def test_davidson_callable_is_jittable_with_x64_enabled():
 
     with enable_x64(True):
         compiled = jax.jit(
-            lambda d: implicit_differential_davidson_lowest_symmetric(
-                lambda vectors: jnp.asarray(matrix) @ vectors,
-                nroots=4,
-                size=dim,
-                diag=d,
-                tol=1e-8,
-                max_iter=80,
-                max_subspace=20,
-                collapse_subspace=12,
-            )
+            lambda d: _eigenpairs(lambda vectors: jnp.asarray(matrix) @ vectors, nroots=4, size=dim, diag=d, tol=1e-08, max_iter=80, max_subspace=20, collapse_subspace=12)
         )
         eigvals, eigvecs, converged = compiled(diag)
 

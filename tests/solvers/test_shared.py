@@ -5,6 +5,51 @@ import numpy as np
 import pytest
 
 
+from gradscf.solvers import EigenSolverConfig, EigenResponseConfig, LinearSolverConfig, LinearOperator, solve_hermitian
+
+
+def _eigenpairs(
+    matrix,
+    *,
+    nroots,
+    size=None,
+    diag=None,
+    tol=1e-5,
+    max_iter=100,
+    max_subspace=None,
+    collapse_subspace=None,
+    eigenvector_adjoint_tol=1e-6,
+    eigenvector_adjoint_max_iter=64,
+    target="eigenvalues"
+):
+    if callable(matrix):
+        apply = matrix
+        matrix = LinearOperator(
+            (size, size),
+            diag.dtype,
+            lambda v: apply(v[:, None])[:, 0],
+            diagonal=diag,
+            matmat=apply,
+        )
+    out = solve_hermitian(
+        matrix,
+        config=EigenSolverConfig(
+            nroots=nroots,
+            atol=tol,
+            maxiter=max_iter,
+            max_subspace=max_subspace,
+            collapse_subspace=collapse_subspace,
+        ),
+        response=EigenResponseConfig(
+            target=target,
+            linear_config=LinearSolverConfig(
+                rtol=eigenvector_adjoint_tol, maxiter=eigenvector_adjoint_max_iter
+            ),
+        ),
+    )
+    return out.values, out.vectors, jnp.all(out.converged)
+
+
 def test_shared_namespace():
     import gradscf
     assert "solvers" in dir(gradscf)
@@ -78,13 +123,15 @@ def test_hermitian_root_and_vector_response(method):
 
 
 def test_failed_eigenproblem_derivatives_are_invalid():
-    from gradscf.solvers import EigenSolverConfig,solve_hermitian
-    a = jnp.array([[.8,.07,.01],[.07,1.3,.04],[.01,.04,1.9]])
-    cfg = EigenSolverConfig(maxiter=1,atol=1e-14,gradient_mode="implicit_eigenvector")
-    fn = lambda t: solve_hermitian(a+t*jnp.ones_like(a),config=cfg)
-    assert not np.all(fn(0.).converged)
-    assert not np.isfinite(jax.grad(lambda t:fn(t).values[0])(0.))
-    assert not np.isfinite(jax.grad(lambda t:fn(t).vectors[0,0]**2)(0.))
+    from gradscf.solvers import EigenSolverConfig, solve_hermitian
+
+    raw = jnp.asarray(np.random.default_rng(34).normal(size=(7, 7)))
+    a = 2 * jnp.eye(7) + (raw + raw.T) * 0.05
+    cfg = EigenSolverConfig(maxiter=1, atol=1e-14, gradient_mode="implicit_eigenvector")
+    fn = lambda t: solve_hermitian(a + t * jnp.ones_like(a), config=cfg)
+    assert not np.all(fn(0.0).converged)
+    assert not np.isfinite(jax.grad(lambda t: fn(t).values[0])(0.0))
+    assert not np.isfinite(jax.grad(lambda t: fn(t).vectors[0, 0] ** 2)(0.0))
 
 
 def test_public_eigen_does_not_silently_symmetrize_invalid_inputs():
@@ -109,20 +156,29 @@ def test_solver_layer_has_no_electronic_structure_or_private_jax_dependencies():
 
 
 def test_failed_roots_use_shared_invalid_derivative_policy():
-    from gradscf.solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
-    from gradscf.solvers.eigen.response import (
-        implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
-    )
-    a = jnp.array([[.8,.07,.01],[.07,1.3,.04],[.01,.04,1.9]])
+    raw = jnp.asarray(np.random.default_rng(34).normal(size=(7, 7)))
+    a = 2 * jnp.eye(7) + (raw + raw.T) * 0.05
+
     def energy(t):
-        return implicit_differential_davidson_lowest_symmetric(
-            a+t*jnp.ones_like(a), nroots=1, tol=1e-14, max_iter=1)[0][0]
+        return _eigenpairs(a + t * jnp.ones_like(a), nroots=1, tol=1e-14, max_iter=1)[
+            0
+        ][0]
+
     def weight(t):
-        return implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-            a+t*jnp.ones_like(a), nroots=1, tol=1e-14, max_iter=1)[1][0,0]**2
-    assert np.isfinite(energy(0.))
-    assert not np.isfinite(jax.grad(energy)(0.))
-    assert not np.isfinite(jax.grad(weight)(0.))
+        return (
+            _eigenpairs(
+                a + t * jnp.ones_like(a),
+                nroots=1,
+                tol=1e-14,
+                max_iter=1,
+                target="eigenpairs",
+            )[1][0, 0]
+            ** 2
+        )
+
+    assert np.isfinite(energy(0.0))
+    assert not np.isfinite(jax.grad(energy)(0.0))
+    assert not np.isfinite(jax.grad(weight)(0.0))
 
 
 def test_linear_preconditioned_vmap_and_shape_boundaries():

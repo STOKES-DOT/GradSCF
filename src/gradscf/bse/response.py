@@ -1,9 +1,13 @@
 """Static physical problem assembly through GradSCF's common eigensolver."""
 
-import numpy as np
-import jax
 import jax.numpy as jnp
-from ..solvers import EigenSolverConfig, solve_hermitian, solve_rpa
+from ..solvers import (
+    EigenSolverConfig,
+    EigenResponseConfig,
+    LinearSolverConfig,
+    solve_hermitian,
+    solve_rpa,
+)
 from ..solvers.diagnostics import require_converged_derivative
 from ..gw.screened import build_static_screening
 from .space import make_bse_space
@@ -119,49 +123,34 @@ def run_bse(
     op = build_tda_operator(
         qp, l, space, state, singlet=cfg.singlet, block_size=cfg.block_size
     )
-    nsolve = min(cfg.nroots + 1, space.size)
-    width = min(cfg.max_space, space.size)
-    if cfg.solver == "davidson" and width < nsolve:
-        raise ValueError(
-            "max_space must include requested roots and the BSE guard root"
-        )
-    initial = None
-    if cfg.solver == "davidson":
-        k = min(width, max(nsolve, 2 * nsolve))
-        initial = (
-            jnp.asarray(np.random.default_rng(cfg.seed).normal(size=(space.size, k)))
-            * 0.05
-        )
-        initial = initial.at[jnp.argsort(op.diagonal)[:k], jnp.arange(k)].add(1.0)
     solved = solve_hermitian(
         op,
         config=EigenSolverConfig(
             method=cfg.solver,
-            nroots=nsolve,
+            nroots=cfg.nroots,
             atol=cfg.conv_tol,
             maxiter=cfg.max_cycle,
-            max_subspace=width,
+            max_subspace=cfg.max_space,
             max_dense=cfg.max_dense,
-            gradient_mode=cfg.gradient_mode,
-            adjoint_tol=cfg.adjoint_tol,
-            adjoint_maxiter=cfg.adjoint_max_cycle,
+            seed=cfg.seed,
         ),
-        initial_vectors=initial,
+        response=EigenResponseConfig(
+            target=(
+                "eigenpairs"
+                if cfg.gradient_mode == "implicit_eigenvector"
+                else "eigenvalues"
+            ),
+            gap_atol=cfg.gap_tol,
+            gap_rtol=0.0,
+            linear_config=LinearSolverConfig(
+                rtol=cfg.adjoint_tol, maxiter=cfg.adjoint_max_cycle
+            ),
+        ),
     )
-    energies = solved.values[: cfg.nroots]
-    distances = jnp.abs(energies[:, None] - solved.values[None, :])
-    distances = distances.at[jnp.arange(cfg.nroots), jnp.arange(cfg.nroots)].set(
-        jnp.inf
-    )
-    margin = (
-        cfg.gap_tol
-        + solved.residual_norms[: cfg.nroots, None]
-        + solved.residual_norms[None, :]
-    )
-    isolated = jnp.all(distances > margin, axis=1) & jnp.all(solved.converged)
-    converged = solved.converged[: cfg.nroots] & valid
+    energies = solved.values
+    converged = solved.converged & valid
     stable = energies > cfg.gap_tol
-    response_valid = converged & stable & isolated
+    response_valid = solved.response_valid & valid & jnp.all(stable)
     energies = require_converged_derivative(energies, response_valid)
     x = solved.vectors[:, : cfg.nroots].T.reshape(
         cfg.nroots, len(space.occupied), len(space.virtual)

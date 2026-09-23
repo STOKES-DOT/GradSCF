@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+from ..solvers import (
+    LinearOperator,
+    EigenSolverConfig,
+    EigenResponseConfig,
+    LinearSolverConfig,
+    solve_hermitian,
+)
+
 from collections.abc import Callable
 
 import jax.numpy as jnp
@@ -7,11 +15,8 @@ import jax.numpy as jnp
 from .defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
 from .defaults import PYSCF_TD_DAVIDSON_TOL
 from .defaults import PYSCF_TD_POSITIVE_EIG_THRESHOLD
-from ..solvers.eigen.davidson import _davidson_search_nroots
-from ..solvers.eigen.davidson import implicit_differential_davidson_lowest_symmetric
 from ..solvers.eigen.response import (
     EigenGradientMode,
-    implicit_differential_davidson_lowest_symmetric_with_eigenvectors,
 )
 from .types import TDAResult
 
@@ -59,39 +64,44 @@ def solve_tda_from_operator(
     nocc, nvir = delta_eps.shape
     dim = int(nocc * nvir)
     nroots = dim if nstates is None else min(int(nstates), dim)
-    search_nroots = _davidson_search_nroots(nroots, dim)
-    solver_kwargs = {
-        "nroots": search_nroots,
-        "size": dim,
-        "diag": jnp.asarray(diagonal).reshape(dim),
-        "tol": davidson_tol,
-        "max_iter": davidson_max_iter,
-        "max_subspace": davidson_max_subspace,
-        "initial_guess_count": davidson_initial_guess_count,
-        "max_trial_vectors": davidson_max_trial_vectors,
-        "positive_eig_threshold": excitation_threshold,
-    }
+    if tda_gradient_mode not in {"eigenvalue_only", "implicit_eigenvector"}:
+        raise ValueError(f"Unsupported TDA gradient mode {tda_gradient_mode!r}.")
+
     def matrix_action(vectors):
         return vind_rows(jnp.asarray(vectors).T).T
 
-    if tda_gradient_mode == "eigenvalue_only":
-        eigvals, eigvecs, converged = (
-            implicit_differential_davidson_lowest_symmetric(
-                matrix_action,
-                **solver_kwargs,
-            )
-        )
-    elif tda_gradient_mode == "implicit_eigenvector":
-        eigvals, eigvecs, converged = (
-            implicit_differential_davidson_lowest_symmetric_with_eigenvectors(
-                matrix_action,
-                eigenvector_adjoint_tol=eigenvector_adjoint_tol,
-                eigenvector_adjoint_max_iter=eigenvector_adjoint_max_iter,
-                **solver_kwargs,
-            )
-        )
-    else:
-        raise ValueError(f"Unsupported TDA gradient mode {tda_gradient_mode!r}.")
+    diag = jnp.asarray(diagonal).reshape(dim)
+    operator = LinearOperator(
+        (dim, dim),
+        diag.dtype,
+        lambda v: matrix_action(v[:, None])[:, 0],
+        diagonal=diag,
+        matmat=matrix_action,
+    )
+    solved = solve_hermitian(
+        operator,
+        config=EigenSolverConfig(
+            nroots=nroots,
+            atol=davidson_tol,
+            maxiter=davidson_max_iter,
+            max_subspace=davidson_max_subspace,
+            value_min=excitation_threshold,
+            initial_guess_count=davidson_initial_guess_count,
+            max_trial_vectors=davidson_max_trial_vectors,
+        ),
+        response=EigenResponseConfig(
+            target=(
+                "eigenpairs"
+                if tda_gradient_mode == "implicit_eigenvector"
+                else "eigenvalues"
+            ),
+            linear_config=LinearSolverConfig(
+                rtol=eigenvector_adjoint_tol, maxiter=eigenvector_adjoint_max_iter
+            ),
+        ),
+    )
+    eigvals, eigvecs = solved.values, solved.vectors
+    converged = jnp.all(solved.converged) & jnp.all(eigvals > excitation_threshold)
     return _finalize_tda_result(
         eigvals,
         eigvecs,

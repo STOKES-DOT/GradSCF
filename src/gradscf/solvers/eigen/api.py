@@ -1,66 +1,164 @@
-"""Shared checked eigenvalue and eigenvector response API."""
+"""One real Hermitian solve with explicitly selected differentiable observables."""
+
 import jax
 import jax.numpy as jnp
-
 from ..operators import as_operator, validate_real_square
 from ..diagnostics import require_converged_derivative
-from ..types import EigenSolverConfig, EigenResult
-from .davidson import _davidson_lowest_symmetric
-from .dense import dense_vectors
-from .response import attach_eigenvector_response
+from ..types import (
+    EigenSolverConfig,
+    EigenResponseConfig,
+    LinearSolverConfig,
+    EigenResult,
+)
+from .primal import solve_ritz
+from .response import attach_spectral_response
 
 
-def solve_hermitian(matrix_or_operator, *, config=None, initial_vectors=None):
-    """Solve a real symmetric problem with isolated-root first-order AD.
+def solve_hermitian(
+    matrix_or_operator, *, config=None, response=None, probes=None, initial_vectors=None
+):
+    """Solve once; differentiate isolated eigenpairs or an isolated subspace.
 
-    Matrix-free callers assert symmetry. Dense inputs are checked, never
-    silently symmetrized. Failed primal roots keep their Ritz values while
-    their derivatives are invalid. No automatic positive-eigenvalue filtering.
-    Optional initial_vectors supplies a full-rank Davidson starting block.
-    Initial guesses are numerical controls, not differentiated physical inputs.
+    Subspace mode permits internal degeneracy and exposes only invariant AD
+    outputs. Static targets keep JIT shapes fixed. Raw Ritz diagnostics include
+    one available guard root; no automatic dimension expansion at a crossing.
+    Legacy config AD controls remain honored when response is omitted (also
+    used by RPA); combining nondefault legacy controls with response is an error.
     """
-    config = EigenSolverConfig() if config is None else config
+    cfg = EigenSolverConfig() if config is None else config
+    if response is None:
+        response = EigenResponseConfig(
+            target=(
+                "eigenpairs"
+                if cfg.gradient_mode == "implicit_eigenvector"
+                else "eigenvalues"
+            ),
+            linear_config=LinearSolverConfig(
+                rtol=cfg.adjoint_tol, maxiter=cfg.adjoint_maxiter, restart=40
+            ),
+        )
+    elif (
+        cfg.gradient_mode != "eigenvalue_only"
+        or cfg.adjoint_tol != 1e-10
+        or cfg.adjoint_maxiter != 100
+    ):
+        raise ValueError("Use response controls or legacy config AD controls, not both")
+    if not isinstance(response, EigenResponseConfig):
+        raise TypeError("response must be an EigenResponseConfig")
     op = as_operator(matrix_or_operator)
     validate_real_square(op)
-    dim = op.shape[0]
-    if config.nroots > dim:
-        raise ValueError("nroots exceeds operator dimension")
-    if initial_vectors is not None:
-        if config.method != 'davidson':
-            raise ValueError("initial_vectors applies only to Davidson")
-        if jnp.iscomplexobj(initial_vectors):
-            raise NotImplementedError("Public solvers require real initial vectors")
-    if config.method == "dense":
-        vectors = dense_vectors(op, nroots=config.nroots, max_dense=config.max_dense)
+    n, k = op.shape[0], cfg.nroots
+    if probes is not None:
+        if response.target != "subspace":
+            raise ValueError("probes require a subspace response")
+        probes = jnp.asarray(probes)
+        if probes.ndim not in (1, 2) or probes.shape[0] != n:
+            raise ValueError("Projector probes must have shape (n,) or (n,nvec)")
+        if not jnp.issubdtype(probes.dtype, jnp.floating):
+            raise NotImplementedError(
+                "Projector probes must be real floating-point data"
+            )
+        probes = probes.astype(jnp.result_type(probes.dtype, op.dtype))
+    structure = jnp.asarray(True)
+    if not hasattr(matrix_or_operator, "matvec"):
+        a = jnp.asarray(matrix_or_operator)
+        symmetry_tol = (
+            32 * jnp.finfo(a.dtype).eps * jnp.maximum(1.0, jnp.linalg.norm(a))
+        )
+        structure = jnp.all(jnp.isfinite(a)) & (
+            jnp.linalg.norm(a - a.T) <= symmetry_tol
+        )
+    roots = solve_ritz(
+        op, cfg, initial_vectors=initial_vectors, structure_valid=structure
+    )
+    x = roots.vectors[:, :k]
+    if k < n:
+        gap = roots.values[k] - roots.values[k - 1]
+        threshold = (
+            response.gap_atol
+            + response.gap_rtol
+            * jnp.maximum(jnp.abs(roots.values[k]), jnp.abs(roots.values[k - 1]))
+            + roots.residual_norms[k]
+            + roots.residual_norms[k - 1]
+        )
+        known_end = (~roots.present[k]) & roots.complete & jnp.all(roots.present[:k])
+        gap = jnp.where(known_end, jnp.inf, gap)
+        separated = known_end | (roots.present[k] & (gap > threshold))
     else:
-        if op.diagonal is None:
-            raise ValueError("Davidson requires an operator diagonal approximation")
-        # Resolve small preconditioned residuals at the requested tolerance.
-        # A fixed 1e-10 rejection threshold can stagnate before a tight guard
-        # root converges, particularly after a bounded-subspace restart.
-        scale = jnp.maximum(1., jnp.max(jnp.abs(op.diagonal)))
-        orth_eps = jnp.minimum(1e-10, .01*config.atol/scale)
-        _, vectors, _ = _davidson_lowest_symmetric(
-            lambda x: jax.lax.stop_gradient(op.apply(x)), nroots=config.nroots,
-            size=dim, diag=op.diagonal, tol=config.atol, max_iter=config.maxiter,
-            max_subspace=config.max_subspace, positive_eig_threshold=None,
-            initial_vectors=initial_vectors, orth_eps=orth_eps)
-    vectors = jax.lax.stop_gradient(vectors)
-    applied = op.apply(vectors)
-    values = jnp.sum(vectors * applied, axis=0)
-    residuals = jnp.linalg.norm(applied - vectors * values[None, :], axis=0)
-    valid = jnp.isfinite(values) & (residuals <= config.atol)
-    if not hasattr(matrix_or_operator, 'matvec'):
-        matrix = jnp.asarray(matrix_or_operator)
-        symmetry_tol = 32*jnp.finfo(matrix.dtype).eps*jnp.maximum(1.,jnp.linalg.norm(matrix))
-        valid = valid & (jnp.linalg.norm(matrix-matrix.T) <= symmetry_tol)
-    if config.gradient_mode == "implicit_eigenvector":
-        def response_apply(x):
-            # Guard the operator's response before GMRES transposition. NaN
-            # cotangents injected only at returned vectors can be swallowed by
-            # iterative stopping logic when propagated through the linear solve.
-            return require_converged_derivative(op.apply(x), jnp.all(valid))
-        vectors = attach_eigenvector_response(response_apply, values, vectors,
-            tol=config.adjoint_tol, max_iter=config.adjoint_maxiter)
-    values = require_converged_derivative(values, valid)
-    return EigenResult(values, vectors, residuals, valid, jnp.where(valid, 0, 1))
+        gap = jnp.asarray(jnp.inf, x.dtype)
+        separated = jnp.asarray(True)
+    guard_valid = jnp.all(roots.converged[k:] | (~roots.present[k:] & roots.complete))
+    all_converged = jnp.all(roots.converged[:k]) & guard_valid
+    valid = all_converged & separated
+    if cfg.value_min is not None:
+        lower_margin = (
+            response.gap_atol
+            + response.gap_rtol * (abs(cfg.value_min) + roots.lower_gap)
+            + roots.lower_residual
+        )
+        valid &= (roots.lower_gap > lower_margin) & (roots.lower_residual <= cfg.atol)
+    if response.target != "subspace":
+        distance = jnp.abs(roots.values[:k, None] - roots.values[None, :])
+        scale = jnp.maximum(
+            jnp.abs(roots.values[:k, None]), jnp.abs(roots.values[None, :])
+        )
+        threshold = (
+            response.gap_atol
+            + response.gap_rtol * scale
+            + roots.residual_norms[:k, None]
+            + roots.residual_norms[None, :]
+        )
+        distance = distance.at[jnp.arange(k), jnp.arange(k)].set(jnp.inf)
+        valid &= jnp.all((distance > threshold) | ~roots.present[None, :])
+
+    def apply(z):
+        return require_converged_derivative(op.apply(z), valid)
+
+    projection = trace = None
+    if response.target == "subspace":
+        if probes is not None:
+            if k == n:
+                projection = probes
+            else:
+                y = attach_spectral_response(
+                    apply, x, config=response.linear_config, valid=valid
+                )
+                projection = y @ (y.T @ probes)
+            projection = require_converged_derivative(projection, valid)
+        trace = require_converged_derivative(jnp.sum(x * apply(x)), valid)
+        values = vectors = None
+        converged = all_converged
+        response_valid = valid
+    else:
+        values = require_converged_derivative(jnp.sum(x * apply(x), axis=0), valid)
+        if response.target == "eigenpairs":
+
+            def attach(i):
+                return attach_spectral_response(
+                    apply, x[:, i, None], config=response.linear_config, valid=valid
+                )[:, 0]
+
+            vectors = jax.lax.map(attach, jnp.arange(k)).T
+            vectors = require_converged_derivative(vectors, valid)
+        else:
+            vectors = x
+        converged = roots.converged[:k]
+        response_valid = jnp.broadcast_to(valid, (k,))
+    status = jnp.where(~converged, 1, jnp.where(response_valid, 0, 2))
+    return EigenResult(
+        values,
+        vectors,
+        roots.residual_norms[:k],
+        converged,
+        status,
+        response_valid,
+        gap,
+        roots.values,
+        roots.vectors,
+        roots.residual_norms,
+        roots.present,
+        roots.lower_gap,
+        roots.lower_residual,
+        projection,
+        trace,
+    )

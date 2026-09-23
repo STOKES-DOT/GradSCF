@@ -12,13 +12,12 @@ from .davidson import (
     _davidson_search_nroots, _davidson_max_subspace,
     _residual_tol_with_dtype_slack, _all_roots_converged, _matmul,
     _safe_preconditioner_denominator, _resolve_symmetric_linear_operator,
-    _davidson_lowest_symmetric, implicit_differential_davidson_lowest_symmetric,
+    _davidson_lowest_symmetric,
 )
 
 DEFAULT_RPA_TOL = 1e-5
 DEFAULT_RPA_MAXITER = 512
-__all__ = ["implicit_differential_davidson_lowest_symmetric",
-           "implicit_differential_davidson_lowest_tdhf"]
+__all__ = ["implicit_differential_davidson_lowest_tdhf"]
 
 
 def _davidson_lowest_tdhf(

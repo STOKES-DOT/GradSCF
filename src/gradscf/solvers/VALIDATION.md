@@ -87,7 +87,8 @@ intended import lines changed. `git diff --check` also passed.
 
 ## Isolated degenerate spectral subspaces (2026-09-21)
 
-`solve_spectral_projector` was validated on real symmetric toy matrices on
+The former `solve_spectral_projector` entry (now migrated to the unified
+`solve_hermitian` subspace target) was validated on real symmetric toy matrices on
 arm64 CPU (`TFRT_CPU_0`), JAX 0.8.1, float64, `OMP_NUM_THREADS=1`.
 The reference and mathematical contract are in [DEGENERACY.md](DEGENERACY.md).
 No generalized metric, non-Hermitian/RPA, GPU or higher-order subspace-response
@@ -157,3 +158,84 @@ and couples it to the excluded states. For `loss = probe.T @ P @ probe`:
 | Maximum Ritz residual | 1.82e-15 |
 | Cut-cluster status with one selected root | 2 (invalid response) |
 | Elapsed time including compilation | 6.15 s |
+
+## Unified Hermitian response (2026-09-23)
+
+The P1–P3 refactor in [UNIFIED_EIGEN.md](UNIFIED_EIGEN.md) starts from
+`bef1be3`, in `/private/tmp/gradscf-eigen-unified`. Environment: macOS arm64,
+Python 3.12, JAX 0.8.1 CPU, float64 unless an existing float32 regression
+explicitly specifies otherwise; `OMP_NUM_THREADS=1`.
+
+Before implementation, `tests/solvers/test_shared.py` and `test_subspace.py`
+passed **38 tests in 64.15 seconds**. The unified core and migrated versions of
+these tests subsequently passed **43 tests in 70.40 seconds**. Those checks
+cover isolated-vector equivalence, exact/near internal degeneracies, rotated
+frames, variable probes, boundary guards, matrix-free memory bounds and
+one-forward-solve behavior. These are overlapping checkpoints, not additive
+coverage counts.
+
+Independent review found two migration regressions and both were reproduced
+before correction:
+
+- TDA must select the lowest roots *above* its physical threshold. The common
+  primal now supports explicit `value_min` intervals rather than merely clearing
+  a lowest negative root after the solve. Both the excluded and included side
+  of the cutoff are checked. Missing upper guards are accepted only after full
+  spectral coverage; missing requested roots remain unconverged.
+- The dense RPA inner problem has squared-frequency units. Its default absolute
+  Hermitian gap tolerance incorrectly rejected separated low-frequency roots.
+  The inner check now uses relative machine resolution and the RPA layer keeps
+  its physical frequency-gap criterion. For A=diag(1e-5,2e-5), B=0, the first
+  frequency's scaling derivative is 1e-5, not NaN. RPA explicitly rejects the
+  new Hermitian interval option until RPA window semantics are defined.
+
+The updated migration/interval/low-frequency regressions plus TDDFT eigensolver
+and BSE-limit tests passed **34 tests in 51.45 seconds**. The first broad pass
+had 219 passes and one obsolete underconvergence-fixture failure: its
+`max_subspace=3` no longer had room for a guard and two correction slots.
+The fixture was enlarged to four slots while retaining a six-dimensional
+problem and a one-cycle limit; it still tests genuine nonconvergence.
+
+### Runnable degenerate-subspace example
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python examples/degenerate_subspace.py
+```
+
+Dimensionless 4-by-4 real symmetric matrix, rank-2 internally degenerate
+subspace. The scalar parameter multiplies the example's perturbation matrix;
+there is no SCF or nuclear-coordinate derivative in this example.
+
+- Projected-probe loss: 0.2500000000000002.
+- JVP: -0.11499999999999991; VJP: -0.115.
+- Central difference, step 1e-4: -0.11499999993655474.
+- Absolute AD/FD difference: 6.35e-11.
+- Requested residuals below 9.2e-16; boundary gap approximately 2.
+- Cutting the cluster returns status 2 (invalid response prerequisites).
+- Total script time, including compilation and checks: 5.60 seconds.
+
+The old standalone response exports and forwarding module are absent. The
+first-order fixed-Euclidean-metric contract remains unchanged in scope. RPA
+cluster response, aggregate optical APIs, generalized variable metrics,
+non-Hermitian EOM response and higher-order spectral derivatives are not
+implemented by this refactor.
+
+### Unified-response final regression gate
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python -m pytest -q tests/bse tests/solvers tests/ci \
+  tests/test_tddft_eigensolvers.py tests/test_pyscf_style_excited_state_api.py --tb=short
+```
+
+**226 passed**, no skips, 3 warnings, 329.22 seconds. The warnings are the
+existing GW complex-to-real reverse-pass warning and two PySCF OpenMP-availability
+warnings. Independent review rechecked both original migration failures, absent
+interval guards, insufficient requested roots, and cutoff-boundary behavior;
+no remaining blocking issue was found. `git diff --check` passed.
+
+This command includes the final RPA interval-option rejection tests. Earlier
+checkpoint counts overlap with it. The complete repository suite, remote/GPU
+backends, higher derivatives and the deferred P4/P5 interfaces were not run or
+implemented by this increment.

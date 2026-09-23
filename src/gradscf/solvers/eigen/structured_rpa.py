@@ -87,6 +87,9 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0):
         if config is None
         else config
     )
+    if cfg.value_min is not None:
+        raise ValueError("value_min is a Hermitian interval control, not an RPA frequency window")
+
     if any(not isfinite(t) or t <= 0 for t in (gap_tol, stability_tol)):
         raise ValueError("RPA tolerances must be finite and positive")
     if not isinstance(seed, Integral) or seed < 0:

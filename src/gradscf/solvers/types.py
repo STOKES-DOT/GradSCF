@@ -1,5 +1,6 @@
 """Static solver configuration and JIT-compatible results."""
-from dataclasses import dataclass
+
+from dataclasses import dataclass, field
 from math import isfinite
 from typing import NamedTuple
 
@@ -37,6 +38,11 @@ class EigenSolverConfig:
     adjoint_tol: float = 1e-10
     adjoint_maxiter: int = 100
     max_dense: int = 2048
+    collapse_subspace: int | None = None
+    initial_guess_count: int | None = None
+    max_trial_vectors: int | None = None
+    seed: int = 0
+    value_min: float | None = None
 
     def __post_init__(self):
         if self.method not in {"davidson", "dense"}:
@@ -51,6 +57,40 @@ class EigenSolverConfig:
             raise ValueError("solver limits must be positive")
         if self.max_subspace is not None and self.max_subspace < self.nroots:
             raise ValueError("max_subspace must be at least nroots")
+
+        for name in ("collapse_subspace", "initial_guess_count", "max_trial_vectors"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, int) or value < 1):
+                raise ValueError(f"{name} must be a positive integer")
+        if self.value_min is not None and not isfinite(self.value_min):
+            raise ValueError("value_min must be finite")
+        if not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("seed must be a nonnegative integer")
+
+
+@dataclass(frozen=True)
+class EigenResponseConfig:
+    """Static differentiated observable; no automatic switching at degeneracy."""
+
+    target: str = "eigenvalues"
+    gap_atol: float = 1e-8
+    gap_rtol: float = 1e-8
+    linear_config: LinearSolverConfig = field(
+        default_factory=lambda: LinearSolverConfig(rtol=1e-10, restart=40)
+    )
+
+    def __post_init__(self):
+        if self.target not in {"eigenvalues", "eigenpairs", "subspace"}:
+            raise ValueError("Unknown eigen response target")
+        if (
+            any(not isfinite(x) or x < 0 for x in (self.gap_atol, self.gap_rtol))
+            or self.gap_atol + self.gap_rtol == 0
+        ):
+            raise ValueError(
+                "At least one finite spectral gap tolerance must be positive"
+            )
+        if not isinstance(self.linear_config, LinearSolverConfig):
+            raise TypeError("linear_config must be a LinearSolverConfig")
 
 
 class LinearResult(NamedTuple):
@@ -68,30 +108,32 @@ class TensorSumResult(NamedTuple):
 
 
 class EigenResult(NamedTuple):
-    values: Array
-    vectors: Array
-    residual_norms: Array
-    converged: Array
-    status: Array
+    """Unified spectral result with separate primal and AD diagnostics.
 
-
-class SpectralProjectorResult(NamedTuple):
-    """Low-rank spectral observables, without gauge-dependent eigenvectors.
-
-    projection has the shape of the supplied vector/block. residual_norms
-    includes the extra boundary root when nroots < dimension. converged tests
-    the primal eigenspace; response_valid additionally requires a resolved
-    boundary gap. status: 0 valid, 1 invalid eigenspace, 2 unresolved boundary.
-    Diagnostics are nondifferentiable; projection and eigenvalue_sum expose
-    first-order response only.
+    values/vectors are None in subspace mode. raw_values/raw_vectors include
+    an available boundary guard and are stopped diagnostic arrays. raw_present
+    marks valid interval slots; lower_boundary_gap/residual audit a value_min
+    cutoff from either side (infinity/zero when no lower bound is requested). In state
+    modes, derivative validity applies to the whole requested set. In subspace
+    mode it depends only on the external boundary. Actual adjoint solves are
+    checked when requested, not certified by this primal response_valid flag.
     """
-    projection: Array
-    eigenvalue_sum: Array
+
+    values: Array | None
+    vectors: Array | None
     residual_norms: Array
-    boundary_gap: Array
     converged: Array
-    response_valid: Array
     status: Array
+    response_valid: Array
+    boundary_gap: Array
+    raw_values: Array
+    raw_vectors: Array
+    raw_residual_norms: Array
+    raw_present: Array
+    lower_boundary_gap: Array
+    lower_boundary_residual: Array
+    projection: Array | None = None
+    eigenvalue_sum: Array | None = None
 
 
 class RPAResult(NamedTuple):
@@ -103,6 +145,7 @@ class RPAResult(NamedTuple):
     checks return NaN physical outputs. response_valid additionally tests the
     isolated-root gap, including the extra excluded root when available.
     """
+
     values: Array
     x: Array
     y: Array
