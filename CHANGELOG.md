@@ -25,13 +25,20 @@
 
 ### Closed-shell EOM-CCSD
 
+- Add a shared restarted non-Hermitian Davidson solver for all three sectors,
+  with right/left/guard residual checks, orbital-difference preconditioning and
+  first-order energy AD without a physical dense EOM matrix. Expose subspace
+  dimensions, restarts and incomplete spectral certification explicitly.
+- Validate water/6-31G (EE dimension 860) against the full PySCF action spectrum;
+  distinguish the oracle's complete spectrum from roots found by its default
+  two-root iterative guess.
+
 - Add singlet EE and doublet IP/EA sectors, with frozen-space support,
   biorthogonal left/right states and first-order isolated-energy JVP/VJP
   including the converged CC amplitude response.
 - Add a bounded dense real non-Hermitian reference to `gradscf.solvers`;
   retain complex/gap/conditioning diagnostics and reject invalid derivatives.
-  Iterative solving, vector/cluster response and transition properties remain
-  outside this initial implementation.
+  Vector/cluster response and transition properties remain outside this implementation.
 - Add native GradSCF spectrum/response examples, independent PySCF action and
   energy comparisons, and H2 particle-number FCI checks.
 

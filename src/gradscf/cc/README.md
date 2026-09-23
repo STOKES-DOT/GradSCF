@@ -214,6 +214,6 @@ methods. They are not represented by placeholder APIs in this implementation.
 
 Real restricted EE singlet and IP/EA doublet sectors are available through
 `EOMEE`, `EOMIP`, `EOMEA` and the functional `run_eom` interface. The first
-version uses a bounded dense non-Hermitian solver shared by `gradscf.solvers`,
+version offers dense and bounded-subspace Davidson non-Hermitian solvers in `gradscf.solvers`,
 with biorthogonal left/right states and isolated-energy first-order JVP/VJP.
 See [equations, API, conventions and limits](eom/README.md).

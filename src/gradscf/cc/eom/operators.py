@@ -29,7 +29,7 @@ def build_eom_operator(
         raise ValueError("CC singles must have shape (nocc, nvir)")
     no, nv = ground.t1.shape
     space = EOMAmplitudeSpace(no, nv, cfg.sector)
-    if space.size > cfg.max_dense:
+    if cfg.solver == "dense" and space.size > cfg.max_dense:
         raise ValueError(
             "EOM reference exceeds max_dense before constructing intermediates"
         )
@@ -72,6 +72,21 @@ def build_eom_operator(
         def action(v):
             return space.pack(*contraction(*space.unpack(v), w))
 
+    # Orbital-energy differences are a physical preconditioner approximation,
+    # not a diagonal assembled by probing the EOM matrix.
+    eps = jnp.diag(ints.fock)
+    eo, ev = eps[:no], eps[no:]
+    if cfg.sector == "ee":
+        d1 = ev[None, :] - eo[:, None]
+        d2 = d1[:, None, :, None] + d1[None, :, None, :]
+    elif cfg.sector == "ip":
+        d1 = -eo
+        d2 = ev[None, None, :] - eo[:, None, None] - eo[None, :, None]
+    else:
+        d1 = ev
+        d2 = ev[None, :, None] + ev[None, None, :] - eo[:, None, None]
+    diagonal = space.pack(d1, d2) / space.pack(jnp.ones_like(d1), jnp.ones_like(d2))
+
     def checked(v):
         return require_converged_derivative(action(v), valid)
 
@@ -79,6 +94,7 @@ def build_eom_operator(
         (space.size, space.size),
         t.dtype,
         checked,
+        diagonal=diagonal,
         matmat=lambda v: jax.vmap(checked, in_axes=1, out_axes=1)(v),
     )
     return op, space, valid
@@ -98,6 +114,12 @@ def run_eom(h1, eri, ground, *, nocc, frozen=None, config=None, cc_config=None):
     solved = solve_nonhermitian(
         op,
         config=NonHermitianSolverConfig(
+            method=cfg.solver,
+            maxiter=cfg.max_cycle,
+            max_space=cfg.max_space,
+            guard_roots=cfg.guard_roots,
+            seed=cfg.seed,
+            preconditioner_floor=cfg.preconditioner_floor,
             nroots=cfg.nroots,
             atol=cfg.conv_tol,
             gap_atol=cfg.gap_tol,
@@ -122,4 +144,10 @@ def run_eom(h1, eri, ground, *, nocc, frozen=None, config=None, cc_config=None):
         solved.raw_eigenvalues,
         valid,
         solved.biorthogonality_error,
+        solved.spectrum_complete,
+        solved.iterations,
+        solved.subspace_dimension,
+        solved.spectral_gaps,
+        solved.guard_residual_norms,
+        solved.restarts,
     )

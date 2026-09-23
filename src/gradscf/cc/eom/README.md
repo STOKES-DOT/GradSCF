@@ -101,33 +101,72 @@ computed ground result constant gives only a fixed-T partial derivative.
 This is not a nuclear-coordinate gradient or differentiation through HF.
 
 Only **first-order energies** are supported by this interface. Left/right
-vectors and the full raw spectrum are forward diagnostics with stopped AD;
+vectors and the raw spectrum are forward diagnostics with stopped AD;
 do not differentiate them or take a second derivative of the energy rule.
 Complex selected roots produce NaN real outputs and preserve the raw complex
 spectrum. Unconverged ground states/eigenpairs, unresolved gaps and excessive
 conditioning invalidate energy derivatives (NaN), rather than changing the
 method with a pseudoinverse. The response flag applies conservatively to the
-whole requested root set. It checks gaps to the full computed spectrum,
-including excluded roots. This first version does not attach a differentiable
+whole requested root set. Dense solving checks the full computed spectrum.
+Davidson checks the projected spectrum and converged guard roots, subject to
+the spectral-completeness limitation below. This first version does not attach a differentiable
 non-Hermitian degenerate-subspace projector.
 
 ## Capacity and current limits
 
-The solver materializes a bounded dense matrix from column-block actions:
-`max_dense=256`, `block_size=16` by default. It is a small-system reference,
-not an iterative matrix-free eigensolver. `max_intermediate_elements=20_000_000`
-limits the input ERI element count before EOM intermediates are constructed;
-it does not estimate peak memory or bound the earlier CC calculation.
-No implicit fallback bypasses these limits.
+The default `solver="dense"` materializes a bounded reference matrix:
+`max_dense=256`, `block_size=16`. Select the shared iterative implementation
+explicitly for larger EOM spaces:
+
+```python
+ee = cc.EOMEE(mycc, nroots=2, solver="davidson", max_space=40,
+              max_cycle=150, guard_roots=1, seed=0).run()
+print(ee.e, ee.result.iterations, ee.result.restarts)
+print(ee.result.spectrum_complete, ee.result.spectral_gaps)
+```
+
+Davidson stores a real orthonormal search basis, expands with both right and
+left residuals and restarts with both Ritz spaces. A stalled diagonal
+preconditioner falls back to raw residual expansion. EOM provides orbital-energy
+difference preconditioners and the physical action; its transpose is supplied
+by JAX. No physical EOM matrix is assembled, including during energy AD.
+Numerical storage is O(n*m + m²), m <= `max_space`. There is no dense fallback.
+For a truncated search space, `max_space` must be at least
+`4*(nroots+guard_roots)+2` to retain complex directions and expand after restart.
+The extra guard roots must also converge before `converged` becomes true.
+
+**Finite Ritz sampling does not certify the full spectral order or isolation.**
+`spectrum_complete` is true only when the search basis spans the physical space
+(or for the dense reference). Otherwise `spectral_gaps` and root ordering are
+estimates. `response_valid=True` means that requested/guard residuals, observed
+gaps and conditioning passed; it is conditional on the selected branch really
+being isolated in the full spectrum. A small residual cannot exclude an unseen
+invariant sector. Default diagonal guesses carry small independent full-support perturbations
+to avoid immediate termination inside an exact invariant sector; independent
+seeded vectors provide additional exploration. Explicit `initial_vectors` in
+the shared solver are preserved. These choices improve exploration but are
+not a proof. Validate sensitive crossings/near-degeneracies with larger spaces,
+more guard roots/independent starts, and a dense oracle when feasible.
+
+`raw_eigenvalues` holds the full dense spectrum or the final projected spectrum;
+inactive padded entries are NaN. `subspace_dimension`, `iterations`, `restarts`
+and `guard_residual_norms` describe the actual numerical solve. Guard residuals
+are the maximum of unit-right and unit-left residual norms.
+
+`max_intermediate_elements=20_000_000` still limits the input ERI element count
+before EOM intermediates; it does not estimate peak memory or bound the earlier
+CC calculation. Removing the EOM matrix bottleneck does not make integrals or
+CC intermediates low-memory algorithms.
 
 UHF/ROHF, triplet/SF, higher-rank EOM methods, complex orbitals, transition
 properties, vector/cluster response, GPU performance and nuclear gradients
-remain outside this implementation. A generic Davidson/Arnoldi implementation
-will be added to the shared solvers rather than maintained here.
+remain outside this implementation.
 
-Run [the native spectrum example](../../../../examples/cc/eom_ccsd.py) and
-[the native response example](../../../../examples/cc/eom_response.py) on CPU.
-Validation details and commands are in [VALIDATION.md](VALIDATION.md).
+Run [the dense native spectrum example](../../../../examples/cc/eom_ccsd.py),
+[the response example](../../../../examples/cc/eom_response.py) and
+[the iterative 6-31G example](../../../../examples/cc/eom_iterative.py) on CPU.
+See [initial validation](VALIDATION.md) and
+[iterative validation](ITERATIVE_VALIDATION.md).
 
 ## Method references
 

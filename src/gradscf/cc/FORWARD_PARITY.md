@@ -60,7 +60,7 @@ the CC hierarchy: each needs its own definition and numerical reference.
 | R/U CCSD/CCD 2-RDM | Missing | Add true fermionic density with Lambda and frozen-core restoration |
 | CI/CC property state freshness | CC guarded; no CI density interface | Share reference fingerprints; reject stale CI densities |
 | Optimized tensor CI / low-memory CC | Missing | Still missing; full MO/spin tensors remain in use |
-| Restricted EOM-EE singlet / IP / EA | Bounded dense reference | Left/right states and isolated-energy first-order AD; see [scope](eom/README.md) |
+| Restricted EOM-EE singlet / IP / EA | Dense and iterative Davidson | Left/right states and isolated-energy first-order AD; see [scope](eom/README.md) |
 | Other EOM sectors/properties, iterative triples/quadruples, local/F12 | Missing | Subsequent stages; no placeholder APIs |
 
 The user selected conventional single-reference ground states first. This stage
@@ -121,7 +121,7 @@ canonical path; see [SEMICANONICAL.md](SEMICANONICAL.md).
 1. Finish conventional ground-state breadth: unrestricted/ROHF QCI, exact CI spin
    selection, AO densities/one-electron property conveniences, robust checkpoint
    restart and correlated-gradient boundaries. Add each method with an oracle.
-2. Extend the initial restricted EE/IP/EA reference with iterative solving, SF,
+2. Extend the initial restricted EE/IP/EA reference with SF,
    transition densities and oscillator strengths. The nonsymmetric eigensolver and its response belong in
    `gradscf.solvers`, with explicit treatment of root selection and degeneracy.
 3. Establish practical scaling: tensor CISD actions, spin-block CC intermediates,

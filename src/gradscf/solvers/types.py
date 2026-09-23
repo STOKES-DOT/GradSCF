@@ -168,15 +168,37 @@ class NonHermitianSolverConfig:
     max_condition: float = 1e8
     max_dense: int = 256
     block_size: int = 16
+    method: str = "dense"
+    maxiter: int = 100
+    max_space: int = 40
+    guard_roots: int = 1
+    seed: int = 0
+    preconditioner_floor: float = 1e-8
 
     def __post_init__(self):
-        for name in ("nroots", "max_dense", "block_size"):
+        if self.method not in {"dense", "davidson"}:
+            raise ValueError("Non-Hermitian method must be dense or davidson")
+        if (
+            not isinstance(self.seed, int)
+            or isinstance(self.seed, bool)
+            or self.seed < 0
+        ):
+            raise ValueError("seed must be a nonnegative integer")
+        for name in (
+            "nroots",
+            "max_dense",
+            "block_size",
+            "maxiter",
+            "max_space",
+            "guard_roots",
+        ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
         if any(
             not isfinite(x) or x <= 0
             for x in (
+                self.preconditioner_floor,
                 self.atol,
                 self.gap_atol,
                 self.gap_rtol,
@@ -200,3 +222,9 @@ class NonHermitianResult(NamedTuple):
     condition_numbers: Array
     biorthogonality_error: Array
     raw_eigenvalues: Array
+    spectrum_complete: Array
+    iterations: Array
+    subspace_dimension: Array
+    spectral_gaps: Array
+    guard_residual_norms: Array
+    restarts: Array

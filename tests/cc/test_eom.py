@@ -151,11 +151,23 @@ def test_larger_sector_and_frozen_actions(sector, frozen):
         matrix.append(np.asarray(space.pack(*oracle.vector_to_amplitudes(output))))
     matrix = np.stack(matrix, axis=1)
     np.testing.assert_allclose(op.apply(jnp.eye(space.size)), matrix, atol=5e-9, rtol=0)
-    result = run_eom(h, g, ground, nocc=no, frozen=frozen, config=config, cc_config=cfg)
-    assert np.all(result.converged)
-    np.testing.assert_allclose(
-        result.energies, np.sort(np.linalg.eigvals(matrix).real)[:2], atol=5e-9, rtol=0
-    )
+    for solver in ("dense", "davidson"):
+        result = run_eom(
+            h,
+            g,
+            ground,
+            nocc=no,
+            frozen=frozen,
+            config=EOMConfig(sector=sector, nroots=2, solver=solver),
+            cc_config=cfg,
+        )
+        assert np.all(result.converged)
+        np.testing.assert_allclose(
+            result.energies,
+            np.sort(np.linalg.eigvals(matrix).real)[:2],
+            atol=5e-9,
+            rtol=0,
+        )
 
 
 def test_eager_facade_and_stale_snapshot(reference):
@@ -245,3 +257,82 @@ def test_amplitude_spaces_and_eom_cache_controls(reference):
     obj.residual_tol *= 0.1
     with pytest.raises(RuntimeError, match="changed"):
         eom.check_source()
+
+
+@pytest.mark.parametrize("sector", ["ee", "ip", "ea"])
+def test_iterative_eom_and_full_cc_response(reference, sector):
+    from gradscf import cc
+
+    h, g, ground, cfg, _ = reference
+    options = cc.EOMConfig(
+        sector=sector,
+        solver="davidson",
+        max_dense=1,
+        max_space=16,
+        max_cycle=100,
+        conv_tol=1e-10,
+    )
+    result = cc.run_eom(h, g, ground, nocc=1, cc_config=cfg, config=options)
+    expected = cc.run_eom(
+        h, g, ground, nocc=1, cc_config=cfg, config=cc.EOMConfig(sector=sector)
+    )
+    assert result.spectrum_complete and np.all(result.response_valid)
+    np.testing.assert_allclose(result.energies, expected.energies, atol=1e-11)
+    direction = jnp.array([[0.2, 0.04], [0.04, -0.1]])
+
+    def energy(t, options):
+        ht = h + t * direction
+        gt = g * (1 + 0.02 * t)
+        state = cc.run_cc(ht, gt, nocc=1, config=cfg)
+        return cc.run_eom(
+            ht, gt, state, nocc=1, cc_config=cfg, config=options
+        ).energies[0]
+
+    iterative = jax.jit(jax.grad(lambda t: energy(t, options)))(0.0)
+    dense = jax.grad(lambda t: energy(t, cc.EOMConfig(sector=sector)))(0.0)
+    np.testing.assert_allclose(iterative, dense, atol=1e-9)
+    np.testing.assert_allclose(
+        iterative, (energy(1e-4, options) - energy(-1e-4, options)) / 2e-4, atol=2e-7
+    )
+
+
+@pytest.fixture(scope="module")
+def water_reference():
+    pyscf = pytest.importorskip("pyscf")
+    from pyscf import ao2mo
+    from gradscf import cc
+
+    mol = pyscf.gto.M(
+        atom="O 0 0 0; H 0 -.757 .587; H 0 .757 .587", basis="sto-3g", verbose=0
+    )
+    mf = mol.RHF().run(conv_tol=1e-13)
+    h = jnp.asarray(mf.mo_coeff.T @ mf.get_hcore() @ mf.mo_coeff)
+    g = jnp.asarray(ao2mo.restore(1, ao2mo.kernel(mol, mf.mo_coeff), h.shape[0]))
+    cfg = cc.CCConfig(conv_tol=1e-12, residual_tol=1e-11)
+    return h, g, cfg
+
+
+@pytest.mark.parametrize("sector", ["ee", "ip", "ea"])
+def test_incomplete_eom_ritz_response_matches_dense(water_reference, sector):
+    from gradscf import cc
+
+    h, g, cfg = water_reference
+    options = cc.EOMConfig(
+        sector=sector, solver="davidson", max_space=16, max_cycle=150, conv_tol=1e-10
+    )
+    direction = jnp.diag(jnp.linspace(-0.15, 0.2, h.shape[0]))
+
+    def result(t, options):
+        ht, gt = h + t * direction, g * (1 + 0.015 * t)
+        ground = cc.run_cc(ht, gt, nocc=5, config=cfg)
+        return cc.run_eom(ht, gt, ground, nocc=5, cc_config=cfg, config=options)
+
+    out = jax.jit(lambda t: result(t, options))(0.0)
+    assert np.all(out.response_valid)
+    assert not out.spectrum_complete
+    assert out.iterations > 1
+    f = lambda t: result(t, options).energies[0]
+    dense = lambda t: result(t, cc.EOMConfig(sector=sector)).energies[0]
+    ad = jax.jit(jax.grad(f))(0.0)
+    np.testing.assert_allclose(ad, jax.jit(jax.grad(dense))(0.0), atol=2e-7)
+    np.testing.assert_allclose(ad, (f(1e-4) - f(-1e-4)) / 2e-4, atol=3e-6)
