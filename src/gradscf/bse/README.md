@@ -1,16 +1,17 @@
 # Static molecular GW-BSE
 
 `gradscf.bse` implements static GW-BSE for finite molecules, real closed-shell
-orbitals and integer occupations. TDA has a matrix-free Davidson path; stable
-full BSE has a bounded dense reference path. Singlet
+orbitals and integer occupations. Both TDA and full BSE have matrix-free
+Davidson paths and bounded dense reference paths. Singlet
 and triplet energies, transition moments and length-gauge oscillator strengths
 are supported. First-order response of isolated roots includes QP energies,
 screening energies, factors, amplitudes and supplied dipoles. The numerical
 eigenproblem and screening linear solves belong to `gradscf.solvers`.
 
-This implements P0/P1 plus the bounded full-BSE reference and amplitude response
-from [the development plan](../gw/BSE_PLAN.md). The current increment and its
-remaining scope are recorded in [FULL_BSE_PLAN.md](FULL_BSE_PLAN.md).
+This implements P0/P1 and real full-BSE forward/amplitude response from
+[the development plan](../gw/BSE_PLAN.md). The dense reference is described in
+[FULL_BSE_PLAN.md](FULL_BSE_PLAN.md); the matrix-free metric-response extension
+is described in [MATRIX_FREE_BSE.md](MATRIX_FREE_BSE.md).
 Open-shell/complex/periodic references, dynamic kernels and degenerate-cluster
 properties are not exposed as implemented methods.
 
@@ -30,9 +31,10 @@ print(response.oscillator_strength())  # dimensionless
 `kernel()` returns `(energies, (X,Y))`; `run()` returns the object. Amplitudes
 have shape `(nroots,nocc_window,nvir_window)`. TDA has `Y=0`; full BSE returns
 both amplitudes. Request full BSE explicitly with
-`bse.BSE(mygw, tda=False, solver="dense", max_dense=256).run()`. The default
-Davidson method is currently TDA-only: full BSE never silently converts a
-matrix-free request into a dense allocation.
+`bse.BSE(mygw, tda=False, solver="davidson", max_space=40).run()`.
+Use `solver="dense", max_dense=256` for the independently validated reference.
+The Davidson path does not materialize A or B and ignores the dense capacity
+limit; it still obeys auxiliary/factor limits and its subspace capacity.
 An explicit `BSEReference(qp_energy, screening_energy, mo_factors, nocc,
 dipole_mo=...)` can replace the GW facade. These explicit inputs must describe
 one common orthonormal orbital frame; they are not verified by running GW.
@@ -129,12 +131,21 @@ In TDA, `stable` denotes positive selected frequencies, not an independent
 global stability certificate for the starting mean field. Negative TDA roots
 are retained as diagnostics and rejected for optical property evaluation.
 
-Full BSE instead checks positive definiteness of both `A-B` and `A+B`, with
-absolute stability tolerance 1e-10 Hartree. `stability_margins` reports their
-minimum eigenvalues; it is `None` for TDA. Stable full-BSE vectors come from
-Cholesky-Hermitian reduction and include the reduction/reconstruction response.
-Nonpositive or unresolved stability margins give NaN physical outputs and false
-convergence/response status. No complex mode is converted to a real frequency.
+Full BSE checks `A-B` and `A+B`, with absolute stability tolerance 1e-10
+Hartree. In dense mode, `stability_margins` reports their minimum eigenvalues
+and a passing result has `stability_certified=True`. In Davidson mode these
+are **lowest Ritz estimates**, with `stability_residual_norms`; positive,
+converged estimates set `stable=True` but `stability_certified=False`. They
+are numerical screening, not a rigorous global proof that no lower unstable
+mode was missed. Inspect both fields when certification matters. TDA reports
+no global certificate and `stability_margins=None`.
+
+Dense full-BSE vectors use Cholesky-Hermitian reduction; Davidson uses a
+structure-preserving projected Hamiltonian/metric pencil and a metric-constrained
+implicit amplitude solve. Nonpositive/unresolved stability checks give NaN
+physical outputs and false convergence/response status. No imaginary mode is
+converted into a real excitation. `response_valid` certifies the primal root
+and gap prerequisites; a subsequent failed adjoint solve still returns NaN.
 A full-BSE request containing any unresolved internal/boundary degeneracy
 invalidates derivatives for the **whole requested root set**, consistently for
 JVP and VJP. A smaller isolated prefix can still be differentiated. Forward
@@ -159,10 +170,15 @@ factors to MO factors. They are capacity controls, not measured peak-memory
 bounds; screening, factors, workspaces and AD intermediates coexist. The legacy
 GW calculation before this adapter has its own storage requirements.
 
-`solver="dense"` is a bounded oracle with `max_dense=256`. Full BSE requires
-this mode and materializes A and B only after checking the transition-space
-limit. Its shared stable RPA solver uses n-by-n matrices, not a doubled dense
-physical matrix; several such matrices and AD intermediates coexist. Davidson requires
+`solver="dense"` is a bounded oracle with `max_dense=256`, checking capacity
+before materializing A/B. Its stable RPA reference uses n-by-n matrices rather
+than a doubled physical matrix. Full-BSE Davidson instead allocates paired
+bases proportional to `ntrans*max_space` and projected matrices bounded by
+`2*max_space`. Its metric adjoint uses checked diagonally preconditioned GMRES.
+The capacity must fit the requested roots, an available guard root and two
+correction slots (unless it already spans the full transition dimension).
+Increase `max_space` or `max_cycle` if a requested or guard root fails; there
+is no hidden dense fallback or automatic relaxation of tolerances. Davidson requires
 space for the requested roots plus its guard root and uses deterministic
 full-support guesses (seed 0 by default). Shared direct linear solves now accept
 multiple RHS columns, allowing one factorization per screening slab with checked

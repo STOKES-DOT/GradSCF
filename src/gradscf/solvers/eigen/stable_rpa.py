@@ -130,4 +130,6 @@ def solve_stable_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10):
         stable,
         response,
         margins,
+        stable,
+        jnp.zeros((2,), dtype=dtype),
     )

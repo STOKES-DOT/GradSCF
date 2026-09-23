@@ -146,8 +146,7 @@ def test_coverage_invalid_gaps_modes_and_degeneracy(model):
             ).excitation_energies[0]
         )(1.0)
     )
-    with pytest.raises(NotImplementedError, match="dense"):
-        bse.BSEConfig(tda=False)
+    assert bse.BSEConfig(tda=False).solver == "davidson"
     bad = bse.run_bse(qp, e.at[2].set(e[0]), l, space, config=cfg)
     assert not np.any(bad.converged)
     with pytest.raises(ValueError, match="aux"):

@@ -100,8 +100,8 @@ def test_full_bse_eager_api_and_capacity():
     assert np.all(np.isfinite(calc.oscillator_strength()))
     with pytest.raises(ValueError, match="max_dense"):
         bse.BSE(ref, tda=False, solver="dense", nroots=2, max_dense=2).run()
-    with pytest.raises(NotImplementedError, match="dense"):
-        bse.BSEConfig(tda=False, solver="davidson")
+    with pytest.raises(ValueError, match="Unsupported"):
+        bse.BSEConfig(tda=False, solver="unknown")
     calc.tda = True
     with pytest.raises(RuntimeError, match="changed"):
         calc.oscillator_strength()

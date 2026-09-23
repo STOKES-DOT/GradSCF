@@ -1,5 +1,8 @@
 # Full static BSE reference and GW screening provenance
 
+Historical dense-reference increment. The matrix-free continuation is documented
+in [MATRIX_FREE_BSE.md](MATRIX_FREE_BSE.md).
+
 Continuation of the molecular closed-shell GW+BSE plan, 2026-09-22, based on
 `b2568aa`. This increment completes a bounded full-BSE reference with amplitude
 response, not the scalable structured-Davidson part of the original P2 stage.

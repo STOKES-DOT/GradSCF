@@ -35,7 +35,8 @@ def test_static_tda_matches_quack_fixture(singlet):
 
 
 @pytest.mark.parametrize("singlet", [True, False])
-def test_full_bse_matches_executed_quack_coupling_fixture(singlet):
+@pytest.mark.parametrize("method", ["dense", "davidson"])
+def test_full_bse_matches_executed_quack_coupling_fixture(singlet, method):
     from gradscf import bse
     from gradscf.gw.screened import build_static_screening
 
@@ -57,7 +58,7 @@ def test_full_bse_matches_executed_quack_coupling_fixture(singlet):
         e,
         l,
         space,
-        config=bse.BSEConfig(tda=False, solver="dense", nroots=6, singlet=singlet),
+        config=bse.BSEConfig(tda=False, solver=method, nroots=6, singlet=singlet),
     )
     np.testing.assert_allclose(
         out.excitation_energies, expected_roots, atol=2e-12, rtol=0

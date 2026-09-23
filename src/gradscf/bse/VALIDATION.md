@@ -193,7 +193,7 @@ Hartree. Minima of (A-B,A+B), Hartree: singlet (0.42686559,0.51438209), triplet
 (0.42686559,0.36004790). These certify the specified static BSE matrices only.
 The small-basis values are integration checks, not experimental benchmarks.
 
-Current boundaries: full BSE is dense and bounded, requires stable real
+Boundaries at that checkpoint: full BSE was dense and bounded, requiring stable real
 closed-shell input, and supports first-order isolated-state response only.
 Matrix-free full-BSE response, degenerate cluster properties, open-shell and
 periodic kernels, higher/nuclear derivatives, and outer evGW/qsGW AD remain
@@ -213,3 +213,103 @@ This overlaps the 129-test run above; counts are not additive. The full reposito
 suite and GPU backends were not run. Independent code review found no remaining
 important issue within this bounded real stable full-BSE scope after the
 mixed-degeneracy validity fix.
+
+## Matrix-free full-BSE increment (2026-09-23)
+
+The implementation described in [MATRIX_FREE_BSE.md](MATRIX_FREE_BSE.md)
+continues from `210cfee`. Full BSE now accepts `solver="davidson"` and calls the
+shared `solve_rpa` action API, including first-order isolated X/Y response.
+The inherited numerical RPA projection now preserves H/J rather than applying
+ordinary Galerkin projection to the nonsymmetric R matrix. Lower residual signs,
+paired reorthogonalization and subspace-capacity handling are also checked.
+
+### Numerical checks
+
+- Dense versus matrix-free molecular BSE energies and strengths for both spins;
+  the existing saved QuAcK A/B fixture is checked by both solver paths. This
+  stage reuses the previously executed Fortran fixture; it does not claim a new
+  external molecular calculation.
+- JIT, JVP and VJP optical-response checks against dense response and reconverged
+  finite differences, including explicit QP/screening/factor/dipole perturbations.
+- General positive-definite M=A-B/P=A+B matrices with indefinite B, n=10,
+  seeds 0–3, 8-dimensional subspaces, 200-cycle limit, 1e-9 residual tolerance.
+  All four cases converge after the metric-preserving projection correction.
+  Independent review observed energy differences below 7e-16 Hartree and metric
+  normalization errors below 3e-16 against the dense reference.
+- Degenerate requested roots, failed iterations, unstable matrices and both
+  invalid JVP/VJP directions. The invalid-state mask must not turn a failed
+  derivative into a finite zero.
+- Recursive forward/reverse JAXPR inspection for a 300-dimensional action:
+  no (300,300) or (600,600) physical arrays. Callback tests also bound operator
+  application width; the dense reference capacity can be set below ntrans
+  without affecting the matrix-free calculation.
+
+### Reproducible synthetic response run
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python tests/comparisons/compare_matrix_free_rpa.py
+```
+
+CPU, macOS 26.6.2 arm64, JAX 0.8.1, float64. Seed 41, n=300,
+`A=diag(linspace(1,4))+U U.T`, U rank 2 with normal scale .002, `B=.05 I`,
+2 requested roots, `max_subspace=8`, physical residual tolerance 1e-9 Hartree.
+The differentiated scalar t multiplies U; the objective is the sum of the two
+frequencies plus `sum(X[:3,:]**2)`. Both energies and X contribute to its AD.
+
+Measured first JIT compilation plus value/gradient execution: **3.17 seconds**.
+Process peak RSS through that call: **468,025,344 bytes** (macOS `ru_maxrss`),
+including Python/JAX/compiler overhead. It is not isolated solver-array memory,
+not a measured scaling law, and not a GPU or molecular benchmark.
+
+| Quantity | Value |
+| --- | ---: |
+| First two frequencies (Hartree) | 0.9987555663712485, 1.0087961077630752 |
+| Largest requested residual (Hartree) | 7.65e-10 |
+| Objective | 4.008791515787621 |
+| AD derivative at t=1 | 1.4273521769220886e-5 |
+| Central difference, step 1e-4 | 1.4273520143603946e-5 |
+| Absolute derivative difference | 1.63e-12 |
+
+Both requested roots and derivative prerequisites passed. As intended for
+iterative stability screening, `stability_certified=False`.
+
+### Native integration
+
+`examples/bse/water_full.py` now runs TDA, dense full BSE and matrix-free full
+BSE using one native RHF/G0W0 calculation with the same STO-3G water geometry
+and nw=100 grid as above. Both full-BSE methods print matching energies to
+8 decimal eV places. Matrix-free singlet strengths are
+`[0.00311599129, 3.53e-29, 0.0681077152]`; triplet strengths are zero. Maximum
+matrix-free physical residual is 2.33e-15 Hartree. Dense certification and
+iterative stability screening are printed separately.
+
+No large molecular spectrum, GPU performance, global iterative stability proof,
+complete degenerate-subspace response, higher derivatives, or full outer GW
+self-consistency derivative is established by these checks. Native basis and
+nuclear derivative contracts are unchanged.
+
+### Matrix-free regression gate
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python -m pytest -q tests/bse tests/solvers \
+  tests/test_tddft_eigensolvers.py tests/test_pyscf_style_excited_state_api.py --tb=short
+```
+
+**140 passed**, no skips, one existing GW complex-cast warning, 251.52 seconds.
+After broadening the general-SPD regression to all four independently reviewed
+seeds and allowing NumPy integer seeds, the final affected-area run was:
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python -m pytest -q tests/solvers/test_matrix_free_rpa.py \
+  tests/bse/test_matrix_free.py tests/bse/test_quack_fixture.py --tb=short
+```
+
+**21 passed**, no warnings/skips, 76.87 seconds. These counts overlap and are
+not additive. All 21 tests in the existing TDDFT eigensolver file were included
+in the broader run. The complete repository suite and GPU backends were not run.
+The synthetic run metadata is retained in
+`tests/bse/data/matrix_free_rpa_300_cpu.json`; it is a measurement record, not
+an external physical reference fixture.
