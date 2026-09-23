@@ -166,7 +166,11 @@ Run [the dense native spectrum example](../../../../examples/cc/eom_ccsd.py),
 [the response example](../../../../examples/cc/eom_response.py) and
 [the iterative 6-31G example](../../../../examples/cc/eom_iterative.py) on CPU.
 See [initial validation](VALIDATION.md) and
-[iterative validation](ITERATIVE_VALIDATION.md).
+[iterative validation](ITERATIVE_VALIDATION.md), and the
+[eight-molecule study](MOLECULAR_VALIDATION.md). The latter records a higher-energy
+native N2 SCF branch and a seed-dependent rank loss in CO's degenerate EE left
+vectors. Convergence checks reject the CO state output; changing search settings
+is a workaround, not a repair of the degenerate-subspace representation.
 
 ## Method references
 
