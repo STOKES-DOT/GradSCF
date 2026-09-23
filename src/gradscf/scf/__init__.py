@@ -29,8 +29,13 @@ from .uks import (
     run_uks_from_integrals,
 )
 from .facade import RKS, UKS
+from .multistart import (
+    RestrictedSCFAttempt, RestrictedMultistartResult, run_restricted_multistart,
+)
 from .uhf import UHF, UHFConfig, UHFResult, run_uhf, run_uhf_from_integrals
 from .stability import (
+    OrbitalStabilityResult, restricted_stability, unrestricted_stability,
+    StabilityAttempt, SCFStabilizationResult, stabilize_scf,
     UnrestrictedStabilityResult, UnrestrictedStabilizationResult,
     UHFStabilityResult, UHFStabilizationResult, uhf_stability, stabilize_uhf_from_integrals,
     uks_stability, stabilize_uks_from_integrals,
@@ -57,7 +62,12 @@ from gradscf.integrals.assembly import (
     build_uks_integral_inputs,
 )
 
+from .diagnostics import RestrictedSCFDiagnostics, restricted_scf_diagnostics
+
 __all__ = [
+    "StabilityAttempt", "SCFStabilizationResult", "stabilize_scf", "unrestricted_stability",
+    "OrbitalStabilityResult", "restricted_stability", "RestrictedSCFDiagnostics", "restricted_scf_diagnostics",
+    "RestrictedSCFAttempt", "RestrictedMultistartResult", "run_restricted_multistart",
     "OrbitalOptimizationResult",
     "minimize_uks_from_integrals",
     "minimize_roks_from_integrals",

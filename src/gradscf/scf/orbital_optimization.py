@@ -65,7 +65,8 @@ def _concrete(value):
 
 
 @lru_cache(maxsize=64)
-def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_config=None):
+def _rotation_functions(method, occupation_rows):
+    """Shared occupation topology, Cayley rotations and density construction."""
     occupations = np.asarray(occupation_rows)
     common = method == 'roks'
     generalized = method == 'gks'
@@ -101,6 +102,13 @@ def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_confi
         blocks = jnp.broadcast_to(coeff, (len(occupations),n,n)) if common else coeff
         return jnp.einsum('spi,si,sqi->spq', blocks, jnp.asarray(occupations), blocks.conj())
 
+    return dimension, rotate, density_from
+
+
+@lru_cache(maxsize=64)
+def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_config=None):
+    dimension, rotate, density_from = _rotation_functions(method, occupation_rows)
+    generalized = method == 'gks'
     if generalized:
         from .gks import GKSConfig, generalized_energy_and_fock
         cfg = GKSConfig(xc_spec=xc_spec, collinear=collinear)

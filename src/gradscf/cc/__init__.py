@@ -1,4 +1,4 @@
-"""Real molecular ground-state coupled cluster, quadratic CI and implicit response."""
+"""Real molecular coupled cluster, quadratic CI and implicit response."""
 
 from .types import CCConfig, CCReference, CCResult, LambdaResult, TriplesResult
 from .ground import run_cc
@@ -9,7 +9,15 @@ from .api import CC, CCS, CCD, CCSD, RCCSD, CC2, LCCD, LCCSD, UCCSD, UCCD, QCISD
 from .uccsd import run_ucc
 from ..scf.reference import UnrestrictedReference
 
+from .eom import EOMConfig, EOMResult, EOMEE, EOMIP, EOMEA, run_eom
+
 __all__ = [
+    "EOMConfig",
+    "EOMResult",
+    "EOMEE",
+    "EOMIP",
+    "EOMEA",
+    "run_eom",
     "CCConfig",
     "CCReference",
     "CCResult",
@@ -30,5 +38,8 @@ __all__ = [
     "CC2",
     "LCCD",
     "LCCSD",
-    "UCCSD", "UCCD", "run_ucc", "UnrestrictedReference",
+    "UCCSD",
+    "UCCD",
+    "run_ucc",
+    "UnrestrictedReference",
 ]

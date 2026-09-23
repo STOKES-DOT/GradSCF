@@ -78,6 +78,31 @@ class CC:
             )
         return self.reference
 
+    def EOMEE(self, **kwargs):
+        """Create a restricted singlet EOM-EE-CCSD calculation."""
+        from .eom import EOMEE
+
+        return EOMEE(self, **kwargs)
+
+    def EOMIP(self, **kwargs):
+        from .eom import EOMIP
+
+        return EOMIP(self, **kwargs)
+
+    def EOMEA(self, **kwargs):
+        from .eom import EOMEA
+
+        return EOMEA(self, **kwargs)
+
+    def eomee_ccsd_singlet(self, **kwargs):
+        return self.EOMEE(**kwargs).kernel()
+
+    def ipccsd(self, **kwargs):
+        return self.EOMIP(**kwargs).kernel()
+
+    def eaccsd(self, **kwargs):
+        return self.EOMEA(**kwargs).kernel()
+
     def solve_lambda(self):
         ref = self._ready()
         self.lambda_result = solve_lambda(

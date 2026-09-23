@@ -21,6 +21,20 @@ from .rks import RKSConfig, run_rks_from_integrals
 from .uks import UKSConfig
 
 
+_SCF_RESULT_FIELDS = (
+    'reference', 'scf_result', '_scf_inputs', '_cached_scf_key', '_cached_response_key',
+    'e_tot', 'mo_energy', 'mo_coeff', 'mo_occ', 'cycles', 'converged',
+)
+
+
+def _fresh_scf_like(source, target, **overrides):
+    """Copy compatible SCF input controls, never solved-state payloads."""
+    options = {f.name: getattr(source, f.name) for f in fields(target)
+               if f.init and f.name not in _SCF_RESULT_FIELDS and hasattr(source, f.name)}
+    options.update(overrides)
+    return target(**options)
+
+
 def _cache_signature(value):
     """Snapshot numerical inputs by value, including arrays inside raw bases."""
     if is_dataclass(value):
@@ -259,15 +273,36 @@ class RKS(_BaseKS):
         return _cache_signature((self.compute_local_hfx_features,self.compute_local_hfx_aux,
             self.hfx_omega_values,self.hfx_chunk_size,self.execution_device))
 
+    def multistart(self, *, amplitudes=(.05, .15, .4), seed=20260923, seeds=None, require_stable=False):
+        """Select an explicit lowest-energy candidate without mutating this object."""
+        from .multistart import run_restricted_multistart
+
+        return run_restricted_multistart(self, amplitudes=amplitudes, seed=seed,
+                                        seeds=seeds, require_stable=require_stable)
+
+    def diagnostics(self, *, gradient_tol=None):
+        from .diagnostics import restricted_scf_diagnostics
+
+        return restricted_scf_diagnostics(self, gradient_tol=gradient_tol)
+
+    def stability(self, **kwargs):
+        from .stability import restricted_stability
+
+        return restricted_stability(self, **kwargs)
+
     def kernel(self) -> Any:
         self._configure_jax_cache()
-        for name in ('reference','scf_result','_scf_inputs','_cached_scf_key','_cached_response_key',
-                     'e_tot','mo_energy','mo_coeff','mo_occ','cycles','converged'):
+        for name in _SCF_RESULT_FIELDS:
             setattr(self,name,None)
         result = self._build_scf_result(self._spec())
         self._sync_from_scf_result(result)
         self._cached_scf_key = self._scf_signature()
         return self.e_tot
+
+    def stabilize(self, **kwargs):
+        from .stability import stabilize_scf
+
+        return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "RKS":
         self.jk_backend = "df"
@@ -330,6 +365,16 @@ class UKS(_BaseKS):
         self._cached_scf_key = self._scf_signature()
         self._cached_response_key = self._response_signature()
         return self.e_tot
+
+    def stability(self, **kwargs):
+        from .stability import unrestricted_stability
+
+        return unrestricted_stability(self, **kwargs)
+
+    def stabilize(self, **kwargs):
+        from .stability import stabilize_scf
+
+        return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "UKS":
         self.jk_backend='df'

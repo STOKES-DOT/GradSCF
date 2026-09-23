@@ -156,3 +156,75 @@ class RPAResult(NamedTuple):
     stability_margins: Array
     stability_certified: Array | bool = False
     stability_residual_norms: Array | None = None
+
+
+@dataclass(frozen=True)
+class NonHermitianSolverConfig:
+    nroots: int = 1
+    atol: float = 1e-9
+    gap_atol: float = 1e-8
+    gap_rtol: float = 1e-8
+    imaginary_tol: float = 1e-9
+    max_condition: float = 1e8
+    max_dense: int = 256
+    block_size: int = 16
+    method: str = "dense"
+    maxiter: int = 100
+    max_space: int = 40
+    guard_roots: int = 1
+    seed: int = 0
+    preconditioner_floor: float = 1e-8
+
+    def __post_init__(self):
+        if self.method not in {"dense", "davidson"}:
+            raise ValueError("Non-Hermitian method must be dense or davidson")
+        if (
+            not isinstance(self.seed, int)
+            or isinstance(self.seed, bool)
+            or self.seed < 0
+        ):
+            raise ValueError("seed must be a nonnegative integer")
+        for name in (
+            "nroots",
+            "max_dense",
+            "block_size",
+            "maxiter",
+            "max_space",
+            "guard_roots",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if any(
+            not isfinite(x) or x <= 0
+            for x in (
+                self.preconditioner_floor,
+                self.atol,
+                self.gap_atol,
+                self.gap_rtol,
+                self.imaginary_tol,
+                self.max_condition,
+            )
+        ):
+            raise ValueError(
+                "Non-Hermitian tolerances and condition limit must be positive"
+            )
+
+
+class NonHermitianResult(NamedTuple):
+    values: Array
+    right_vectors: Array
+    left_vectors: Array
+    residual_norms: Array
+    left_residual_norms: Array
+    converged: Array
+    response_valid: Array
+    condition_numbers: Array
+    biorthogonality_error: Array
+    raw_eigenvalues: Array
+    spectrum_complete: Array
+    iterations: Array
+    subspace_dimension: Array
+    spectral_gaps: Array
+    guard_residual_norms: Array
+    restarts: Array
