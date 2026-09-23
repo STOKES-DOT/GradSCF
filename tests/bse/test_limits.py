@@ -82,7 +82,7 @@ def test_underconverged_roots_do_not_have_valid_derivatives():
     l = (l + l.transpose(0, 2, 1)) / 2
     e = jnp.array([-1.1, -0.6, 0.3, 0.8, 1.2])
     space = bse.make_bse_space(5, 2)
-    cfg = bse.BSEConfig(nroots=1, max_cycle=1, max_space=3, conv_tol=1e-13)
+    cfg = bse.BSEConfig(nroots=1, max_cycle=1, max_space=4, conv_tol=1e-13)
     result = bse.run_bse(e, e, l, space, config=cfg)
     assert not result.converged[0]
     assert not np.isfinite(

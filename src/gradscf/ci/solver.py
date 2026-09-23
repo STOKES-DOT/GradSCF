@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from dataclasses import replace
 
-from ..solvers import LinearOperator, EigenSolverConfig, solve_hermitian
+from ..solvers import LinearOperator, EigenSolverConfig, EigenResponseConfig, LinearSolverConfig, solve_hermitian
 from .hamiltonian import build_hamiltonian, validate_integrals
 from .space import frozen_indices
 from .types import CIConfig, CIResult, CISResult, UCISResult
@@ -12,13 +12,31 @@ from .space import make_uci_space, excite
 
 def _eigenpairs(apply, diagonal, config):
     dim = diagonal.size
-    operator = LinearOperator((dim, dim), diagonal.dtype,
-        lambda v: apply(v[:, None])[:, 0], diagonal=diagonal, matmat=apply)
-    shared = EigenSolverConfig(method=config.solver, nroots=config.nroots,
-        atol=config.conv_tol, maxiter=config.max_cycle, max_subspace=config.max_space,
-        gradient_mode=config.gradient_mode, adjoint_tol=config.adjoint_tol,
-        adjoint_maxiter=config.adjoint_max_cycle)
-    result = solve_hermitian(operator, config=shared)
+    operator = LinearOperator(
+        (dim, dim),
+        diagonal.dtype,
+        lambda v: apply(v[:, None])[:, 0],
+        diagonal=diagonal,
+        matmat=apply,
+    )
+    shared = EigenSolverConfig(
+        method=config.solver,
+        nroots=config.nroots,
+        atol=config.conv_tol,
+        maxiter=config.max_cycle,
+        max_subspace=config.max_space,
+    )
+    response = EigenResponseConfig(
+        target=(
+            "eigenpairs"
+            if config.gradient_mode == "implicit_eigenvector"
+            else "eigenvalues"
+        ),
+        linear_config=LinearSolverConfig(
+            rtol=config.adjoint_tol, maxiter=config.adjoint_max_cycle
+        ),
+    )
+    result = solve_hermitian(operator, config=shared, response=response)
     return result.values, result.vectors, result.residual_norms, result.converged
 
 

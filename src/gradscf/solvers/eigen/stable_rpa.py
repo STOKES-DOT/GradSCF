@@ -1,14 +1,19 @@
 """Bounded stable real RPA with metric-normalized isolated-state response."""
 
-from dataclasses import replace
 from math import isfinite
+from dataclasses import replace
 
 import jax
 import jax.numpy as jnp
 from jax.scipy.linalg import solve_triangular
 
 from ..diagnostics import require_converged_derivative
-from ..types import EigenSolverConfig, RPAResult
+from ..types import (
+    EigenSolverConfig,
+    EigenResponseConfig,
+    LinearSolverConfig,
+    RPAResult,
+)
 from .api import solve_hermitian
 
 
@@ -28,6 +33,11 @@ def solve_stable_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10):
         if config is None
         else config
     )
+    if cfg.value_min is not None:
+        raise ValueError(
+            "value_min is a Hermitian interval control, not an RPA frequency window"
+        )
+
     if cfg.method != "dense":
         raise NotImplementedError("Stable RPA currently requires method='dense'")
     a, b = jnp.asarray(a), jnp.asarray(b)
@@ -73,10 +83,27 @@ def solve_stable_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10):
     p = jnp.where(stable, require_converged_derivative(p, stable), identity)
     chol = jnp.linalg.cholesky(m)
     reduced = chol.T @ p @ chol
-    nsolve = min(cfg.nroots + 1, n)
-    roots = solve_hermitian(reduced, config=replace(cfg, nroots=nsolve))
-    omega = jnp.sqrt(roots.values)
-    z = roots.vectors
+    roots = solve_hermitian(
+        reduced,
+        config=replace(
+            cfg, gradient_mode="eigenvalue_only", adjoint_tol=1e-10, adjoint_maxiter=100
+        ),
+        response=EigenResponseConfig(
+            target=(
+                "eigenpairs"
+                if cfg.gradient_mode == "implicit_eigenvector"
+                else "eigenvalues"
+            ),
+            gap_atol=0.0,
+            gap_rtol=32 * jnp.finfo(dtype).eps,
+            linear_config=LinearSolverConfig(
+                rtol=cfg.adjoint_tol, maxiter=cfg.adjoint_maxiter
+            ),
+        ),
+    )
+    omega = jnp.sqrt(jnp.concatenate([roots.values, roots.raw_values[cfg.nroots :]]))
+    z = jnp.concatenate([roots.vectors, roots.raw_vectors[:, cfg.nroots :]], axis=1)
+    reduced_converged = roots.raw_residual_norms <= cfg.atol
     plus = (chol @ z) / jnp.sqrt(omega)[None, :]
     minus = solve_triangular(chol.T, z, lower=False) * jnp.sqrt(omega)[None, :]
     x, y = (plus + minus) * 0.5, (plus - minus) * 0.5
@@ -88,7 +115,7 @@ def solve_stable_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10):
     metric = jnp.sum(x * x - y * y, axis=0)
     converged = (
         stable
-        & roots.converged
+        & reduced_converged
         & jnp.isfinite(omega)
         & (residuals <= cfg.atol)
         & (
@@ -105,6 +132,7 @@ def solve_stable_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10):
     )
     response = (
         converged[: cfg.nroots]
+        & roots.response_valid
         & jnp.all(converged)
         & separated
         & (omega[: cfg.nroots] > gap_tol)

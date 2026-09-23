@@ -23,6 +23,21 @@
   reproducibility artifacts, and the existing NPZ target-bundle format marker.
 - Retire the old import namespaces without a compatibility alias.
 
+### Shared Hermitian eigensolver
+
+- Unify isolated-state and spectral-subspace differentiation behind
+  `solve_hermitian` and `EigenResponseConfig`, sharing one numerical Ritz solve,
+  guard/boundary diagnostics and constrained Sylvester response core.
+- Migrate CI, restricted/unrestricted TDA and TDA-BSE. Preserve TDA's explicit
+  positive-root window and distinguish physical RPA frequency gaps from squared
+  reduced eigenvalue gaps. Expand guesses to explore hidden invariant sectors.
+- Remove `solve_spectral_projector`, `SpectralProjectorResult` and standalone
+  implicit Hermitian Davidson AD wrappers. Use the unified subspace target for
+  projector actions and cluster energy sums; raw Ritz arrays are diagnostics.
+
+- Fix native unrestricted HF TDA/TDHF routing by representing its semilocal
+  response as exactly zero while retaining nonlocal exact exchange.
+
 ### Molecular GW and BSE
 
 - Add real closed-shell static singlet/triplet TDA-BSE with factorized Davidson

@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from collections.abc import Callable
-from ..diagnostics import require_converged_derivative
 
 def _symmetrize(matrix):
     return 0.5 * (matrix + matrix.T.conj())
@@ -13,9 +12,7 @@ def _symmetrize(matrix):
 _MATMUL_PRECISION = jax.lax.Precision.HIGHEST
 _DEFAULT_MATMUL_PRECISION = "highest"
 
-__all__ = [
-    "implicit_differential_davidson_lowest_symmetric",
-]
+__all__ = []
 
 DEFAULT_EIGEN_TOL = 1e-5
 DEFAULT_EIGEN_MAXITER = 100
@@ -131,6 +128,7 @@ def _davidson_lowest_symmetric(
     preconditioner_floor: float = 1e-8,
     preconditioner_level_shift: float = 0.0,
     orth_eps: float = 1e-10,
+    return_basis: bool = False,
 ) -> tuple[Array, Array, Array]:
     """Approximate the lowest eigenpairs of a Hermitian matrix with Davidson."""
 
@@ -407,7 +405,7 @@ def _davidson_lowest_symmetric(
                 root_valid = jnp.ones_like(sub_eigvals, dtype=bool)
                 eig_score = sub_eigvals
             else:
-                root_valid = sub_eigvals > positive_threshold_arr
+                root_valid = (sub_eigvals > positive_threshold_arr) & (sub_eigvals < .5*inactive_shift)
                 eig_score = jnp.where(
                     root_valid,
                     sub_eigvals,
@@ -612,63 +610,6 @@ def _davidson_lowest_symmetric(
         converged,
         _done,
     ) = final_state
+    if return_basis:
+        return _basis, _abasis, _active_mask
     return best_theta, best_vecs, converged
-
-
-def implicit_differential_davidson_lowest_symmetric(
-    matrix_or_matvec: Array | Callable[[Array], Array],
-    *,
-    nroots: int,
-    size: int | None = None,
-    diag: Array | None = None,
-    tol: float = DEFAULT_EIGEN_TOL,
-    max_iter: int = DEFAULT_EIGEN_MAXITER,
-    max_subspace: int | None = None,
-    collapse_subspace: int | None = None,
-    initial_guess_count: int | None = None,
-    max_trial_vectors: int | None = None,
-    positive_eig_threshold: float | None = None,
-    preconditioner_floor: float = 1e-8,
-    preconditioner_level_shift: float = 0.0,
-    orth_eps: float = 1e-10,
-) -> tuple[Array, Array, Array]:
-    """Return Davidson roots with implicit eigenvalue differentiation.
-
-    Davidson is used only as a numerical eigensolver.  The solver matvec is
-    stopped for reverse-mode AD, and the differentiable value is reconstructed
-    from the converged Ritz vectors through the Rayleigh quotient.
-    """
-
-    apply, diag, dim, _dtype = _resolve_symmetric_linear_operator(
-        matrix_or_matvec,
-        size=size,
-        diag=diag,
-    )
-
-    def solver_matvec(vectors: Array) -> Array:
-        return jax.lax.stop_gradient(apply(vectors))
-
-    eigvals, eigvecs, converged = _davidson_lowest_symmetric(
-        solver_matvec,
-        nroots=nroots,
-        size=dim,
-        diag=diag,
-        tol=tol,
-        max_iter=max_iter,
-        max_subspace=max_subspace,
-        collapse_subspace=collapse_subspace,
-        initial_guess_count=initial_guess_count,
-        max_trial_vectors=max_trial_vectors,
-        positive_eig_threshold=positive_eig_threshold,
-        preconditioner_floor=preconditioner_floor,
-        preconditioner_level_shift=preconditioner_level_shift,
-        orth_eps=orth_eps,
-    )
-    eigvecs = jax.lax.stop_gradient(eigvecs)
-    applied = apply(eigvecs)
-    denom = jnp.maximum(
-        jnp.sum(eigvecs * eigvecs, axis=0),
-        jnp.asarray(1e-30, dtype=eigvecs.dtype),
-    )
-    eigvals = jnp.sum(eigvecs * applied, axis=0) / denom
-    return require_converged_derivative(eigvals, converged), eigvecs, converged

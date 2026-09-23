@@ -11,8 +11,8 @@ historical solver forwarding modules have been removed.
 | Implementation | Shared owner | Clients |
 | --- | --- | --- |
 | Symmetric/Hermitian Davidson | `eigen/davidson.py` | TDA, CIS/CI, stability, periodic TDA |
-| Real isolated-root eigenvector response | `eigen/response.py` | TDA and CI coefficient-dependent objectives |
-| Isolated spectral projector and trace response | `eigen/subspace.py` | Complete degenerate subspaces and basis-invariant observables |
+| Unified rank-one / subspace Sylvester response | `eigen/response.py` | TDA, CI, isolated states and degenerate-subspace invariants |
+| Shared Ritz solve and diagnostics | `eigen/primal.py` | All real Hermitian response targets |
 | Real RPA Davidson and metric energy derivatives | `eigen/rpa.py` | Full TDHF/TDDFT, periodic Gamma response |
 | Bounded complex dense RPA and metric energy derivatives | `eigen/rpa.py` | Small non-Gamma periodic response |
 | Regularized full-spectrum and inverse-square-root derivatives | `eigen/spectral.py` | SCF orbital diagonalization and overlap response |
@@ -30,12 +30,13 @@ Import migration:
 
 | Removed path | Canonical import |
 | --- | --- |
-| `gradscf.tddft.eigensolvers` | `gradscf.solvers.eigen.davidson` or `.rpa` |
-| `gradscf.tddft.eigenvector_differentiation` | `gradscf.solvers.eigen.response` |
+| `gradscf.tddft.eigensolvers` | `gradscf.solvers.solve_hermitian` or `solve_rpa` (legacy complex RPA remains in `eigen.rpa`) |
+| `gradscf.tddft.eigenvector_differentiation` | `solve_hermitian` with `EigenResponseConfig(target="eigenpairs")` |
 | `gradscf.scf.implicit` | `gradscf.solvers.nonlinear` and `gradscf.solvers.linear` |
 | `gradscf.scf.diis` | `gradscf.solvers.nonlinear.diis` |
 | `gradscf.scf._orbital_solver` | `gradscf.solvers.nonlinear.minimize` |
 | `gradscf.ci.response` | `gradscf.solvers.diagnostics` |
+| `solve_spectral_projector` | `solve_hermitian` with a subspace response and optional `probes` |
 
 `ImplicitFixedPointConfig` and `implicit_fixed_point_solution` are no longer
 re-exported from `gradscf.scf`; import them from `gradscf.solvers.nonlinear`.
@@ -57,6 +58,8 @@ from gradscf.solvers import (
     LinearOperator, EigenSolverConfig, LinearSolverConfig,
     solve_hermitian, solve_linear,
 )
+
+jax.config.update("jax_enable_x64", True)
 
 def energy(matrix):
     op = LinearOperator(
@@ -93,7 +96,9 @@ Davidson's legacy default subspace can reach the full dimension; specify
 
 Results are JAX-compatible named tuples, containing the solution/eigenpairs,
 true residual norms, convergence flags and integer status (`0` success,
-`1` not converged/invalid). Eigen diagnostics are per root. Iteration counts
+`1` not converged/invalid; Hermitian `2` means unresolved response prerequisites).
+State diagnostics are per root; subspace validity is scalar. Raw diagnostics
+include guard roots and are never AD targets. Iteration counts
 are not reported because the inherited kernels do not expose reliable counts.
 Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
 
@@ -103,18 +108,23 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   are retained, including transpose solves and higher derivatives. Zero and
   tiny RHS are handled by scaling inside the opaque numerical solve. Forward
   and transposed solves are independently checked using the true residual.
-- Eigen `gradient_mode='eigenvalue_only'` differentiates the Rayleigh energy
-  at a converged isolated root. Vectors are stopped. The
-  `implicit_eigenvector` mode also solves the constrained eigenvector response.
-  These Davidson rules promise first-order response only.
-- `solve_spectral_projector(operator, probes, config=EigenSolverConfig(nroots=k))`
-  returns `projection=P@probes` and `eigenvalue_sum` with first-order JVP/VJP.
-  It permits internal degeneracy and splitting, provided the entire selected
-  subspace is separated from the excluded spectrum. One extra boundary root
-  detects cut clusters; invalid or unresolved boundaries produce NaN derivatives.
-  It does not provide individual degenerate-state derivatives. See the
-  [derivation and boundary policy](DEGENERACY.md) and
+- `solve_hermitian` has one explicit `EigenResponseConfig`: `eigenvalues`
+  differentiates isolated energies with stopped vectors; `eigenpairs` also
+  supplies isolated vector response; `subspace` returns the projector action
+  on optional probes and the selected energy sum, including internal degeneracy.
+  All targets share one forward solve and one Sylvester response core (rank one
+  for an individual state). They promise first-order JVP/VJP only.
+- Subspace requests expose `projection` and `eigenvalue_sum`; their `values` and
+  `vectors` are None. Stopped `raw_*` fields include guard diagnostics. Individual
+  state requests check all internal and boundary gaps; subspace requests check
+  only the external boundary. Unresolved prerequisites produce NaN derivatives.
+  See [the derivation and boundary policy](DEGENERACY.md),
+  [migration plan](UNIFIED_EIGEN.md), and
   [example](../../../examples/degenerate_subspace.py).
+- Legacy `EigenSolverConfig` AD fields (also used by RPA) remain honored when
+  the explicit `response` argument is omitted. Mixing nondefault legacy controls
+  with an explicit response raises an error. No independent projector or
+  isolated-vector AD entry point/forwarding module remains.
 - Failed eigenpairs remain inspectable; their derivatives are NaN. Failed
   linear or adjoint solves return NaNs. Residual predicates stay inside opaque
   linear solves so that the tangent map can still be transposed correctly.
@@ -152,8 +162,10 @@ Linear `maxiter` counts GMRES restart cycles, not individual Krylov steps.
   and unrolled modes. Regularization changes the response problem and remains
   explicit rather than a silent numerical fallback.
 
-TD-SCF calculation signatures, thresholds, positive-root selection, tuple layouts
-and successful numerical behavior are preserved. Invalid symmetric/RPA
+TD-SCF signatures, thresholds, positive-root selection and tuple layouts are
+preserved. Unified Hermitian guesses also explore disconnected invariant sectors
+that purely diagonal legacy guesses could miss. CI and TDA-BSE keep unfiltered
+lowest-root selection; TDA explicitly requests the spectral lower bound. Invalid symmetric/RPA
 eigenvalue derivatives now follow the shared NaN policy. The generic public
 Hermitian API does not filter negative eigenvalues: stability analysis and CI
 must retain those roots.

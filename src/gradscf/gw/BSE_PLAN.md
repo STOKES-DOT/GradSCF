@@ -62,7 +62,7 @@ separate, following the existing CI/CC documentation convention.
 | `gw/rgw.py::GW` | Add checked source snapshots and a stable BSE-reference adapter; avoid coupling BSE to a private `_df_factors()` method |
 | `df/jk.py` | Reuse factors/contractions; distinguish true auxiliary-basis RI from spectral decomposition of packed ERIs |
 | `solvers.solve_hermitian` | TDA dense oracle and matrix-free Davidson; isolated-root energy/vector response |
-| `solvers.solve_spectral_projector` | TDA complete-cluster observables at internal degeneracy; no generic full-BSE metric response yet |
+| `solvers.solve_hermitian` with a subspace response | TDA complete-cluster observables at internal degeneracy; no generic full-BSE metric response yet |
 | `solvers/eigen/rpa.py` | Reuse structured full-BSE forward/eigenvalue kernels; current X/Y are stopped, so property AD needs additional work |
 | `tools/spectra.py` | Reuse spectral broadening; extract or adapt dipole contractions with an explicit normalization conversion |
 
@@ -223,7 +223,7 @@ certified instability. Properties must check whether amplitude response exists.
 For TDA, a complete-cluster transition-strength sum is expressed through P.
 With spin-normalized dipole probe d, the energy-weighted oscillator-strength
 sum is proportional to `d.T @ P @ A @ P @ d`, not merely `d.T @ P @ d` for a
-cluster containing different energies. Reuse `solve_spectral_projector` actions
+cluster containing different energies. Reuse unified Hermitian subspace actions
 and require a gap to the excluded spectrum. Do not promise derivatives of an
 arbitrary labeled vector inside a degenerate cluster.
 

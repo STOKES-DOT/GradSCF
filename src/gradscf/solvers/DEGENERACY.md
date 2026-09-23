@@ -1,6 +1,6 @@
 # Differentiating isolated spectral subspaces
 
-`solve_spectral_projector` supports first-order JVPs and VJPs of the projector
+`solve_hermitian(..., response=EigenResponseConfig(target="subspace"))` supports first-order JVPs and VJPs of the projector
 onto the lowest `nroots` states of a real symmetric operator, including exact
 internal degeneracy. It returns its action on supplied probes and the sum of
 the selected eigenvalues. It does not expose individual eigenvector derivatives.
@@ -43,13 +43,16 @@ as is a variable metric M in AX=MX Lambda.
 ```python
 import jax
 import jax.numpy as jnp
-from gradscf.solvers import EigenSolverConfig, solve_spectral_projector
+from gradscf.solvers import (EigenSolverConfig, EigenResponseConfig,
+                             LinearSolverConfig, solve_hermitian)
 
 jax.config.update('jax_enable_x64', True)
 a = jnp.diag(jnp.array([1., 1., 3., 5.]))
 probe = jnp.array([.3, .4, .5, .2])
-config = EigenSolverConfig(nroots=2, adjoint_tol=1e-11)
-out = solve_spectral_projector(a, probe, config=config)
+config = EigenSolverConfig(nroots=2)
+response = EigenResponseConfig(target="subspace",
+    linear_config=LinearSolverConfig(rtol=1e-11))
+out = solve_hermitian(a, probes=probe, config=config, response=response)
 assert out.response_valid
 print(out.projection, out.eigenvalue_sum)
 ```
@@ -61,17 +64,26 @@ dense projector for small tests; a few probes avoid storing that matrix.
 For example, an unweighted sum of transition strengths over a complete cluster
 has the form d^T P d and can be evaluated from `projection`.
 
-`EigenSolverConfig` supplies forward and default adjoint controls. This interface
-always uses subspace response, independently of that config's `gradient_mode`.
-An optional `LinearSolverConfig` controls the Sylvester response solve; the
-default is shared checked GMRES. `method='dense'` selects the bounded dense
-forward oracle while retaining the same subspace derivative rule.
+`EigenSolverConfig` supplies numerical forward controls. `EigenResponseConfig`
+selects `eigenvalues`, `eigenpairs` or `subspace` and supplies gap tolerances and
+`linear_config` for the shared checked Sylvester solve. `method='dense'` keeps
+the same response rule with a bounded dense forward oracle. Omitting probes
+in subspace mode computes the energy sum without an unnecessary response solve.
 
+The old independent projector entry and isolated-vector AD wrappers are removed.
+For callers shared with RPA, legacy EigenSolverConfig AD controls remain mapped
+when `response` is omitted. Explicit response plus nondefault legacy AD controls
+raises an error rather than silently choosing one. New Hermitian callers should
+use the explicit response configuration.
 The result contains:
 
 - `projection`: P times the supplied probes, with first-order response.
 - `eigenvalue_sum`: the trace over the selected subspace, with first-order response.
-- `residual_norms`: stopped per-root diagnostics, including the boundary root.
+- `residual_norms`: stopped diagnostics for the requested roots.
+- `raw_values`, `raw_vectors`, `raw_residual_norms`: stopped diagnostics including
+  an available guard; `raw_present` identifies absent interval slots.
+- `values` and `vectors`: None in subspace mode, preventing accidental use of
+  individual degenerate eigenpair derivatives.
 - `boundary_gap`: stopped lambda[k]-lambda[k-1], or infinity for the full space.
 - `converged`: convergence and orthogonality of the required Ritz roots.
 - `response_valid`: those primal checks plus a resolved boundary separation.
@@ -100,8 +112,8 @@ is at most `2*(k+1)` and is bounded by the configured basis capacity. Pure
 diagonal guesses can otherwise converge with zero residual inside an incorrect
 invariant sector, missing lower roots in another block. Callers can override
 the starting block with `initial_vectors`; guesses are stopped numerical
-controls, not physical differentiation inputs. Ordinary `solve_hermitian`
-retains its existing default guesses and accepts the same optional starting block.
+controls, not physical differentiation inputs. All Hermitian response targets
+now share these guesses, guard roots and forward diagnostics.
 
 The residual margin accounts for unresolved Ritz values. A gap among computed
 roots is conditional on the forward solver finding the intended lowest roots;
@@ -120,8 +132,10 @@ Sylvester equation. A small accepted external gap can still be ill-conditioned.
 
 ## Numerical ownership and derivative order
 
-The new code lives in `solvers/eigen/subspace.py`. Forward eigenpairs come from
-the existing shared dense/Davidson implementations. Response uses
+The common core lives in `solvers/eigen/response.py`; forward numerical Ritz
+data are constructed once in `solvers/eigen/primal.py`. A rank-one frame gives
+the isolated-vector differential, while a rank-k horizontal frame is only used
+for basis-invariant observables. Both use the same implementation. Response uses
 `solvers.linear.checked_linear_solve` on flattened n-by-k blocks, including a
 checked transpose solve. No method-local eigensolver or GMRES copy is added.
 The augmented operator is
@@ -147,14 +161,29 @@ to the existing basis, the forward algorithm uses the projected original
 residual instead. The physical eigenproblem and derivative equations are unchanged.
 The generic real API scales its orthogonalization cutoff with the requested
 residual tolerance and diagonal magnitude to avoid premature rejection of small
-corrections. Legacy low-level calls retain their explicit cutoff controls.
+corrections. Removed low-level AD wrappers are not retained as forwarding aliases.
 
 The derivative attachment uses stopped forward Ritz vectors and a zero-valued
 RHS with a live tangent, as in the existing isolated-vector implementation.
 The contract is **first-order only**. Nested differentiation is not validated
-and is not a subspace Hessian implementation. Existing `solve_hermitian` and
-legacy isolated-root response APIs retain their previous derivative contracts; individual
-state observables must not be routed through a projector by assumption.
+and is not a subspace Hessian implementation. Individual state observables
+must explicitly request eigenpair response rather than being interpreted as
+projector observables. State targets reject unresolved internal gaps for the
+entire requested set, even when a particular aggregate might be invariant.
+Use the subspace energy sum for that aggregate instead.
 
 See [the executable example](../../../examples/degenerate_subspace.py) and
 [validation](VALIDATION.md) for the test coverage and numerical evidence.
+
+## Explicit spectral intervals
+
+The generic solve still returns the lowest roots without positive-energy
+filtering. TDA requests `EigenSolverConfig(value_min=excitation_threshold)`
+to preserve its existing positive-root convention. In this opt-in mode the
+common numerical path selects roots above the cutoff and checks both the
+upper selected boundary and the closest Ritz value to the cutoff on either
+side. `lower_boundary_gap` and `lower_boundary_residual` expose that diagnostic.
+An absent upper guard is accepted only when the numerical basis covers the
+full spectrum; absent requested roots are never converged. Interval topology
+stays fixed within a differentiated call; a root at the cutoff is not a
+differentiable selection. With no lower bound, the lower gap is infinity.
