@@ -336,3 +336,31 @@ def test_incomplete_eom_ritz_response_matches_dense(water_reference, sector):
     ad = jax.jit(jax.grad(f))(0.0)
     np.testing.assert_allclose(ad, jax.jit(jax.grad(dense))(0.0), atol=2e-7)
     np.testing.assert_allclose(ad, (f(1e-4) - f(-1e-4)) / 2e-4, atol=3e-6)
+
+
+def test_native_co_degenerate_ee_has_full_rank_dual():
+    from gradscf import gto, dft, cc
+
+    mf = dft.RKS(
+        gto.M(atom="C 0 0 0; O 0 0 1.128", basis="sto-3g"), xc="hf", conv_tol=1e-12
+    ).run()
+    ground = cc.CCSD(mf, conv_tol=1e-12, residual_tol=1e-11, max_cycle=200).run()
+    out = (
+        cc.EOMEE(
+            ground, nroots=3, solver="davidson", max_space=48, max_cycle=180, seed=0
+        )
+        .run()
+        .result
+    )
+    assert np.all(out.converged)
+    assert not np.any(out.response_valid)
+    np.testing.assert_allclose(
+        out.energies,
+        [0.3322036425819134, 0.3322036425819358, 0.411352356441813],
+        atol=1e-8,
+        rtol=0,
+    )
+    np.testing.assert_allclose(
+        out.left_vectors.T @ out.right_vectors, np.eye(3), atol=1e-10, rtol=0
+    )
+    assert np.linalg.svd(out.left_vectors, compute_uv=False)[-1] > 0.5

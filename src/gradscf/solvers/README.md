@@ -236,3 +236,11 @@ observed unresolved gaps or excessive conditioning invalidate derivatives for
 the complete requested set. Vector/cluster and higher-order response are not
 provided. The caller owns CC amplitude response and sector interpretation;
 see [EOM-CCSD](../cc/eom/README.md).
+
+Real clusters unresolved at matrix-scaled roundoff are represented by real
+left/right SVD null-space bases. Their full cluster overlap is solved before
+truncating requested roots, so a conjugate numerical representation cannot lose
+rank merely by taking real parts. This repair occurs in the projected matrix for
+Davidson and the bounded physical matrix for dense solving. It preserves the
+original eigenvalues and all physical residual/conditioning checks; it is not
+Hermitianization, a pseudoinverse, or a new degenerate-root AD policy.
