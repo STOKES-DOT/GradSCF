@@ -18,10 +18,13 @@ Other original GradSCF files retain the repository's license.
 | `_qci_equations.py` | [`pyscf/cc/qcisd_slow.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/qcisd_slow.py), `update_amps` | Shared JAX intermediates with QCI singles selection; full Fock diagonals produce physical residuals directly; no iterative update/denominator division |
 | `rccsd.py`, QCI energy branch | [`pyscf/cc/qcisd.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/qcisd.py), `energy` | Use tau=t2, retain 2*Fov*t1; reuse shared energy contractions |
 | `triples.py`, QCI variant | [`pyscf/cc/qcisd_t_slow.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/qcisd_t_slow.py), `kernel` | QCI singles weight and F_vo*T2 in the shared streamed permutation kernel; QCI-specific residual/method validation |
+| `eom/_charged.py` | [`pyscf/cc/eom_rccsd.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/eom_rccsd.py), `ipccsd_matvec`, `eaccsd_matvec`, charged `_IMDS` blocks | Unpartitioned real spatial JAX contractions; functional packed actions; no PySCF runtime or eigensolver; EA virtual loop becomes a full contraction |
+| `eom/_intermediates.py` | [`pyscf/cc/rintermediates.py`](https://github.com/pyscf/pyscf/blob/v2.9.0/pyscf/cc/rintermediates.py), twelve EOM W intermediates | JAX contractions and direct full-MO blocks; reuse existing ground intermediates; retain the Wvvvv*t1 term at zero t1 so its derivative is correct |
 
 SHA-256 hashes of the installed upstream source files used in this adaptation:
 
 ```text
+eom_rccsd.py     9dd17a373014ebfed6a341734acdbe1a10fb0713a4054aebdb7685033a98ef9a
 rccsd.py         35391234363b6ae26893891e18c468e636458ac209bfdad9606c15112457a552
 rintermediates.py c7f3311b15c3482315bc5c8aaf570334dd71170c4b9a901ad6968bd97c903666
 ccsd_t_slow.py   4fd3638e0176639781ecb138575a226912c99301a1923b60d20351eec36ac960

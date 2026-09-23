@@ -23,6 +23,18 @@
   reproducibility artifacts, and the existing NPZ target-bundle format marker.
 - Retire the old import namespaces without a compatibility alias.
 
+### Closed-shell EOM-CCSD
+
+- Add singlet EE and doublet IP/EA sectors, with frozen-space support,
+  biorthogonal left/right states and first-order isolated-energy JVP/VJP
+  including the converged CC amplitude response.
+- Add a bounded dense real non-Hermitian reference to `gradscf.solvers`;
+  retain complex/gap/conditioning diagnostics and reject invalid derivatives.
+  Iterative solving, vector/cluster response and transition properties remain
+  outside this initial implementation.
+- Add native GradSCF spectrum/response examples, independent PySCF action and
+  energy comparisons, and H2 particle-number FCI checks.
+
 ### Shared Hermitian eigensolver
 
 - Unify isolated-state and spectral-subspace differentiation behind

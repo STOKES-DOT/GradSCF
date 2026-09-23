@@ -209,3 +209,11 @@ PYTHONPATH=src JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 \
 Further stages include CC3, CCSDT/CCSDTQ, higher perturbative/renormalized
 corrections, other spin references, RDMs/properties and local/explicitly correlated
 methods. They are not represented by placeholder APIs in this implementation.
+
+## EOM-CCSD spectra
+
+Real restricted EE singlet and IP/EA doublet sectors are available through
+`EOMEE`, `EOMIP`, `EOMEA` and the functional `run_eom` interface. The first
+version uses a bounded dense non-Hermitian solver shared by `gradscf.solvers`,
+with biorthogonal left/right states and isolated-energy first-order JVP/VJP.
+See [equations, API, conventions and limits](eom/README.md).

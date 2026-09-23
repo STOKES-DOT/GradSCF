@@ -156,3 +156,47 @@ class RPAResult(NamedTuple):
     stability_margins: Array
     stability_certified: Array | bool = False
     stability_residual_norms: Array | None = None
+
+
+@dataclass(frozen=True)
+class NonHermitianSolverConfig:
+    nroots: int = 1
+    atol: float = 1e-9
+    gap_atol: float = 1e-8
+    gap_rtol: float = 1e-8
+    imaginary_tol: float = 1e-9
+    max_condition: float = 1e8
+    max_dense: int = 256
+    block_size: int = 16
+
+    def __post_init__(self):
+        for name in ("nroots", "max_dense", "block_size"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if any(
+            not isfinite(x) or x <= 0
+            for x in (
+                self.atol,
+                self.gap_atol,
+                self.gap_rtol,
+                self.imaginary_tol,
+                self.max_condition,
+            )
+        ):
+            raise ValueError(
+                "Non-Hermitian tolerances and condition limit must be positive"
+            )
+
+
+class NonHermitianResult(NamedTuple):
+    values: Array
+    right_vectors: Array
+    left_vectors: Array
+    residual_norms: Array
+    left_residual_norms: Array
+    converged: Array
+    response_valid: Array
+    condition_numbers: Array
+    biorthogonality_error: Array
+    raw_eigenvalues: Array

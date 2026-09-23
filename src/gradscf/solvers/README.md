@@ -206,3 +206,19 @@ solutions. Storage is proportional to the full RHS tensor and factor matrices;
 callers remain responsible for their tensor allocation budget. CC's opt-in
 semicanonical triples path supplies such a budget. See
 [`cc/SEMICANONICAL.md`](../cc/SEMICANONICAL.md).
+
+## Generic non-Hermitian dense reference
+
+`solve_nonhermitian(A, config=NonHermitianSolverConfig(...))` handles a real
+square matrix or `LinearOperator` without symmetrization. It returns lowest
+real-part eigenvalues, right and left vectors with `L.T @ R = I`, true residuals,
+conditioning and response diagnostics. Default `max_dense=256` is checked
+before blockwise materialization. It does not implement Davidson/Arnoldi.
+
+Isolated real eigenvalue JVP/VJP uses `d omega = L.T (dA) R`; numerical vectors
+and the full spectrum are stopped forward diagnostics. Complex selected roots
+have NaN real outputs. Unresolved gaps, ill-conditioning or failed residuals
+invalidate derivatives for the complete requested set. Vector, degenerate
+subspace and higher-order response are not provided. Negative real roots remain
+selectable. The electronic-structure caller owns CC amplitude response and
+sector interpretation; see [EOM-CCSD](../cc/eom/README.md).
