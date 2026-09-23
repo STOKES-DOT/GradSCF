@@ -259,6 +259,12 @@ class RKS(_BaseKS):
         return _cache_signature((self.compute_local_hfx_features,self.compute_local_hfx_aux,
             self.hfx_omega_values,self.hfx_chunk_size,self.execution_device))
 
+    def multistart(self, *, amplitudes=(.05, .15, .4), seed=20260923):
+        """Select an explicit lowest-energy candidate without mutating this object."""
+        from .multistart import run_restricted_multistart
+
+        return run_restricted_multistart(self, amplitudes=amplitudes, seed=seed)
+
     def kernel(self) -> Any:
         self._configure_jax_cache()
         for name in ('reference','scf_result','_scf_inputs','_cached_scf_key','_cached_response_key',

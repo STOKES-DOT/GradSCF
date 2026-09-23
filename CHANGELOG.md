@@ -25,6 +25,13 @@
 
 ### Closed-shell EOM-CCSD
 
+- Repair roundoff-degenerate real Ritz bases with complete cluster duals before
+  root truncation, fixing CO's rank-deficient left states while retaining the
+  invalid isolated-root AD policy and true residual checks.
+- Add explicit restricted SCF multistart with native orbital-rotation guesses,
+  all-attempt summaries and lowest-converged-candidate selection; ordinary
+  single-run defaults and the source object are preserved.
+
 - Add a shared restarted non-Hermitian Davidson solver for all three sectors,
   with right/left/guard residual checks, orbital-difference preconditioning and
   first-order energy AD without a physical dense EOM matrix. Expose subspace

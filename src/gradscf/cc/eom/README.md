@@ -167,10 +167,17 @@ Run [the dense native spectrum example](../../../../examples/cc/eom_ccsd.py),
 [the iterative 6-31G example](../../../../examples/cc/eom_iterative.py) on CPU.
 See [initial validation](VALIDATION.md) and
 [iterative validation](ITERATIVE_VALIDATION.md), and the
-[eight-molecule study](MOLECULAR_VALIDATION.md). The latter records a higher-energy
-native N2 SCF branch and a seed-dependent rank loss in CO's degenerate EE left
-vectors. Convergence checks reject the CO state output; changing search settings
-is a workaround, not a repair of the degenerate-subspace representation.
+[eight-molecule study](MOLECULAR_VALIDATION.md). The observed CO rank loss was
+subsequently repaired in the shared numerical Ritz extraction: a roundoff-level
+real eigenvalue cluster receives a full real left/right null-space basis and
+cluster dual before root truncation. Physical residuals still decide convergence;
+defective clusters are not regularized into successful eigenpairs. This repairs
+forward bases only and does not add derivatives of degenerate roots or vectors.
+
+For N2's higher-energy native HF branch, the opt-in
+[restricted multistart API](../../scf/MULTISTART.md) records all attempts and
+selects the lowest finite converged candidate. Single-run SCF defaults remain
+unchanged. See [the robustness followup](ROBUSTNESS_VALIDATION.md).
 
 ## Method references
 
