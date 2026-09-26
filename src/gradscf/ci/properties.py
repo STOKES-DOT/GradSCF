@@ -10,7 +10,8 @@ from itertools import combinations
 import jax.numpy as jnp
 import numpy as np
 
-from .space import CISpace, UCISpace, excite
+from .space import CISpace, UCISpace
+from ..fci.cistring import excite
 
 
 @lru_cache(maxsize=8)
