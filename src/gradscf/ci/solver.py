@@ -7,7 +7,8 @@ from ..solvers import LinearOperator, EigenSolverConfig, EigenResponseConfig, Li
 from .hamiltonian import build_hamiltonian, validate_integrals
 from .space import frozen_indices
 from .types import CIConfig, CIResult, CISResult, UCISResult
-from .space import make_uci_space, excite
+from .space import make_uci_space
+from ..fci.cistring import excite
 
 
 def _eigenpairs(apply, diagonal, config):

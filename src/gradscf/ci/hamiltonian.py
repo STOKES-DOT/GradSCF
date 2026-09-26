@@ -13,7 +13,8 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 
-from .space import excite, UCISpace
+from .space import UCISpace
+from ..fci.cistring import excite
 from ..integrals.mo import validate_integrals, spin_orbital_integrals
 
 

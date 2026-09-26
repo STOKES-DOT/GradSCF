@@ -1,22 +1,46 @@
 from pathlib import Path
+import ast
+from importlib.util import resolve_name
 import re
+
+
+def _removed_adapter_imports(text, package):
+    removed = {"gradscf.reference", "gradscf.reference_legacy", "gradscf.pyscf_adapter"}
+    def forbidden(name):
+        return any(name == old or name.startswith(old+".") for old in removed)
+    names = []
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                base = resolve_name("."*node.level+base, package)
+            names.append(base)
+            names.extend(base+"."+alias.name for alias in node.names)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # Also catch a literal dynamic import of a removed module.
+            names.append(node.value)
+    return any(forbidden(name) for name in names)
 
 
 def test_production_code_does_not_depend_on_removed_reference_adapters():
     root = Path("src/gradscf")
     offenders = []
     for path in root.rglob("*.py"):
-        text = path.read_text()
-        if (
-            "reference_legacy" in text
-            or "pyscf_adapter" in text
-            or "gradscf.reference" in text
-            or "from .reference import" in text
-            or "from ..reference import" in text
-        ):
+        package = ".".join(("gradscf", *path.relative_to(root).parts[:-1]))
+        if _removed_adapter_imports(path.read_text(), package):
             offenders.append(str(path))
-
     assert offenders == []
+
+
+def test_adapter_boundary_resolves_relative_imports():
+    assert not _removed_adapter_imports("from .reference import FCIReference", "gradscf.fci")
+    assert not _removed_adapter_imports("from ..reference import Something", "gradscf.fci.internal")
+    assert _removed_adapter_imports("from ..reference import Something", "gradscf.fci")
+    assert _removed_adapter_imports("from gradscf import reference", "gradscf.fci")
+    assert _removed_adapter_imports("import gradscf.reference_legacy", "gradscf.fci")
+    assert _removed_adapter_imports("importlib.import_module('gradscf.pyscf_adapter')", "gradscf.fci")
 
 
 def test_reference_legacy_and_pyscf_adapter_are_not_runtime_modules():

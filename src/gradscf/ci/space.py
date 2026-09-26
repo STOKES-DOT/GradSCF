@@ -129,19 +129,3 @@ def make_ci_space(nmo, nocc, *, max_excitation=2, frozen=None, max_determinants=
     entries.sort()
     return CISpace(int(nmo), int(nocc), int(max_excitation), frozen,
                    tuple(d for _, d in entries), tuple(r for r, _ in entries))
-
-
-def excite(det, holes, particles):
-    """Apply a_p^+ a_r^+ ... a_s a_q; ordered holes/particles, fermion phase."""
-    phase = 1
-    for orbital in holes:
-        if not det & (1 << orbital):
-            return None, 0
-        phase *= -1 if (det & ((1 << orbital) - 1)).bit_count() % 2 else 1
-        det ^= 1 << orbital
-    for orbital in reversed(particles):
-        if det & (1 << orbital):
-            return None, 0
-        phase *= -1 if (det & ((1 << orbital) - 1)).bit_count() % 2 else 1
-        det ^= 1 << orbital
-    return det, phase
