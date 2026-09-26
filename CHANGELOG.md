@@ -2,6 +2,17 @@
 
 ## Unreleased — GradSCF
 
+### Full configuration interaction
+
+- Add an independent real common-orbital FCI module with alpha/beta string
+  contractions, shared Hermitian solve/response, density and transition density
+  matrices, and total-spin diagnostics. Support fixed-Ms open and closed shells.
+- Expose an integral-driven FCISolver protocol and frozen-core active-space
+  facade. Fold cores in AO space and transform active MO integrals only.
+- Preserve complete-subspace energy/projector response at degeneracy; reject
+  incomplete density derivatives in energy-only mode. Reuse one fermionic phase
+  implementation across CI and FCI.
+
 - Remove the `gradscf.traditional_xc` compatibility namespace (use
   `gradscf.dft` / `gradscf.dft.xc` directly), and move the XC backends from
   `gradscf.xc_backend` to `gradscf.dft.libxc_jax`.

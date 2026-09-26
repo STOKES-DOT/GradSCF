@@ -209,3 +209,9 @@ for the electronic-structure approximation.
 
 For theoretical citations, numerical-method references, software attribution,
 and the limits of these validations, see [REFERENCES.md](REFERENCES.md).
+
+
+Full determinant spaces for active-space work are implemented separately in
+[`gradscf.fci`](../fci/README.md), using alpha/beta string contractions and the
+same shared numerical solvers. The CI module retains the reference/rank-truncated
+hierarchy; its fermionic phase helper is shared with FCI.
