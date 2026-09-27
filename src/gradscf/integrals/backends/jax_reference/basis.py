@@ -658,7 +658,7 @@ def basis_from_molecule_spec(
                         angulars=angulars,
                         exponents=exponents,
                         coefficients=coeff,
-                        ao_indices=jnp.arange(shell_start, shell_stop, dtype=jnp.int32),
+                        ao_indices=np.arange(shell_start, shell_stop, dtype=np.int32),
                     )
                 )
 

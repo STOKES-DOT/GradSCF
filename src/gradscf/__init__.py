@@ -22,6 +22,7 @@ _NAMESPACE_EXPORTS = {
     "gto",
     "scf",
     "dft",
+    "ofdft",
     "tdscf",
     "tddft",
     "model",
