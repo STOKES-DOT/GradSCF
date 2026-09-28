@@ -1,8 +1,22 @@
 # Migrating from GradTDDFT to GradSCF
 
-GradSCF is the current project and package name. This migration changes the
-package identity and imports; it preserves the existing numerical methods,
-function signatures, and scientific submodule names.
+GradSCF is the current project and package name. The original package rename preserved numerical methods and signatures.
+Subsequent API changes are listed below; some old import paths are removed.
+
+## 2026-09-28 — Public entry points use domain ownership
+
+Use `from gradscf import gto, dft, training` and
+`mf = dft.RKS(gto.M(...), xc=...).run()`. The former
+`restricted_molecule_from_spec_with_jax_rks` / unrestricted builder names
+are private implementations. Obtain their prepared AO/grid state through
+`mf.to_reference()`, or pass the solved `mf` directly to `training.Sample`
+and `trainer.predict`.
+
+The root no longer reexports 144 individual symbols. This is a breaking
+import cleanup, not a numerical-method change. See [API.md](API.md) and the
+complete [old-to-new table](API_MIGRATION.csv). DFT forwarding modules and
+six duplicate workflow builder wrappers are removed. Advanced numerical
+APIs remain available in their owning modules.
 
 ## 2026-09-28 — Generic functionals and training are framework modules
 

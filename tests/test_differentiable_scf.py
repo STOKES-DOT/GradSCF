@@ -26,9 +26,9 @@ from gradscf.training import (
     MolecularTrainingConfig,
     density_on_grid,
     molecular_loss,
-    make_molecular_loss_and_grad,
     predict_ground_state_total_energy,
 )
+from gradscf.training.trainer import make_molecular_loss_and_grad
 
 
 def _pyscf_or_skip():

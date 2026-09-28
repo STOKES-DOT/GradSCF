@@ -9,11 +9,10 @@ from pyscf_reference import restricted_reference_from_pyscf
 from gradscf.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
-    create_train_state_from_molecule,
-    make_molecular_train_step,
     predict_excitation_energies,
     predict_ground_state_total_energy,
 )
+from gradscf.training.trainer import create_train_state_from_molecule, make_molecular_train_step
 
 
 def _make_water_reference():

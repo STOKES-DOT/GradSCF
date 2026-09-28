@@ -11,19 +11,17 @@ from flax import linen as nn
 from jax.lax import Precision
 
 import gradscf.training.targets as training_targets
-from gradscf import HARTREE_TO_EV, lorentzian_spectrum
+from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum
 from gradscf.model.neural_xc import make_neural_xc_functional
 from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
-    create_train_state_from_molecule,
     dm21_scf_regularization_delta_energy,
     density_matching_penalty,
     density_on_grid,
     density_on_grid_spin_resolved,
     molecular_loss,
     make_fixed_density_predictor,
-    make_molecular_train_step,
     predict_ground_state_density,
     predict_ground_state_molecule,
     predict_excitation_energies,
@@ -32,6 +30,7 @@ from gradscf.training import (
     predict_ground_state_total_energy,
     xc_kernel_matching_penalty,
 )
+from gradscf.training.trainer import create_train_state_from_molecule, make_molecular_train_step
 from gradscf.training.targets import _electron_count, orbital_energy_matching_penalty
 from gradscf.scf.molecules import QuadratureGrid, UnrestrictedMolecule
 from gradscf.workflows.core import run_molecule_from_spec

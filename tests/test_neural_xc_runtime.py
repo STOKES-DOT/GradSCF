@@ -48,12 +48,11 @@ from gradscf.tddft.unrestricted import build_unrestricted_tda_operator
 from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
-    create_train_state_from_molecule,
     molecular_loss,
-    make_molecular_train_step,
     predict_excitation_energies,
     predict_ground_state_total_energy,
 )
+from gradscf.training.trainer import create_train_state_from_molecule, make_molecular_train_step
 
 
 def test_libxc_module_uses_polarized_channels_for_unrestricted_features(monkeypatch):

@@ -16,8 +16,7 @@ from flax import linen as nn
 
 jax.config.update('jax_enable_x64', True)
 
-from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
-from gradscf import dft, training
+from gradscf import gto, dft, training
 
 
 # The input is the CURRENT spin-summed AO density matrix, supplied by GradSCF.
@@ -41,11 +40,11 @@ functional = dft.Functional(make_inputs, model.apply, init_fn=model.init)
 if __name__ == '__main__':
     # GradSCF supplies integrals and an HF initial density. Learned SCF then uses
     # only the MLP for XC; the HF exchange energy is not retained as a baseline.
-    reference = restricted_molecule_from_spec_with_jax_rks(
-        atom='H 0 0 0; H 0 0 .74', basis='6-31g*', xc_spec='hf',
-        grids_level=0, integral_backend='native')
-    params = functional.init_from_molecule(jax.random.PRNGKey(0), reference)
-    dm = reference.rdm1.sum(axis=0)
+    mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
+    mf = dft.RKS(mol, xc='hf', grids_level=0, integral_backend='native').run()
+    reference = mf.to_reference()
+    dm = mf.make_rdm1()
+    params = model.init(jax.random.PRNGKey(0), dm)
     print('Density-matrix shape:', dm.shape)
     print('Initial XC energy / Ha:', float(functional.energy_from_molecule(params, reference)))
     print('XC potential shape:', functional.potential(params, reference, dm).shape)
@@ -63,8 +62,8 @@ if __name__ == '__main__':
                        conv_tol_density=1e-9, eigenvalue_jitter=0.)
     trainer.adjoint = dict(tolerance=1e-9, max_iter=40)
     teacher = jax.tree.map(lambda x: x+.02, params)
-    target_energy, target_state = trainer.predict(reference, params=teacher)
-    data = [training.Sample(reference,
+    target_energy, target_state = trainer.predict(mf, params=teacher)
+    data = [training.Sample(mf,
         energy=jax.lax.stop_gradient(target_energy),
         density=jax.lax.stop_gradient(training.density_on_grid(target_state)))]
 

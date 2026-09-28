@@ -207,9 +207,13 @@ def Sample(molecule, *, energy=None, density=None, s1_energy=None,
            xc_potential=None, xc_kernel=None, weight=1.):
     """Construct a training sample using the existing validated PyTree record.
 
-    Energies are Hartree. Density is sampled on molecule.grid; spectrum is
-    (grid_in_eV, values). No additional copy or parallel sample type is created.
+    The source is a solved RKS/UKS object or an explicit AO/grid state.
+    Energies are Hartree. Density is sampled on the prepared state's grid;
+    spectrum is (grid_in_eV, values). Conversion is eager, without another SCF
+    calculation or a parallel sample type.
     """
+    from ..scf.reference import as_reference
+    molecule = as_reference(molecule)
     grid, curve = (None, None) if spectrum is None else spectrum
     return MolecularTrainingDatum(
         molecule=molecule, target_e0_total_h=energy, target_grid_density=density,

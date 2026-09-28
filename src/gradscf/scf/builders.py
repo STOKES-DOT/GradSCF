@@ -78,7 +78,7 @@ def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True):
     return replace(inputs,dipole_integrals=dipole)
 
 
-def restricted_molecule_from_spec_with_jax_rks(
+def _build_restricted_reference(
     *,
     atom: Any,
     basis: Any,
@@ -402,7 +402,7 @@ def build_restricted_scf_result_from_facade(
     return (result, scf_inputs) if return_inputs else result
 
 
-def unrestricted_molecule_from_spec_with_jax_uks(
+def _build_unrestricted_reference(
     *,
     atom: Any,
     basis: Any,
@@ -625,6 +625,6 @@ __all__ = [
     "build_restricted_reference_from_facade",
     "build_restricted_scf_result_from_facade",
     "build_unrestricted_reference_from_facade",
-    "restricted_molecule_from_spec_with_jax_rks",
-    "unrestricted_molecule_from_spec_with_jax_uks",
+    "_build_restricted_reference",
+    "_build_unrestricted_reference",
 ]

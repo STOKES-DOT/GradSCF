@@ -333,9 +333,11 @@ class Trainer:
         """Return (energy, electronic_state), reusing the existing predictor."""
         from .predictors import make_ground_state_predictor
         from .config import Sample
+        sample = Sample(molecule)
         if params is None:
-            self._initialize((Sample(molecule),))
+            self._initialize((sample,))
             params = self.params
+        molecule = sample.molecule
         predictor = make_ground_state_predictor(self.functional, training_config=self._configuration(mode))
         return predictor(params, molecule)
 

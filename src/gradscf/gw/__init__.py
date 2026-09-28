@@ -40,35 +40,38 @@ from .evgw import evgw_cd_restricted, evgw_cd_unrestricted
 from .freq import scaled_legendre_grid
 from .g0w0 import g0w0_cd_restricted, g0w0_cd_unrestricted
 from .polarizability import rho_response_iw, rho_response_real
-from .qp import qp_residual, solve_qp_orbital
+from .qp import (
+    solve_qp_orbital,
+)
 from .qsgw import qsgw_cd_restricted
 from .rgw import GW
 from .scgw import SCGWResult, scgw_cd_restricted, scgw_matsubara_restricted
 from .screened import screened_w_imag_axis, StaticScreening, build_static_screening, apply_static_screening
-from .self_energy import sigma_cd, sigma_imag_part, sigma_residue_part
+from .self_energy import (
+    sigma_cd,
+)
 from .types import GWResult
 from .ugw import UGW
 
 __all__ = [
-    "GW",
-    "UGW",
-    "GWResult",
-    "g0w0_cd_restricted",
-    "g0w0_cd_unrestricted",
-    "evgw_cd_restricted",
-    "evgw_cd_unrestricted",
-    "qsgw_cd_restricted",
-    "scgw_cd_restricted",
-    "scgw_matsubara_restricted",
-    "SCGWResult",
-    "scaled_legendre_grid",
-    "rho_response_iw",
-    "rho_response_real",
-    "screened_w_imag_axis",
-    "StaticScreening", "build_static_screening", "apply_static_screening",
-    "sigma_cd",
-    "sigma_imag_part",
-    "sigma_residue_part",
-    "qp_residual",
-    "solve_qp_orbital",
+    'GW',
+    'UGW',
+    'GWResult',
+    'g0w0_cd_restricted',
+    'g0w0_cd_unrestricted',
+    'evgw_cd_restricted',
+    'evgw_cd_unrestricted',
+    'qsgw_cd_restricted',
+    'scgw_cd_restricted',
+    'scgw_matsubara_restricted',
+    'SCGWResult',
+    'scaled_legendre_grid',
+    'rho_response_iw',
+    'rho_response_real',
+    'screened_w_imag_axis',
+    'StaticScreening',
+    'build_static_screening',
+    'apply_static_screening',
+    'sigma_cd',
+    'solve_qp_orbital',
 ]

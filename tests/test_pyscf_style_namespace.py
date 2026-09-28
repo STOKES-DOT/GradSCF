@@ -70,8 +70,8 @@ def test_gradscf_pyscf_style_submodules_import():
     for name in (
         "gradscf.gto.basis",
         "gradscf.gto.grid",
-        "gradscf.dft.rks",
-        "gradscf.dft.uks",
+        "gradscf.scf.rks",
+        "gradscf.scf.uks",
         "gradscf.dft.xc",
     ):
         module = importlib.import_module(name)

@@ -2,12 +2,13 @@ import ast
 from pathlib import Path
 
 
-def test_top_level_exposes_spec_workflow_entrypoint():
+def test_workflow_implementation_entrypoint_is_not_flattened_at_root():
     import gradscf
-    from gradscf.workflows.core import run_pipeline_core_from_spec
+    from gradscf.workflows.core import run_pipeline_core
 
-    assert "run_pipeline_core_from_spec" in gradscf.__all__
-    assert gradscf.run_pipeline_core_from_spec is run_pipeline_core_from_spec
+    assert "run_pipeline_core" not in gradscf.__all__
+    assert "run_pipeline_core" not in gradscf.workflows.__all__
+    assert gradscf.workflows.core.run_pipeline_core is run_pipeline_core
 
 
 def test_workflow_reporting_defers_pyplot_import_until_plotting():

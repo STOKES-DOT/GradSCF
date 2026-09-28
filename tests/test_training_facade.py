@@ -78,7 +78,8 @@ def test_nonfinite_update_has_no_optimizer_step_but_is_recorded():
 
 
 def test_explicit_name_preserves_existing_scf_gradient_behavior():
-    from gradscf.scf import SCFDifferentiationConfig, normalize_scf_gradient_mode
+    from gradscf.scf import SCFDifferentiationConfig
+    from gradscf.scf.autodiff import normalize_scf_gradient_mode
     from gradscf.training import Sample, Trainer
     assert normalize_scf_gradient_mode('explicit') == 'explicit'
     assert normalize_scf_gradient_mode('expl') == 'explicit'

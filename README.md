@@ -206,6 +206,9 @@ Additional neural dispersion models are available in
 
 ## Documentation and examples
 
+- **Public API:** [entry points and reference reuse](API.md),
+  [import migration table](API_MIGRATION.csv).
+
 - **CI and CC:** [CI tutorial](examples/ci/restricted_ci.py),
   [restricted CC](examples/cc/restricted_ground.py),
   [open-shell CI/CC](examples/cc/open_shell_ground.py).

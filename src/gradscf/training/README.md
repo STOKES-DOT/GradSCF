@@ -1,9 +1,9 @@
 # Training API
 
 ```python
-from gradscf.model import training
+from gradscf import training
 
-data = [training.Sample(reference, energy=e_fci)]
+data = [training.Sample(mf, energy=e_fci)]
 trainer = training.Trainer(functional, params=params)
 trainer.mode = 'implicit'
 trainer.loss = {'energy': {'mse': 1.0, 'mae': 1.0}}
@@ -15,8 +15,11 @@ print(trainer.history['loss'])
 print(trainer.evaluate(data))
 ```
 
-The functional can be built in or a generic `dft.Functional`. `reference` is a
-GradSCF molecular state containing integrals, grid and initial density/orbitals.
+The functional can be built in or a generic `dft.Functional`. `mf` is a solved
+RKS/UKS object; `Sample` eagerly captures its prepared reference without rerunning
+SCF. An explicit `reference = mf.to_reference()` is also accepted. This state
+contains integrals, grid and initial density/orbitals. Recreate samples after
+changing the source. See [public API](../../../API.md).
 Energies use Hartree; density targets use that state's grid. Parameters may
 be supplied explicitly or initialized by the functional using `trainer.seed`
 (default 0). This facade retains the existing loss, SCF and differentiation
@@ -101,8 +104,8 @@ including Adam state. Learning rate must be a finite positive scalar.
   the largest cycle count.
 - `evaluate(data)` returns current metrics without optimizing.
   `evaluate(data, mode='implicit')` gives a separate self-consistent diagnostic.
-- `predict(molecule)` returns `(energy, electronic_state)`.
-  `predict(molecule, params=other_weights)` does not replace trainable weights.
+- `predict(mf)` returns `(energy, electronic_state)`.
+  `predict(mf, params=other_weights)` does not replace trainable weights.
 
 Registered array PyTrees use JIT. Legacy opaque molecule-like test/workflow
 objects retain the eager shared path; the mathematical loss is the same.

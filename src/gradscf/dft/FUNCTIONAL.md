@@ -110,7 +110,7 @@ projection routines. Parameter derivatives remain available through the kernel.
 ## Training API
 
 ```python
-from gradscf.model import training
+from gradscf import training
 
 data = [training.Sample(reference, energy=e_fci)]
 trainer = training.Trainer(functional, params=params)

@@ -120,13 +120,13 @@ def main() -> None:
         )
         for reference, target in zip(references, targets, strict=True)
     )
-    state = training.create_train_state_from_molecule(
+    state = training.trainer.create_train_state_from_molecule(
         functional,
         jax.random.PRNGKey(0),
         references[0],
         optax.adam(args.learning_rate),
     )
-    train_step = training.make_molecular_train_step(
+    train_step = training.trainer.make_molecular_train_step(
         functional,
         training_config=config,
     )

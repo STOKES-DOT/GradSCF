@@ -69,44 +69,8 @@ def run_neural_xc_spectrum_pipeline(
     )
 
 
-def run_neural_xc_spectrum_pipeline_from_molecule_spec(
-    *,
-    system_label: str,
-    molecule_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-    output_config: OutputConfig,
-) -> PipelineRun:
-    """Compatibility wrapper around the spec-driven strict-JAX pipeline path."""
-
-    return run_neural_xc_spectrum_pipeline(
-        system_label=system_label,
-        molecule_spec=molecule_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-        output_config=output_config,
-    )
 
 
-def run_neural_xc_spectrum_pipeline_from_spec(
-    *,
-    system_label: str,
-    reference_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-    output_config: OutputConfig,
-) -> PipelineRun:
-    return run_neural_xc_spectrum_pipeline_from_molecule_spec(
-        system_label=system_label,
-        molecule_spec=reference_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-        output_config=output_config,
-    )
 
 
 class ExperimentPipeline:
@@ -171,47 +135,3 @@ def run_and_report(
     )
     print_run_summary(run, print_all_states=print_all_states)
     return run
-
-
-def run_and_report_from_molecule_spec(
-    *,
-    system_label: str,
-    molecule_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-    output_config: OutputConfig,
-    print_all_states: bool = True,
-) -> PipelineRun:
-    """Compatibility wrapper around the strict-JAX convenience entrypoint."""
-
-    return run_and_report(
-        system_label=system_label,
-        molecule_spec=molecule_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-        output_config=output_config,
-        print_all_states=print_all_states,
-    )
-
-
-def run_and_report_from_spec(
-    *,
-    system_label: str,
-    reference_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-    output_config: OutputConfig,
-    print_all_states: bool = True,
-) -> PipelineRun:
-    return run_and_report_from_molecule_spec(
-        system_label=system_label,
-        molecule_spec=reference_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-        output_config=output_config,
-        print_all_states=print_all_states,
-    )

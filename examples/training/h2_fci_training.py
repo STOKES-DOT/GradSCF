@@ -20,26 +20,19 @@ import numpy as np
 
 jax.config.update('jax_enable_x64', True)
 
-from gradscf import fci
+from gradscf import gto, dft, fci
 from gradscf.integrals.mo import transform_integrals
-from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
 from gradscf import training
 from density_matrix_mlp import functional
 
 
-reference = restricted_molecule_from_spec_with_jax_rks(
-    atom='H 0 0 0; H 0 0 .74', basis='6-31g*', xc_spec='hf',
-    grids_level=0, integral_backend='native')
+mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
+mf = dft.RKS(mol, xc='hf', grids_level=0, integral_backend='native').run()
+reference = mf.to_reference()
 coeff = reference.mo_coeff[0]
-if reference.df_factors is not None:
-    representation = {'df_factors': reference.df_factors}
-elif reference.eri_pair_matrix is not None:
-    representation = {'eri_pair_matrix': reference.eri_pair_matrix}
-else:
-    representation = {'eri': reference.rep_tensor}
-h1, eri = transform_integrals(reference.h1e, coeff, **representation)
-solver = fci.FCI(solver='dense', conv_tol=1e-12).run(
-    h1, eri, coeff.shape[1], (1, 1), ecore=reference.nuclear_repulsion)
+solver = fci.FCI(mf, solver='dense', conv_tol=1e-12).run()
+# Export the small Hamiltonian only for the independent FCI cross-check.
+h1, eri = transform_integrals(reference.h1e, coeff, eri_pair_matrix=reference.eri_pair_matrix)
 if not solver.converged:
     raise RuntimeError('FCI reference did not converge')
 target = jax.lax.stop_gradient(solver.e_tot)
@@ -52,8 +45,7 @@ steps, learning_rate, seed = 100, .002, 0
 scf_settings = dict(max_cycle=80, damping=.2, require_converged=True,
                     conv_tol_energy=1e-11, conv_tol_density=1e-9, eigenvalue_jitter=0.)
 adjoint_settings = dict(tolerance=1e-9, max_iter=40)
-data = [training.Sample(reference, energy=target)]
-params = functional.init_from_molecule(jax.random.PRNGKey(seed), reference)
+data = [training.Sample(mf, energy=target)]
 folder = Path(__file__).with_name('h2_fci_results')
 folder.mkdir(exist_ok=True)
 report = dict(atom='H 0 0 0; H 0 0 .74', unit='Angstrom', basis='6-31g*',
@@ -77,7 +69,8 @@ np.savez_compressed(folder/'reference.npz', h1_mo=np.asarray(h1), eri_mo=np.asar
     grid_weights=np.asarray(reference.grid.weights), overlap=np.asarray(reference.overlap_matrix))
 
 for name in ('fixed_density', 'explicit', 'implicit'):
-    trainer = training.Trainer(functional, params=params)
+    trainer = training.Trainer(functional)
+    trainer.seed = seed
     trainer.mode = name
     trainer.loss = {'energy': {'mse': 1., 'mae': 1.}}
     trainer.learning_rate = learning_rate
@@ -107,7 +100,7 @@ for name in ('fixed_density', 'explicit', 'implicit'):
     # Evaluate every final model self-consistently as an additional diagnostic.
     scf_metrics = trainer.evaluate(data, mode='implicit')
     scf_loss = scf_metrics['loss']
-    scf_energy, scf_state = trainer.predict(reference, mode='implicit')
+    scf_energy, scf_state = trainer.predict(mf, mode='implicit')
     rho = training.density_on_grid(scf_state)
     density_l2 = jnp.sqrt(jnp.sum(reference.grid.weights*(rho-fci_rho)**2)
                           /jnp.sum(reference.grid.weights*fci_rho**2))
