@@ -4,7 +4,6 @@ Hosts the machine-learned model code:
 
 - ``gradscf.model.neural_xc``: neural XC functional models
 - ``gradscf.model.neural_d``: neural dispersion corrections
-- ``gradscf.model.training``: training pipelines for the above
 - ``gradscf.model.nnao``: MACE-conditioned neural-network basis sets (NNAO)
 
 Note: the vendored ``mace_jax`` upstream project ships inside
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
-_SUBMODULES = ("neural_xc", "neural_d", "training", "nnao")
+_SUBMODULES = ("neural_xc", "neural_d", "nnao")
 
 
 def __getattr__(name):

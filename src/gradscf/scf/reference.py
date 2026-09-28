@@ -1,4 +1,4 @@
-"""Shared eager conversion from converged HF references to MO Hamiltonians."""
+"""SCF reference preparation: AO snapshots and distinct post-HF Hamiltonians."""
 
 from dataclasses import dataclass
 import hashlib
@@ -152,3 +152,33 @@ def reference_state_signature(source):
         _array_signature(source.mo_coeff),
         _array_signature(source.mo_occ),
     )
+
+
+def as_reference(source):
+    """Resolve an AO/grid state from an SCF facade or an explicit array state.
+
+    This is an eager source adapter, not the MO Hamiltonian adapter used by
+    CI/CC and not a GW/BSE reference conversion. The source owns freshness,
+    convergence and spin/representation validation.
+    """
+    convert = getattr(source, 'to_reference', None)
+    if callable(convert):
+        return convert()
+    if hasattr(source, 'molecule'):
+        molecule = source.molecule
+        if molecule is not None:
+            return molecule
+        ensure = getattr(source, '_ensure_molecule', None)
+        if callable(ensure):
+            return ensure()
+    if hasattr(source, 'reference'):
+        ensure = getattr(source, '_ensure_reference', None)
+        if callable(ensure):
+            return ensure()
+        if source.reference is not None:
+            return source.reference
+        ensure = getattr(source, '_ensure_molecule', None)
+        if callable(ensure):
+            return ensure()
+        raise RuntimeError('Run ground-state mf.kernel() or mf.run() before requesting a reference.')
+    return source

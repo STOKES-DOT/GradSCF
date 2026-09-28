@@ -19,7 +19,7 @@ from ...tddft.cisd import (
     restricted_cisd_second_order_correction,
     unrestricted_cisd_second_order_correction,
 )
-from .inputs import (
+from gradscf.dft.hfx import (
     has_hfx_nu_source,
     hfx_nu_grid_chunk_padded,
     hfx_nu_shape,

@@ -54,7 +54,7 @@ def run_kpoint_scf(inputs,*,mesh,nelec,xc='hf',exxdiv='ewald',max_cycle=100,
     if xc_type(xc) not in ('HF','LDA','GGA'):raise NotImplementedError('Unsupported periodic XC.')
     nk,n,_=inputs.overlap.shape
     if max_cycle<1 or any(v<0 or v>n for v in nelec):raise ValueError('Invalid occupations or cycles.')
-    config=differentiation or SCFDifferentiationConfig(mode='unrolled')
+    config=differentiation or SCFDifferentiationConfig(mode='explicit')
     s=inputs.overlap
     def transform(s):
         return jnp.linalg.inv(jnp.linalg.cholesky(s)).conj().swapaxes(-1,-2)

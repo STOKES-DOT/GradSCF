@@ -16,19 +16,18 @@ from gradscf import tdscf
 from gradscf.model import neural_xc
 from gradscf.tools.device import put_molecule_on_device, resolve_execution_device
 from gradscf.tools.jax_runtime import configure_jax_persistent_cache
-from gradscf.scf.builders import (
-    restricted_molecule_from_spec_with_jax_rks,
-    unrestricted_molecule_from_spec_with_jax_uks,
-)
+from gradscf.scf.builders import _build_restricted_reference, _build_unrestricted_reference
 from gradscf.scf import RHFConfig, RKSConfig, UKSConfig
 from gradscf.scf.autodiff import normalize_scf_gradient_mode
 from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
-    create_train_state_from_molecule,
     density_on_grid,
     make_ground_state_predictor,
+)
+from gradscf.training.trainer import (
+    create_train_state_from_molecule,
     make_molecular_eval,
     make_molecular_train_step,
 )
@@ -63,7 +62,7 @@ def _compiled_lorentzian_spectrum():
 
 def _resolve_training_scf_gradient_mode(
     config: NeuralXCTrainingConfig,
-) -> Literal["implicit", "unrolled"]:
+) -> Literal["implicit", "explicit"]:
     return normalize_scf_gradient_mode(config.objective.scf_gradient_mode)
 
 
@@ -288,7 +287,7 @@ def run_molecule_from_spec(
                 precompile_eri_chunk_size=simulation.jax_precompile_eri_chunk_size,
                 verbose=spec.verbose,
             )
-            reference = restricted_molecule_from_spec_with_jax_rks(**molecule_kwargs)
+            reference = _build_restricted_reference(**molecule_kwargs)
             xc_label = rks_xc
         else:
             uks_xc = simulation.jax_uks_xc_spec or str(spec.xc)
@@ -301,7 +300,7 @@ def run_molecule_from_spec(
                 density_floor=simulation.jax_uks_density_floor,
                 potential_clip=simulation.jax_uks_potential_clip,
             )
-            reference = unrestricted_molecule_from_spec_with_jax_uks(
+            reference = _build_unrestricted_reference(
                 atom=spec.atom,
                 basis=spec.basis,
                 xc_spec=uks_xc,
@@ -973,35 +972,3 @@ def run_pipeline_core(
     neural = run_neural_tddft(reference, training, simulation_config)
     spectrum = build_spectrum(reference, neural, spectrum_config, simulation_config)
     return reference, training, neural, spectrum
-
-
-def run_pipeline_core_from_molecule_spec(
-    *,
-    molecule_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-) -> tuple[MoleculeRun, TrainingRun, NeuralExcitedStateRun, SpectrumRun]:
-    """Compatibility wrapper around the spec-driven strict-JAX pipeline path."""
-
-    return run_pipeline_core(
-        molecule_spec=molecule_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-    )
-
-
-def run_pipeline_core_from_spec(
-    *,
-    reference_spec: MoleculeSpecConfig,
-    training_config: NeuralXCTrainingConfig,
-    simulation_config: SimulationConfig,
-    spectrum_config: SpectrumGridConfig,
-) -> tuple[MoleculeRun, TrainingRun, NeuralExcitedStateRun, SpectrumRun]:
-    return run_pipeline_core_from_molecule_spec(
-        molecule_spec=reference_spec,
-        training_config=training_config,
-        simulation_config=simulation_config,
-        spectrum_config=spectrum_config,
-    )

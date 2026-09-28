@@ -1,5 +1,5 @@
 import pytest
-from gradscf.model.training import MolecularTrainingConfig
+from gradscf.training import MolecularTrainingConfig
 
 from gradscf.workflows import (
     ExperimentConfig,
@@ -7,10 +7,10 @@ from gradscf.workflows import (
     NeuralXCTrainingConfig,
     MoleculeSpecConfig,
     SystemConfig,
+)
+from gradscf.workflows.presets import (
     benzene_experiment_config,
-    benzene_strict_jax_experiment_config,
     water_experiment_config,
-    water_strict_jax_experiment_config,
 )
 from gradscf.model.neural_xc import (
     DEFAULT_NEURAL_XC_COEFFICIENT_PRIOR_MODE,
@@ -134,8 +134,8 @@ def test_workflow_presets_return_non_empty_systems():
 
 
 def test_strict_jax_workflow_presets_return_reference_specs():
-    water = water_strict_jax_experiment_config()
-    benzene = benzene_strict_jax_experiment_config()
+    water = water_experiment_config()
+    benzene = benzene_experiment_config()
 
     assert len(water.systems) == 1
     assert len(benzene.systems) == 1

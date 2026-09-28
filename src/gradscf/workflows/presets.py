@@ -35,7 +35,7 @@ def _benzene_atom_block() -> str:
     """
 
 
-def water_strict_jax_experiment_config(
+def water_experiment_config(
     *,
     basis: str = "sto-3g",
     xc: str = "b3lyp",
@@ -84,7 +84,7 @@ def water_strict_jax_experiment_config(
     )
 
 
-def benzene_strict_jax_experiment_config(
+def benzene_experiment_config(
     *,
     basis: str = "sto-3g",
     xc: str = "b3lyp",
@@ -134,25 +134,3 @@ def benzene_strict_jax_experiment_config(
             compare_states=20,
         ),
     )
-
-
-def water_experiment_config(
-    *,
-    basis: str = "sto-3g",
-    xc: str = "b3lyp",
-    steps: int = 2000,
-) -> ExperimentConfig:
-    """Default H2O preset. This now routes to the strict-JAX spec-driven pipeline."""
-
-    return water_strict_jax_experiment_config(basis=basis, xc=xc, steps=steps)
-
-
-def benzene_experiment_config(
-    *,
-    basis: str = "sto-3g",
-    xc: str = "b3lyp",
-    steps: int = 1200,
-) -> ExperimentConfig:
-    """Default benzene preset. This now routes to the strict-JAX spec-driven pipeline."""
-
-    return benzene_strict_jax_experiment_config(basis=basis, xc=xc, steps=steps)

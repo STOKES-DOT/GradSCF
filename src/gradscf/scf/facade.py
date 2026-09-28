@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Literal
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 
 from ..data.molecule import MoleculeSpec
 from ..tools.jax_runtime import configure_jax_persistent_cache
@@ -12,17 +14,17 @@ from .builders import (
     build_restricted_scf_result_from_facade,
     complete_restricted_response_inputs,
     build_unrestricted_reference_from_facade,
-    restricted_molecule_from_spec_with_jax_rks,
-    unrestricted_molecule_from_spec_with_jax_uks,
+    _build_restricted_reference,
+    _build_unrestricted_reference,
 )
-from .core import _contains_jax_tracer
+from .core import _contains_jax_tracer, _build_density_from_occ
 from gradscf.integrals.assembly import build_rks_integral_inputs
 from .rks import RKSConfig, run_rks_from_integrals
 from .uks import UKSConfig
 
 
 _SCF_RESULT_FIELDS = (
-    'reference', 'scf_result', '_scf_inputs', '_cached_scf_key', '_cached_response_key',
+    'reference', 'scf_result', '_scf_inputs', '_cached_scf_key', '_cached_response_key', '_cached_orbital_key',
     'e_tot', 'mo_energy', 'mo_coeff', 'mo_occ', 'cycles', 'converged',
 )
 
@@ -83,6 +85,13 @@ class _BaseKS:
     _scf_inputs: Any | None = field(default=None,init=False,repr=False)
     _cached_scf_key: Any | None = field(default=None,init=False,repr=False)
     _cached_response_key: Any | None = field(default=None,init=False,repr=False)
+    _cached_orbital_key: Any | None = field(default=None, init=False, repr=False)
+
+    def _orbital_signature(self):
+        from .reference import _array_signature
+
+        return tuple(None if value is None else _array_signature(value)
+                     for value in (self.mo_coeff, self.mo_occ, self.mo_energy))
 
     def _scf_signature(self):
         return _cache_signature((self._spec(), self.mol.basis, self._config(), self.grids_level,
@@ -92,6 +101,14 @@ class _BaseKS:
     def run(self) -> "_BaseKS":
         self.kernel()
         return self
+
+    def make_rdm1(self):
+        """Density in the facade convention: total RKS or alpha/beta UKS."""
+        if self.mo_coeff is None or self.mo_occ is None:
+            raise RuntimeError('Run ground-state SCF before make_rdm1().')
+        coefficients, occupations = jnp.asarray(self.mo_coeff), jnp.asarray(self.mo_occ)
+        build = _build_density_from_occ if coefficients.ndim == 2 else jax.vmap(_build_density_from_occ)
+        return build(coefficients, occupations)
 
     def TDA(self, **kwargs: Any) -> Any:
         from .. import tdscf
@@ -158,6 +175,8 @@ class _BaseKS:
         converged = getattr(reference,"scf_converged",None)
         self.converged = bool(getattr(reference,"converged",True) if converged is None else converged)
 
+        self._cached_orbital_key = self._orbital_signature()
+
     def _sync_from_scf_result(self, result: Any) -> None:
         self.scf_result = result
         self.reference = None
@@ -167,6 +186,8 @@ class _BaseKS:
         self.mo_occ = getattr(result, "mo_occ", None)
         self.cycles = getattr(result, "cycles", None)
         self.converged = bool(getattr(result, "converged", True))
+
+        self._cached_orbital_key = self._orbital_signature()
 
     def _configure_jax_cache(self) -> None:
         configure_jax_persistent_cache(
@@ -183,18 +204,27 @@ class _BaseKS:
         device = resolve_execution_device(self.execution_device)
         return put_molecule_on_device(reference, device=device)
 
+    def to_reference(self) -> Any:
+        """Return reusable AO/grid state from this solved, current SCF source.
+
+        Eager conversion only: reuse solved inputs/orbitals and complete missing
+        response data. Never implicitly run an unconverged or stale SCF source.
+        """
+        return self._ensure_reference()
+
+    def _check_reference_source(self) -> None:
+        if self.e_tot is None or not self.converged:
+            raise RuntimeError('Run and converge ground-state SCF before preparing a reference.')
+        if self._cached_scf_key is None or self._cached_scf_key != self._scf_signature():
+            raise RuntimeError('Molecule or SCF configuration changed; run kernel() before preparing a reference.')
+        if self._cached_orbital_key != self._orbital_signature():
+            raise RuntimeError('Orbital state changed; run kernel() before preparing a reference.')
+
     def _ensure_reference(self) -> Any:
-        response_key = None
-        if self._cached_scf_key is not None:
-            if self._cached_scf_key != self._scf_signature():
-                raise RuntimeError('Molecule or SCF configuration changed; run kernel() before preparing a reference.')
-            response_key = self._response_signature()
-        if self.reference is not None and (self._cached_scf_key is None or response_key == self._cached_response_key):
+        self._check_reference_source()
+        response_key = self._response_signature()
+        if self.reference is not None and response_key == self._cached_response_key:
             return self.reference
-        if self.e_tot is None:
-            raise RuntimeError(
-                "Run ground-state mf.kernel() or mf.run() before launching TD-SCF."
-            )
         reference = self._build_reference(self._spec())
         reference = self._put_on_requested_device(reference)
         if self.scf_result is None:
@@ -246,7 +276,7 @@ class RKS(_BaseKS):
             hfx_omega_values=self.hfx_omega_values,
             hfx_chunk_size=self.hfx_chunk_size,
             include_dipole_integrals=True,
-            reference_builder=restricted_molecule_from_spec_with_jax_rks,
+            reference_builder=_build_restricted_reference,
             scf_inputs=self._scf_inputs,
             scf_result=self.scf_result,
         )
@@ -325,6 +355,16 @@ class UKS(_BaseKS):
         # restricted local-HFX feature controls.
         return _cache_signature((self.execution_device,))
 
+    def _ensure_reference(self) -> Any:
+        self._check_reference_source()
+        if self.reference is None:
+            raise RuntimeError('Solved UKS reference is missing; run kernel() again.')
+        response_key = self._response_signature()
+        if self._cached_response_key != response_key:
+            self.reference = self._put_on_requested_device(self.reference)
+            self._cached_response_key = response_key
+        return self.reference
+
     def _config(self) -> UKSConfig:
         return UKSConfig(
             xc_spec=self.xc,
@@ -353,7 +393,7 @@ class UKS(_BaseKS):
             chkfile=self.chkfile,
             sap_basis=self.sap_basis,
             init_guess_chkfile_project=self.init_guess_chkfile_project,
-            reference_builder=unrestricted_molecule_from_spec_with_jax_uks,
+            reference_builder=_build_unrestricted_reference,
         )
 
     def kernel(self) -> Any:

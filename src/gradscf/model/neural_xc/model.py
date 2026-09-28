@@ -33,9 +33,9 @@ from .defaults import (
 from .inputs import (
     assemble_basis_channels,
     build_coefficient_inputs,
-    has_hfx_nu_source,
     resolve_canonical_hfx_feature_channels,
 )
+from gradscf.dft.hfx import has_hfx_nu_source
 from .projection import NeuralXCProjectionMixin
 from .binding import NeuralXCBindingMixin
 

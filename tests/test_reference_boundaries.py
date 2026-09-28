@@ -141,18 +141,17 @@ def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
     assert offenders == []
 
 
-def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
+def test_physical_hf_pt2_helpers_are_owned_by_dft_not_a_neural_model():
     import reference_scf_features as scf_features
     from gradscf.model.neural_xc import inputs
-
-    hidden = (
-        "_local_hfx_features_from_basis_dm",
-        "_local_pt2_feature_from_restricted_orbitals",
-    )
-    for name in hidden:
+    from gradscf.dft import hfx, pt2
+    for name, owner in (
+        ('_local_hfx_features_from_basis_dm', hfx),
+        ('_local_pt2_feature_from_restricted_orbitals', pt2),
+    ):
         assert not hasattr(scf_features, name)
-        assert hasattr(inputs, name)
-    assert not hasattr(inputs, "_local_hfx_features_from_dm")
+        assert not hasattr(inputs, name)
+        assert hasattr(owner, name)
 
 
 def test_restricted_response_hvp_uses_factorized_transition_features():
@@ -184,48 +183,15 @@ def test_restricted_response_feature_kind_helpers_are_owned_by_features_module()
     assert features_module.infer_response_feature_kind(jnp.ones((5, 5, 2))) == "MGGA"
 
 
-def test_public_api_prefers_molecule_naming_over_reference_naming():
+def test_public_api_prefers_owned_namespaces_and_object_conversion():
     import gradscf
     from gradscf import scf, workflows
-
-    scf_preferred = {
-        "QuadratureGrid",
-        "RestrictedMolecule",
-        "UnrestrictedMolecule",
-        "restricted_molecule_from_spec_with_jax_rks",
-        "unrestricted_molecule_from_spec_with_jax_uks",
-    }
-    public_preferred = {
-        "MoleculeRun",
-        "MoleculeSpecConfig",
-        "build_molecule",
-        "put_molecule_on_device",
-        "put_restricted_molecule_on_device",
-        "run_molecule_from_spec",
-    }
-    scf_legacy = {
-        "GridReference",
-        "RestrictedMoleculeReference",
-        "UnrestrictedMoleculeReference",
-        "restricted_reference_from_spec_with_jax_rks",
-        "unrestricted_reference_from_spec_with_jax_uks",
-    }
-    public_legacy = {
-        "ReferenceRun",
-        "ReferenceSpecConfig",
-        "build_reference",
-        "put_reference_on_device",
-        "put_restricted_reference_on_device",
-        "run_reference_from_spec",
-    }
-
-    assert scf_preferred.issubset(set(scf.__all__))
-    assert public_preferred.issubset(set(gradscf.__all__))
-    assert scf_legacy.isdisjoint(set(scf.__all__))
-    assert public_legacy.isdisjoint(set(gradscf.__all__))
-    assert {"MoleculeRun", "MoleculeSpecConfig", "run_molecule_from_spec"}.issubset(
-        set(workflows.__all__)
-    )
-    assert {"ReferenceRun", "ReferenceSpecConfig", "run_reference_from_spec"}.isdisjoint(
-        set(workflows.__all__)
-    )
+    from gradscf.scf import builders
+    assert {'QuadratureGrid','RestrictedMolecule','UnrestrictedMolecule','as_reference'}.issubset(scf.__all__)
+    assert {'MoleculeRun','MoleculeSpecConfig','ExperimentPipeline'}.issubset(workflows.__all__)
+    for name in ('_build_restricted_reference','_build_unrestricted_reference'):
+        assert name not in scf.__all__
+        assert callable(getattr(builders,name))
+    for name in ('build_molecule','run_molecule_from_spec','put_molecule_on_device'):
+        assert name not in gradscf.__all__
+    assert callable(scf.RKS.to_reference)

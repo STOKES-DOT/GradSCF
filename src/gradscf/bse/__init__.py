@@ -5,20 +5,21 @@ from .types import BSEConfig, BSEResult
 from .kernel import build_tda_operator, build_bse_operators
 from .response import run_bse
 from .properties import transition_dipoles, oscillator_strengths
-from .reference import BSEReference, reference_from_source
+from .reference import (
+    BSEReference,
+)
 from .api import BSE
 
 __all__ = [
-    "BSESpace",
-    "make_bse_space",
-    "BSEConfig",
-    "BSEResult",
-    "build_tda_operator",
-    "build_bse_operators",
-    "run_bse",
-    "transition_dipoles",
-    "oscillator_strengths",
-    "BSEReference",
-    "reference_from_source",
-    "BSE",
+    'BSESpace',
+    'make_bse_space',
+    'BSEConfig',
+    'BSEResult',
+    'build_tda_operator',
+    'build_bse_operators',
+    'run_bse',
+    'transition_dipoles',
+    'oscillator_strengths',
+    'BSEReference',
+    'BSE',
 ]

@@ -2,6 +2,27 @@
 
 ## Unreleased — GradSCF
 
+### Public API ownership
+
+- Keep domain namespaces at the root; migrate 144 flat exports to their owners.
+- Replace long SCF reference-builder entry points with `mf.to_reference()`;
+  let `training.Sample` and `Trainer.predict` accept converged RKS/UKS objects.
+- Reuse solved SCF data and reject stale configuration or modified orbitals.
+- Remove four DFT forwarding modules and six duplicate workflow wrappers;
+  consolidate two preset names and publish the complete import migration table.
+
+### Functional and model ownership
+
+- Keep `model.neural_xc` as the concrete built-in neural XC model. Move the
+  generic callback adapter to `dft.Functional` and shared training to
+  `gradscf.training` (`Sample` / `Trainer`).
+- Move XC derivatives to `dft.derivatives` and shared physical HFX/PT2 inputs
+  to `dft.hfx` / `dft.pt2`. SCF, data loading, and external-model training no
+  longer import the built-in neural model to obtain physical primitives.
+- Remove old forwarding paths and the ambiguous root `Functional` export.
+  Move user-defined-network examples to `examples/training` and verify the
+  existing three-mode H2/FCI training histories remain unchanged.
+
 ### Full configuration interaction
 
 - Add an independent real common-orbital FCI module with alpha/beta string
@@ -19,11 +40,11 @@
 
 - Move the neural-network model code into the new `gradscf.model` subpackage:
   `gradscf.neural_xc` -> `gradscf.model.neural_xc`, `gradscf.neural_d` ->
-  `gradscf.model.neural_d`, `gradscf.training` -> `gradscf.model.training`,
+  `gradscf.model.neural_d`,
   and the top-level `nnao` package -> `gradscf.model.nnao`.  The vendored
   mace-jax project remains a separate top-level package (sources unchanged).
-  Top-level `gradscf` symbols (e.g. `Functional`, `make_neural_xc_functional`,
-  `MolecularTrainingConfig`) are unchanged.  No compatibility aliases are
+  At that stage, top-level convenience symbols were unchanged; the subsequent
+  public API cleanup above moves them to their owning modules.  No compatibility aliases are
   kept for the old import paths.
 
 - Rename the distribution and Python namespace from `td-graddft` / `td_graddft`

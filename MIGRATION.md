@@ -1,8 +1,49 @@
 # Migrating from GradTDDFT to GradSCF
 
-GradSCF is the current project and package name. This migration changes the
-package identity and imports; it preserves the existing numerical methods,
-function signatures, and scientific submodule names.
+GradSCF is the current project and package name. The original package rename preserved numerical methods and signatures.
+Subsequent API changes are listed below; some old import paths are removed.
+
+## 2026-09-28 — Public entry points use domain ownership
+
+Use `from gradscf import gto, dft, training` and
+`mf = dft.RKS(gto.M(...), xc=...).run()`. The former
+`restricted_molecule_from_spec_with_jax_rks` / unrestricted builder names
+are private implementations. Obtain their prepared AO/grid state through
+`mf.to_reference()`, or pass the solved `mf` directly to `training.Sample`
+and `trainer.predict`.
+
+The root no longer reexports 144 individual symbols. This is a breaking
+import cleanup, not a numerical-method change. See [API.md](API.md) and the
+complete [old-to-new table](API_MIGRATION.csv). DFT forwarding modules and
+six duplicate workflow builder wrappers are removed. Advanced numerical
+APIs remain available in their owning modules.
+
+## 2026-09-28 — Generic functionals and training are framework modules
+
+Concrete neural architectures remain under `gradscf.model`. The generic
+functional adapter, physical ingredients and derivatives belong to DFT;
+training is shared infrastructure at the package root.
+
+| Previous import | Current import |
+|---|---|
+| `gradscf.model.neural_xc.ExternalFunctional` | `gradscf.dft.Functional` |
+| `gradscf.model.neural_xc.DensityInputs` | `gradscf.dft.DensityInputs` |
+| `gradscf.model.training` | `gradscf.training` |
+| `gradscf.scf.xc_energy` | `gradscf.dft.derivatives` |
+| HFX physical/cache helpers in `model.neural_xc.inputs` | `gradscf.dft.hfx` |
+| PT2 physical helpers in `model.neural_xc.inputs` | `gradscf.dft.pt2` |
+
+Use `from gradscf import dft, training` for a user-defined architecture.
+The built-in model remains `from gradscf.model import neural_xc`, followed
+by `neural_xc.Functional(...)`. Its model-specific feature transforms and
+presets remain in that package. The ambiguous root `gradscf.Functional`
+export is removed; it is not silently redirected to a different class.
+Old module paths are removed rather than retained as forwarding files.
+
+Generic examples and their recorded results moved from `examples/neural_xc/`
+to `examples/training/`. The shared SCF modes remain `fixed_density`,
+`explicit`, and `implicit`; this ownership change does not alter numerical
+methods, losses, or gradients.
 
 ## DifferentiableSCF XC contracts
 
@@ -24,13 +65,13 @@ XC/NeuralD/force-training interfaces. Historical SCF-only fallbacks were removed
 The optimized direct-Fock path, SCF-specific bound path (including frozen
 functional diagnostics), and eight-entry unrestricted potential path remain
 active. Public response APIs on bound XC objects are unchanged. This cleanup
-does not alter SCF iterations, density layouts, or implicit/unrolled semantics.
+does not alter SCF iterations, density layouts, or implicit/explicit semantics.
 
 ## SCF backward configuration
 
 `gradscf.scf.SCFDifferentiationConfig` is shared by the functional/molecule SCF
 adapter and the fixed-occupation orbital solvers. Use `mode="implicit"` or
-`mode="unrolled"`; `impl` and `expl` remain accepted aliases. Pass this object
+`mode="explicit"`; `impl`, `expl`, and the historical `unrolled` name remain accepted aliases. Pass this object
 as `DifferentiableSCFConfig(differentiation=...)` or as the orbital solver's
 `differentiation=...` argument. An explicit object takes precedence over the
 legacy DFT backward fields. Existing DFT defaults are retained when it is absent.
@@ -47,7 +88,7 @@ may differ from the former exponential parametrization.
 
 The shared implicit policy requires a converged state by default and checks
 the adjoint residual. Failed backward solves return nonfinite cotangents while
-preserving forward diagnostics. Unrolled differentiates the finite iterations
+preserving forward diagnostics. Explicit AD differentiates the existing JAX loop computation
 and can be used before convergence. Fixed 0/1 occupations are static topology;
 continuous integrals and overlap remain differentiable. Use
 `orthonormalize_initial=True` to transport a fixed orbital seed as overlap changes.
@@ -170,6 +211,9 @@ external auxiliary DF in production. Basis resource bytes are unchanged, but
 Python-format resources now have the inert `.pydata` suffix.
 
 ## 2026-09-18 — Neural model code moves to `gradscf.model`
+
+Historical migration; the 2026-09-28 section above supersedes the training
+location and ambiguous top-level `Functional` export.
 
 Hard switch, no compatibility aliases:
 

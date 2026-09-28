@@ -11,7 +11,7 @@ from gradscf.df import (
     eri_to_df_factors,
 )
 from gradscf.scf import RKSConfig, run_rks_from_integrals
-from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
+from gradscf.scf.builders import _build_restricted_reference
 from reference_scf_features import _restricted_response_eri_slices_from_mo_tensor
 from gradscf.integrals.backends.jax_reference.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
 from gradscf.integrals.backends.jax_reference.packed_eri import build_jk_from_eri_pair_matrix, eri_pair_matrix_to_mo_eri_slices
@@ -598,7 +598,7 @@ def test_native_spectral_df_reference_for_water_packs_factors():
         jk_backend="df",
         df_tol=1e-10,
     )
-    ref = restricted_molecule_from_spec_with_jax_rks(
+    ref = _build_restricted_reference(
         atom=mol.atom,
         basis="sto-3g",
         xc_spec="hf",
@@ -635,7 +635,7 @@ def test_native_spectral_df_reference_matches_full_eri_reference():
     mf.kernel()
     assert mf.converged
 
-    ref = reference_mod.restricted_molecule_from_spec_with_jax_rks(
+    ref = reference_mod._build_restricted_reference(
         atom=mol.atom,
         basis="sto-3g",
         xc_spec="hf",
@@ -671,7 +671,7 @@ def test_native_spectral_df_reference_preserves_backend_when_xc_overrides_config
 
     import gradscf.scf.builders as reference_mod
 
-    ref = reference_mod.restricted_molecule_from_spec_with_jax_rks(
+    ref = reference_mod._build_restricted_reference(
         atom=_water_mol().atom,
         basis="sto-3g",
         xc_spec="hf",
@@ -701,7 +701,7 @@ def test_native_spectral_df_reference_preserves_backend_when_xc_overrides_config
 
 def test_df_reference_lazy_slices_support_tda():
     _pyscf_or_skip()
-    ref = restricted_molecule_from_spec_with_jax_rks(
+    ref = _build_restricted_reference(
         atom=_water_mol().atom,
         basis="sto-3g",
         xc_spec="pbe0",

@@ -156,7 +156,7 @@ derivative rules. Supported inputs and derivative orders depend on the path:
 
 | Calculation path | Differentiable quantities | Coverage and conditions |
 | --- | --- | --- |
-| Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or unrolled modes; upstream integral/XC derivatives are required for the selected inputs |
+| Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or explicit modes; upstream integral/XC derivatives are required for the selected inputs |
 | TDA and CI | Eigenvalues; eigenvectors for coefficient-dependent objectives | Shared isolated-root response; CI coefficient AD requires `gradient_mode="implicit_eigenvector"` |
 | Spectral subspaces | Projector actions and sums of selected eigenvalues | [First-order JVP/VJP](src/gradscf/solvers/DEGENERACY.md) permits internal degeneracy; the boundary with excluded states must be resolved |
 | Ground-state CC | Energies and amplitudes versus MO integrals | Implicit response at converged roots; fixed topology and orbital ordering; first-order validated contract |
@@ -183,9 +183,11 @@ entry is currently disabled; it is not the interface for the lower-level
 ## Machine learning with electronic structure
 
 **Neural exchange–correlation functionals.**
-[model.neural_xc](src/gradscf/model/neural_xc) defines configurable XC models,
-features, and molecular bindings. [model.training](src/gradscf/model/training)
-provides self-consistent and response-aware training utilities. The
+[model.neural_xc](src/gradscf/model/neural_xc) defines the built-in XC model and
+its presets. External architectures use [dft.Functional](src/gradscf/dft/FUNCTIONAL.md)
+to connect their energy callbacks to generic XC derivatives.
+[training](src/gradscf/training/README.md) provides the shared `Sample` / `Trainer`
+API for both built-in and external models. The
 [force-supervision example](examples/train_neural_scf_forces.py) demonstrates a
 small neural XC energy with differentiable SCF on a finite test quadrature;
 it is a derivative demonstration rather than an accurate production DFT grid.
@@ -203,6 +205,9 @@ Additional neural dispersion models are available in
 [model.neural_d](src/gradscf/model/neural_d).
 
 ## Documentation and examples
+
+- **Public API:** [entry points and reference reuse](API.md),
+  [import migration table](API_MIGRATION.csv).
 
 - **CI and CC:** [CI tutorial](examples/ci/restricted_ci.py),
   [restricted CC](examples/cc/restricted_ground.py),

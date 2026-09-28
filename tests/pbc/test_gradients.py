@@ -10,7 +10,7 @@ from gradscf.scf.autodiff import SCFDifferentiationConfig
 
 
 @pytest.mark.parametrize('nk',[1,2])
-@pytest.mark.parametrize('mode',['implicit','unrolled'])
+@pytest.mark.parametrize('mode',['implicit','explicit'])
 def test_periodic_hf_bond_gradient_matches_finite_difference(mode,nk):
     cell=gto.M(atom='H 1 1 1; H 2.4 1 1',a=np.eye(3)*6,unit='Bohr',mesh=(25,)*3)
     from gradscf.pbc._kpoint import run_kpoint_scf

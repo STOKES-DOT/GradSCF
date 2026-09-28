@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from ..scf.reference import as_reference
 from ..tools import spectra
 from ..tools.spectra import HARTREE_TO_EV
 from ..tddft.defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
@@ -14,35 +15,6 @@ from ..tddft._semilocal_response import SemilocalResponseFunctional
 from ..tddft._unrestricted_semilocal_response import (
     UnrestrictedSemilocalResponseFunctional,
 )
-
-
-def _molecule_from_source(source: Any) -> Any:
-    if hasattr(source, "molecule"):
-        molecule = getattr(source, "molecule")
-        if molecule is None:
-            ensure_molecule = getattr(source, "_ensure_molecule", None)
-            if callable(ensure_molecule):
-                return ensure_molecule()
-    if hasattr(source, "reference"):
-        ensure_reference = getattr(source, "_ensure_reference", None)
-        if callable(ensure_reference):
-            return ensure_reference()
-        molecule = getattr(source, "reference")
-        if molecule is None:
-            ensure_molecule = getattr(source, "_ensure_molecule", None)
-            if callable(ensure_molecule):
-                return ensure_molecule()
-            ensure_reference = getattr(source, "_ensure_reference", None)
-            if callable(ensure_reference):
-                return ensure_reference()
-            raise RuntimeError(
-                "Run ground-state mf.kernel() or mf.run() before launching TD-SCF."
-            )
-        return molecule
-    return source
-
-
-_reference_from_source = _molecule_from_source
 
 
 def _is_unrestricted_molecule(molecule: Any) -> bool:
@@ -143,7 +115,7 @@ class _BaseTD:
 
     @property
     def molecule(self) -> Any:
-        return _molecule_from_source(self.mf)
+        return as_reference(self.mf)
 
     @property
     def reference(self) -> Any:

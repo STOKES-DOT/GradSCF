@@ -1,4 +1,4 @@
-"""Fixed-occupation SCF with shared JAX forward and implicit/unrolled backward.
+"""Fixed-occupation SCF with shared JAX forward and implicit/explicit backward.
 
 Occupations specify a static integer topology. All continuous integral inputs,
 including overlap and grid arrays, are explicit differentiable parameters.
@@ -229,7 +229,7 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
 def minimize_uks_from_integrals(*, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     grid_weights, mo_coeff, mo_occ, xc_spec='hf', max_iterations=500, gradient_tolerance=1e-7,
     gradient_mode=None, differentiation=None, orthonormalize_initial=False):
-    """UHF/UKS fixed occupations; backward mode is ``implicit`` or ``unrolled``.
+    """UHF/UKS fixed occupations; backward mode is ``implicit`` or ``explicit``.
 
     Supply static ``mo_occ`` of shape (2,nao), and float64 coefficients of shape
     (2,nao,nao). Set ``orthonormalize_initial=True`` when varying an overlap with

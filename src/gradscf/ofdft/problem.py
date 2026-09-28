@@ -131,7 +131,7 @@ def run_ofdft(data, *, kinetic=None, kinetic_params=None, xc_energy_fn=None, xc_
         forward_args, seed = jax.tree.map(jax.lax.stop_gradient,(args,x0))
     forward = minimize_sphere(energy,seed,forward_args,
         config=SphereConfig(maxiter=cfg.maxiter,tolerance=cfg.tolerance,
-            response_refinements=3,refine_stationary=cfg.differentiation.mode=='unrolled'))
+            response_refinements=3,refine_stationary=cfg.differentiation.mode=='explicit'))
     x = forward.solution
     eta = .5*jnp.vdot(x,gradient(x,forward_args))
     state = jnp.concatenate([x,jnp.asarray([eta])])

@@ -14,6 +14,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from ..df import eri_pair_matrix_to_df_factors
+from ..scf.reference import as_reference
 from .g0w0 import g0w0_cd_unrestricted
 
 
@@ -69,7 +70,7 @@ class UGW:
 
     def kernel(self, orbs: Sequence[int] | None = None):
         mf = self._scf
-        reference = getattr(mf, "reference", None)
+        reference = as_reference(mf)
         if reference is None:
             raise RuntimeError(
                 "Unrestricted GW expects the UKS unrestricted reference "

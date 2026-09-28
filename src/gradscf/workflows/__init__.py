@@ -13,20 +13,6 @@ _PUBLIC_EXPORTS = {
     "ExperimentRun": "pipeline",
     "MoleculeRun": "types",
     "MoleculeSpecConfig": "types",
-    "run_molecule_from_spec": "core",
-    "run_pipeline_core_from_molecule_spec": "core",
-    "run_pipeline_core_from_spec": "core",
-    "run_and_report": "pipeline",
-    "run_and_report_from_molecule_spec": "pipeline",
-    "run_and_report_from_spec": "pipeline",
-    "run_experiment": "pipeline",
-    "run_neural_xc_spectrum_pipeline": "pipeline",
-    "run_neural_xc_spectrum_pipeline_from_molecule_spec": "pipeline",
-    "run_neural_xc_spectrum_pipeline_from_spec": "pipeline",
-    "benzene_experiment_config": "presets",
-    "benzene_strict_jax_experiment_config": "presets",
-    "water_experiment_config": "presets",
-    "water_strict_jax_experiment_config": "presets",
     "NeuralExcitedStateRun": "types",
     "NeuralXCTrainingConfig": "types",
     "OutputConfig": "types",
@@ -38,10 +24,16 @@ _PUBLIC_EXPORTS = {
     "TrainingRun": "types",
 }
 
-__all__ = list(_PUBLIC_EXPORTS)
+_SUBMODULES = ("core", "pipeline", "presets", "reporting", "types", "config")
+
+__all__ = list(_PUBLIC_EXPORTS) + list(_SUBMODULES)
 
 
 def __getattr__(name: str) -> Any:
+    if name in _SUBMODULES:
+        module = import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
     if name not in _PUBLIC_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     module = import_module(f".{_PUBLIC_EXPORTS[name]}", __name__)

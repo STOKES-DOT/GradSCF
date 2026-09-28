@@ -31,7 +31,7 @@ def test_lattice_gradient_includes_volume_metric_and_fft():
     np.testing.assert_allclose(derivative,(energy(5.0001)-energy(4.9999))/.0002,rtol=1e-7)
 
 
-def test_unrolled_and_implicit_density_gradients_agree():
+def test_explicit_and_implicit_density_gradients_agree():
     from gradscf.ofdft import periodic_inputs, run_ofdft, OFDFTConfig
     from gradscf.scf import SCFDifferentiationConfig
     data = periodic_inputs(jnp.eye(3)*5.,(3,3,3),nelectron=2.)
@@ -42,8 +42,8 @@ def test_unrolled_and_implicit_density_gradients_agree():
         out = run_ofdft(replace(data,external_potential=p*probe),config=cfg)
         return jnp.sum(data.weights*probe*out.density)
     implicit = jax.grad(lambda p:loss(p,'implicit'))(.1)
-    unrolled = jax.grad(lambda p:loss(p,'unrolled'))(.1)
-    np.testing.assert_allclose(unrolled,implicit,rtol=1e-5,atol=1e-7)
+    explicit = jax.grad(lambda p:loss(p,'explicit'))(.1)
+    np.testing.assert_allclose(explicit,implicit,rtol=1e-5,atol=1e-7)
 
 
 def test_xc_matches_existing_jax_xc_adapter():

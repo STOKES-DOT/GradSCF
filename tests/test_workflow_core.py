@@ -3,15 +3,13 @@ import math
 import pytest
 
 import jax.numpy as jnp
-from gradscf.model.training import MolecularTrainingConfig
+from gradscf.training import MolecularTrainingConfig
 
 from gradscf.workflows.core import (
     _canonicalize_graddft_ground_state_config,
     _resolve_training_scf_gradient_mode,
     build_spectrum,
     run_pipeline_core,
-    run_pipeline_core_from_molecule_spec,
-    run_pipeline_core_from_spec,
 )
 from gradscf.workflows.types import (
     MoleculeRun,
@@ -56,7 +54,7 @@ def test_build_spectrum_handles_empty_neural_states():
 
 
 @pytest.mark.parametrize('mode, expected', [
-    ('impl','implicit'), ('implicit','implicit'), ('expl','unrolled'), ('unrolled','unrolled'),
+    ('impl','implicit'), ('implicit','implicit'), ('expl','explicit'), ('unrolled','explicit'), ('explicit','explicit'),
 ])
 def test_training_scf_gradient_mode_honors_the_shared_policy(mode, expected):
     config = NeuralXCTrainingConfig(
@@ -150,7 +148,7 @@ def test_run_pipeline_core_canonicalizes_strict_mode_before_reference_build(monk
     assert aligned.network_architecture == "graddft_residual"
 
 
-def test_run_pipeline_core_from_spec_uses_strict_jax_reference_path(monkeypatch):
+def test_run_pipeline_core_uses_strict_jax_reference_path(monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_run_molecule_from_spec(
@@ -197,7 +195,7 @@ def test_run_pipeline_core_from_spec_uses_strict_jax_reference_path(monkeypatch)
         unit="Angstrom",
     )
     training_config = NeuralXCTrainingConfig(strict_graddft_ground_state=True)
-    reference, training, neural, spectrum = run_pipeline_core_from_molecule_spec(
+    reference, training, neural, spectrum = run_pipeline_core(
         molecule_spec=spec,
         training_config=training_config,
         simulation_config=SimulationConfig(scf_backend="jax_rks", jax_grid_ao_backend="jax"),
@@ -262,7 +260,7 @@ def test_run_pipeline_core_requests_local_pt2_features_when_pt2_channel_enabled(
         include_pt2_channel=True,
         input_feature_mode="enhanced",
     )
-    run_pipeline_core_from_molecule_spec(
+    run_pipeline_core(
         molecule_spec=spec,
         training_config=training_config,
         simulation_config=SimulationConfig(scf_backend="jax_rks", jax_grid_ao_backend="jax"),

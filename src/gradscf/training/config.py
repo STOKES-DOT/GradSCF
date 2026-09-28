@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from ...scf.autodiff import normalize_scf_gradient_mode
+from ..scf.autodiff import normalize_scf_gradient_mode
 
 
 def _pytree_dataclass(*, static_fields: tuple[str, ...] = ()):
@@ -142,6 +142,7 @@ class MolecularTrainingConfig:
     response_ris_aux_chunk_size: int = 256
     occupation_tolerance: float = 1e-8
     dm21_scf_gap_floor: float = 1e-3
+    scf_require_converged: bool | None = None
     scf_max_cycle: int = 12
     scf_damping: float = 0.25
     scf_level_shift: float = 0.0
@@ -162,10 +163,15 @@ class MolecularTrainingConfig:
     fractional_branch_scf_iterate_selection: (
         Literal["final", "best_rms", "first_converged"] | None
     ) = None
-    scf_gradient_mode: Literal["unrolled", "implicit", "expl", "impl"] = "impl"
+    scf_gradient_mode: Literal["explicit", "implicit", "expl", "impl", "unrolled"] = "impl"
     scf_implicit_diff_max_iter: int = 6
     scf_implicit_diff_tolerance: float = 1e-6
     scf_implicit_diff_regularization: float = 0.0
+
+    def requires_scf_convergence(self, functional: Any) -> bool:
+        if self.scf_require_converged is not None:
+            return self.scf_require_converged
+        return bool(getattr(functional, "require_converged_scf", False))
 
     def __post_init__(self) -> None:
         for field in fields(self):
@@ -193,3 +199,27 @@ class MolecularTrainingConfig:
             value = getattr(self, name)
             if value is not None and int(value) <= 0:
                 raise ValueError(f"{name} must be positive when provided.")
+
+
+def Sample(molecule, *, energy=None, density=None, s1_energy=None,
+           excitation_energies=None, oscillator_strengths=None,
+           orbital_energies=None, orbital_occupations=None, spectrum=None,
+           xc_potential=None, xc_kernel=None, weight=1.):
+    """Construct a training sample using the existing validated PyTree record.
+
+    The source is a solved RKS/UKS object or an explicit AO/grid state.
+    Energies are Hartree. Density is sampled on the prepared state's grid;
+    spectrum is (grid_in_eV, values). Conversion is eager, without another SCF
+    calculation or a parallel sample type.
+    """
+    from ..scf.reference import as_reference
+    molecule = as_reference(molecule)
+    grid, curve = (None, None) if spectrum is None else spectrum
+    return MolecularTrainingDatum(
+        molecule=molecule, target_e0_total_h=energy, target_grid_density=density,
+        target_s1_total_h=s1_energy, target_excitation_gaps_h=excitation_energies,
+        target_oscillator_strengths=oscillator_strengths,
+        target_orbital_energies=orbital_energies,
+        target_orbital_occupations=orbital_occupations,
+        target_spectrum_grid_ev=grid, target_spectrum_curve=curve,
+        target_xc_potential=xc_potential, target_xc_kernel=xc_kernel, weight=weight)
