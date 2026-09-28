@@ -1291,54 +1291,62 @@ class DifferentiableSCF:
             mo_occ_b=None if occ_for_jk is None else occ_for_jk[1],
             with_k=with_exchange,
         )
-        (
-            vxc_rho_a,
-            vxc_rho_b,
-            vxc_grad_a,
-            vxc_grad_b,
-            xc_kind,
-            alpha,
-            extra_fock_a,
-            extra_fock_b,
-        ) = _unrestricted_scf_xc_components(
-            params,
-            xc_functional,
-            molecule_iter,
-            functional_dtype=h1e.dtype,
-        )
-        vxc_rho_a, vxc_grad_a = _clip_grid_potential_components(
-            vxc_rho_a,
-            vxc_grad_a,
-            self.config.vxc_clip,
-        )
-        vxc_rho_b, vxc_grad_b = _clip_grid_potential_components(
-            vxc_rho_b,
-            vxc_grad_b,
-            self.config.vxc_clip,
-        )
-        zero_aux_a = jnp.zeros_like(vxc_rho_a)
-        zero_aux_b = jnp.zeros_like(vxc_rho_b)
-        vxc_matrix_a = _build_vxc_matrix_from_components(
-            molecule=molecule_iter,
-            weights=weights,
-            v_rho=vxc_rho_a,
-            v_grad=vxc_grad_a,
-            v_tau=zero_aux_a,
-            v_lapl=zero_aux_a,
-            xc_kind=xc_kind,
-        )
-        vxc_matrix_b = _build_vxc_matrix_from_components(
-            molecule=molecule_iter,
-            weights=weights,
-            v_rho=vxc_rho_b,
-            v_grad=vxc_grad_b,
-            v_tau=zero_aux_b,
-            v_lapl=zero_aux_b,
-            xc_kind=xc_kind,
-        )
-        alpha = _clip_hybrid_alpha(alpha)
-        xc=XCContribution(0.,jnp.stack([vxc_matrix_a,vxc_matrix_b]),alpha,
-                          jnp.stack([extra_fock_a,extra_fock_b]))
+        energy_callback = getattr(xc_functional, 'scf_spin_xc_energy_for_density', None)
+        if callable(energy_callback):
+            result = xc_energy_and_potential_from_density(
+                params, molecule=molecule_iter, density=density_spin,
+                xc_energy_fn=energy_callback)
+            alpha = result.exact_exchange_fraction
+            xc = XCContribution(result.xc_energy, result.vxc_matrix, alpha, result.extra_fock_matrix)
+        else:
+            (
+                vxc_rho_a,
+                vxc_rho_b,
+                vxc_grad_a,
+                vxc_grad_b,
+                xc_kind,
+                alpha,
+                extra_fock_a,
+                extra_fock_b,
+            ) = _unrestricted_scf_xc_components(
+                params,
+                xc_functional,
+                molecule_iter,
+                functional_dtype=h1e.dtype,
+            )
+            vxc_rho_a, vxc_grad_a = _clip_grid_potential_components(
+                vxc_rho_a,
+                vxc_grad_a,
+                self.config.vxc_clip,
+            )
+            vxc_rho_b, vxc_grad_b = _clip_grid_potential_components(
+                vxc_rho_b,
+                vxc_grad_b,
+                self.config.vxc_clip,
+            )
+            zero_aux_a = jnp.zeros_like(vxc_rho_a)
+            zero_aux_b = jnp.zeros_like(vxc_rho_b)
+            vxc_matrix_a = _build_vxc_matrix_from_components(
+                molecule=molecule_iter,
+                weights=weights,
+                v_rho=vxc_rho_a,
+                v_grad=vxc_grad_a,
+                v_tau=zero_aux_a,
+                v_lapl=zero_aux_a,
+                xc_kind=xc_kind,
+            )
+            vxc_matrix_b = _build_vxc_matrix_from_components(
+                molecule=molecule_iter,
+                weights=weights,
+                v_rho=vxc_rho_b,
+                v_grad=vxc_grad_b,
+                v_tau=zero_aux_b,
+                v_lapl=zero_aux_b,
+                xc_kind=xc_kind,
+            )
+            alpha = _clip_hybrid_alpha(alpha)
+            xc=XCContribution(0.,jnp.stack([vxc_matrix_a,vxc_matrix_b]),alpha,
+                              jnp.stack([extra_fock_a,extra_fock_b]))
         fock_spin=jax.vmap(_safe_symmetric_matrix)(
             unrestricted_fock(h1e,j_mat,jnp.stack([k_alpha,k_beta]),xc))
         return fock_spin, molecule_iter, density_total, j_mat, k_alpha, k_beta, alpha

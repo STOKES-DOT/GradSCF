@@ -142,6 +142,7 @@ class MolecularTrainingConfig:
     response_ris_aux_chunk_size: int = 256
     occupation_tolerance: float = 1e-8
     dm21_scf_gap_floor: float = 1e-3
+    scf_require_converged: bool | None = None
     scf_max_cycle: int = 12
     scf_damping: float = 0.25
     scf_level_shift: float = 0.0
@@ -166,6 +167,11 @@ class MolecularTrainingConfig:
     scf_implicit_diff_max_iter: int = 6
     scf_implicit_diff_tolerance: float = 1e-6
     scf_implicit_diff_regularization: float = 0.0
+
+    def requires_scf_convergence(self, functional: Any) -> bool:
+        if self.scf_require_converged is not None:
+            return self.scf_require_converged
+        return bool(getattr(functional, "require_converged_scf", False))
 
     def __post_init__(self) -> None:
         for field in fields(self):

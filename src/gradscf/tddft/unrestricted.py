@@ -487,7 +487,15 @@ def _build_unrestricted_response_operator_data(
         spin_grid_response_hvp = None
     elif callable(explicit_spin_hvp):
         spin_grid_response_hvp = explicit_spin_hvp
-    if callable(spin_grid_response_hvp):
+    ao_kernel_action = getattr(resolved_xc, "ao_kernel_action", None)
+    if callable(ao_kernel_action):
+        def xc_response_action_fn(alpha, beta):
+            da = _unrestricted_transition_density(orbo_a, orbv_a, alpha, bottom=False)
+            db = _unrestricted_transition_density(orbo_b, orbv_b, beta, bottom=False)
+            response = jax.vmap(lambda d: ao_kernel_action(molecule, d))(jnp.stack([da, db], axis=1))
+            return (_unrestricted_project_response(response[:, 0], orbo_a, orbv_a, bottom=False),
+                    _unrestricted_project_response(response[:, 1], orbo_b, orbv_b, bottom=False))
+    elif callable(spin_grid_response_hvp):
         xc_response_action_fn = build_unrestricted_semilocal_response_action(
             molecule,
             orbo_a,

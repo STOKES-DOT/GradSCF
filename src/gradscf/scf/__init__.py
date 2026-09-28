@@ -9,6 +9,7 @@ from .differentiable import (
 )
 from .xc_energy import (
     XCEnergyPotentialResult,
+    xc_kernel_action,
     xc_energy_and_potential_from_density,
 )
 from .rhf import (
@@ -79,6 +80,7 @@ __all__ = [
     "DifferentiableSCFConfig",
     "DifferentiableSCFInfo",
     "XCEnergyPotentialResult",
+    "xc_kernel_action",
     "xc_energy_and_potential_from_density",
     "RHFConfig",
     "RHFResult",

@@ -1947,18 +1947,20 @@ def _resolve_training_molecule_and_info_with_mode(
     molecule: Any,
     training_config: MolecularTrainingConfig | None,
 ) -> tuple[Any, Any]:
-    scf = _make_differentiable_scf(training_config)
+    scf = _make_differentiable_scf(training_config, functional=functional)
     return scf.run(molecule, functional, params)
 
 
 def _make_differentiable_scf(
     training_config: MolecularTrainingConfig | None,
+    *, functional: Any = None,
 ) -> DifferentiableSCF:
     cfg = MolecularTrainingConfig() if training_config is None else training_config
     return DifferentiableSCF(
         DifferentiableSCFConfig(
             mode=cfg.mode,
             gradient_mode=cfg.scf_gradient_mode,
+            require_converged_iterates=cfg.requires_scf_convergence(functional),
             max_cycle=cfg.scf_max_cycle,
             damping=cfg.scf_damping,
             level_shift=cfg.scf_level_shift,

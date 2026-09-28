@@ -9,7 +9,7 @@ import optax
 from flax.training.train_state import TrainState
 
 from .config import MolecularTrainingDatum, MolecularTrainingConfig
-from .trainer import create_train_state_from_molecule, make_molecular_train_step
+from .trainer import create_train_state_from_molecule, make_molecular_train_step, _functional_apply
 from .results import TrainingResult
 
 _NEURAL_XC_HISTORY_KEYS = (
@@ -19,6 +19,8 @@ _NEURAL_XC_HISTORY_KEYS = (
     "orbital_energy_mae",
     "scf_cycles",
     "scf_converged",
+    "update_accepted",
+    "nonfinite_grad_fraction",
 )
 
 
@@ -88,7 +90,7 @@ class NeuralXCTrainer:
             )
         else:
             state = TrainState.create(
-                apply_fn=self.functional.model.apply,
+                apply_fn=_functional_apply(self.functional),
                 params=params,
                 tx=tx,
             )
@@ -113,6 +115,8 @@ class NeuralXCTrainer:
             history["orbital_energy_mae"].append(_scalar_metric(metrics, "orbital_energy_mae"))
             history["scf_cycles"].append(_scalar_metric(metrics, "scf_cycles_mean"))
             history["scf_converged"].append(_scalar_metric(metrics, "scf_converged_fraction"))
+            for key in ("update_accepted", "nonfinite_grad_fraction"):
+                history[key].append(_scalar_metric(metrics, key))
             final_metrics = {
                 key: values[-1]
                 for key, values in history.items()

@@ -59,6 +59,12 @@ def _sanitize_gradients(tree: Any) -> tuple[Any, Array]:
     return cleaned_tree, fraction
 
 
+def _functional_apply(functional):
+    """TrainState bookkeeping for external callbacks or existing Flax models."""
+    apply = getattr(functional, 'apply', None)
+    return apply if callable(apply) else functional.model.apply
+
+
 def create_train_state(
     functional: Any,
     rng: PRNGKeyArray,
@@ -68,7 +74,7 @@ def create_train_state(
     """Initialize a Flax/Optax train state for a neural XC functional."""
 
     params = functional.init(rng, sample_density)
-    return TrainState.create(apply_fn=functional.model.apply, params=params, tx=tx)
+    return TrainState.create(apply_fn=_functional_apply(functional), params=params, tx=tx)
 
 
 def create_train_state_from_molecule(
@@ -81,7 +87,7 @@ def create_train_state_from_molecule(
 
     if hasattr(functional, "init_from_molecule"):
         params = functional.init_from_molecule(rng, molecule)
-        return TrainState.create(apply_fn=functional.model.apply, params=params, tx=tx)
+        return TrainState.create(apply_fn=_functional_apply(functional), params=params, tx=tx)
     sample_density = density_on_grid(molecule)
     return create_train_state(functional, rng, sample_density, tx)
 
@@ -160,6 +166,7 @@ def make_molecular_train_step(
 ):
     """Create one molecular training step."""
 
+    config = MolecularTrainingConfig() if training_config is None else training_config
     loss_and_grad = make_molecular_loss_and_grad(
         functional,
         training_config=training_config,
@@ -171,9 +178,14 @@ def make_molecular_train_step(
         data: MolecularTrainingDatum | Sequence[MolecularTrainingDatum],
     ):
         loss, metrics, cleaned_grads = loss_and_grad(state.params, data)
-        new_state = state.apply_gradients(grads=cleaned_grads)
+        valid = jnp.isfinite(loss) & jnp.all(metrics["nonfinite_grad_fraction"] == 0)
+        if config.requires_scf_convergence(functional):
+            valid = valid & jnp.all(metrics["scf_converged"] == 1)
+        new_state = jax.lax.cond(valid,
+            lambda s: s.apply_gradients(grads=cleaned_grads), lambda s: s, state)
         param_delta = jax.tree_util.tree_map(lambda new, old: new - old, new_state.params, state.params)
         metrics = dict(metrics)
+        metrics["update_accepted"] = valid
         metrics["param_update_norm"] = jnp.asarray(
             [_tree_l2_norm(param_delta, sanitize=True)],
             dtype=loss.dtype,

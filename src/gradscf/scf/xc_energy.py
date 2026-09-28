@@ -54,9 +54,8 @@ def xc_energy_and_potential_from_density(
             return jnp.asarray(xc_energy_fn(params, molecule, density_var))
 
         xc_energy, vxc_matrix = jax.value_and_grad(_energy_for_density)(density_arr)
-    vxc_matrix = jnp.nan_to_num(vxc_matrix, nan=0.0, posinf=0.0, neginf=0.0)
     if symmetrize:
-        vxc_matrix = 0.5 * (vxc_matrix + vxc_matrix.T)
+        vxc_matrix = 0.5 * (vxc_matrix + jnp.swapaxes(vxc_matrix, -1, -2))
 
     if extra_fock_matrix is None:
         extra_fock = jnp.zeros_like(vxc_matrix)
@@ -64,7 +63,7 @@ def xc_energy_and_potential_from_density(
         extra_fock = jnp.asarray(extra_fock_matrix, dtype=vxc_matrix.dtype)
         extra_fock = jnp.nan_to_num(extra_fock, nan=0.0, posinf=0.0, neginf=0.0)
         if symmetrize:
-            extra_fock = 0.5 * (extra_fock + extra_fock.T)
+            extra_fock = 0.5 * (extra_fock + jnp.swapaxes(extra_fock, -1, -2))
 
     alpha = jnp.asarray(exact_exchange_fraction, dtype=vxc_matrix.dtype)
     alpha = jnp.clip(jnp.nan_to_num(alpha, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0)
@@ -76,3 +75,20 @@ def xc_energy_and_potential_from_density(
         extra_fock_matrix=extra_fock,
         aux=aux,
     )
+
+
+def xc_kernel_action(params, *, molecule, density, tangent, xc_energy_fn):
+    """Full AO density-matrix XC Hessian action, preserving parameter AD.
+
+    The derivative includes feature construction. No locality assumption or
+    (nao**4) Hessian allocation is made. Spin-stacked densities are supported.
+    """
+    density = jnp.asarray(density)
+    tangent = jnp.asarray(tangent)
+    if tangent.shape != density.shape:
+        raise ValueError('XC kernel tangent must have the density shape.')
+    def potential(dm):
+        return xc_energy_and_potential_from_density(
+            params, molecule=molecule, density=dm, xc_energy_fn=xc_energy_fn,
+        ).vxc_matrix
+    return jax.jvp(potential, (density,), (tangent,))[1]
