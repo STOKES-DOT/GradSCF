@@ -76,9 +76,9 @@ def test_spin_context_and_missing_physical_quantity():
 
 
 @pytest.mark.parametrize('mode, backward', [
-    ('fixed_density','implicit'), ('self_consistent','unrolled'), ('self_consistent','implicit')])
+    ('fixed_density','implicit'), ('self_consistent','explicit'), ('self_consistent','implicit')])
 def test_three_training_modes_have_fd_gradients_and_accept_external_params(mode, backward):
-    from gradscf.model.training import MolecularTrainingConfig, MolecularTrainingDatum, molecular_loss, NeuralXCTrainer
+    from gradscf.model.training import MolecularTrainingConfig, MolecularTrainingDatum, molecular_loss, Trainer
     f, mol = functional(), molecule()
     cfg = MolecularTrainingConfig(mode=mode,scf_gradient_mode=backward,
         e0_total_mse_weight=1.,scf_max_cycle=60,scf_damping=0.,
@@ -91,8 +91,13 @@ def test_three_training_modes_have_fd_gradients_and_accept_external_params(mode,
     fd = (loss(.30001)-loss(.29999))/2e-5
     assert np.isfinite(value) and abs(float(derivative))>1e-5
     np.testing.assert_allclose(derivative,fd,atol=1e-8,rtol=1e-5)
-    result = NeuralXCTrainer(f,[datum]).kernel(steps=1,params={'scale':jnp.array(.3)},
-        training_config=cfg,learning_rate=1e-3)
+    result = Trainer(f, params={'scale':jnp.array(.3)})
+    result.mode = 'fixed_density' if mode == 'fixed_density' else backward
+    result.learning_rate = 1e-3
+    result.scf = dict(max_cycle=60,damping=0.,conv_tol_density=1e-10,
+                      conv_tol_energy=1e-12,eigenvalue_jitter=0.,require_converged=True)
+    result.adjoint = dict(tolerance=1e-10,max_iter=40)
+    result.run([datum],steps=1)
     assert float(loss(result.params['scale'])) < float(value)
 
 
@@ -106,7 +111,7 @@ def test_parameter_gradient_includes_self_consistent_density_response():
         state, info = solver.run(mol,f,{'scale':s})
         return state.rdm1[:,0,1].sum(), info.converged
     derivatives=[]
-    for mode in ('implicit','unrolled'):
+    for mode in ('implicit','explicit'):
         val, grad = jax.jit(jax.value_and_grad(lambda s:solve(s,mode)[0]))(.3)
         assert bool(solve(.3,mode)[1])
         fd=(solve(.30001,mode)[0]-solve(.29999,mode)[0])/2e-5
@@ -164,7 +169,7 @@ def test_nonfinite_training_step_is_rejected_without_changing_optimizer_state():
     assert not bool(metrics['update_accepted'])
 
 
-@pytest.mark.parametrize('backward', ['implicit', 'unrolled'])
+@pytest.mark.parametrize('backward', ['implicit', 'explicit'])
 def test_external_unrestricted_scf_density_response(backward):
     from gradscf.scf import UnrestrictedMolecule, DifferentiableSCF, DifferentiableSCFConfig, SCFDifferentiationConfig
     mol=molecule()
@@ -216,11 +221,11 @@ def test_response_binding_does_not_replace_the_scf_functional():
     np.testing.assert_allclose(frozen.energy_from_molecule(params,mol),f.energy_from_molecule(p,mol))
 
 
-def test_explicit_unrolled_convergence_policy_rejects_finite_unconverged_updates():
+def test_explicit_explicit_convergence_policy_rejects_finite_unconverged_updates():
     from flax.training.train_state import TrainState
     from gradscf.model.training import MolecularTrainingConfig, MolecularTrainingDatum, make_molecular_train_step
     f=functional()
-    cfg=MolecularTrainingConfig(mode='self_consistent',scf_gradient_mode='unrolled',
+    cfg=MolecularTrainingConfig(mode='self_consistent',scf_gradient_mode='explicit',
         scf_require_converged=True,scf_max_cycle=1,e0_total_mse_weight=1.)
     state=TrainState.create(apply_fn=f.apply,params={'scale':jnp.array(.3)},tx=optax.adam(.01))
     datum=MolecularTrainingDatum(molecule(),target_e0_total_h=jnp.array(-2.1))

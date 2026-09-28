@@ -8,7 +8,6 @@ No reference correlation energy is mislabeled as an XC energy.
 
 Run: PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/neural_xc/h2_fci_training.py
 """
-from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 import csv
@@ -18,18 +17,13 @@ import platform
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 
 jax.config.update('jax_enable_x64', True)
 
 from gradscf import fci
 from gradscf.integrals.mo import transform_integrals
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
-from gradscf.model.training import (
-    MolecularTrainingConfig, MolecularTrainingDatum, create_train_state_from_molecule,
-    make_molecular_train_step, make_molecular_eval, make_ground_state_predictor,
-    density_on_grid,
-)
+from gradscf.model import training
 from density_matrix_mlp import functional
 
 
@@ -55,15 +49,11 @@ np.testing.assert_allclose(jnp.sum(fci_dm*reference.overlap_matrix), 2., atol=1e
 print('FCI total energy / Ha:', float(target), flush=True)
 
 steps, learning_rate, seed = 100, .002, 0
-config = MolecularTrainingConfig(
-    e0_total_mse_weight=1., e0_total_mae_weight=1.,
-    scf_max_cycle=80, scf_damping=.2, scf_require_converged=True,
-    scf_conv_tol_energy=1e-11, scf_conv_tol_density=1e-9,
-    scf_eigenvalue_jitter=0., scf_implicit_diff_tolerance=1e-9,
-    scf_implicit_diff_max_iter=40)
-datum = MolecularTrainingDatum(reference, target_e0_total_h=target)
-initial = create_train_state_from_molecule(
-    functional, jax.random.PRNGKey(seed), reference, optax.adam(learning_rate))
+scf_settings = dict(max_cycle=80, damping=.2, require_converged=True,
+                    conv_tol_energy=1e-11, conv_tol_density=1e-9, eigenvalue_jitter=0.)
+adjoint_settings = dict(tolerance=1e-9, max_iter=40)
+data = [training.Sample(reference, energy=target)]
+params = functional.init_from_molecule(jax.random.PRNGKey(seed), reference)
 folder = Path(__file__).with_name('h2_fci_results')
 folder.mkdir(exist_ok=True)
 report = dict(atom='H 0 0 0; H 0 0 .74', unit='Angstrom', basis='6-31g*',
@@ -86,59 +76,50 @@ np.savez_compressed(folder/'reference.npz', h1_mo=np.asarray(h1), eri_mo=np.asar
     fci_rdm1_ao=np.asarray(fci_dm), fci_density_grid=np.asarray(fci_rho),
     grid_weights=np.asarray(reference.grid.weights), overlap=np.asarray(reference.overlap_matrix))
 
-for name, mode, backward in (('fixed_density','fixed_density','implicit'),
-                             ('unrolled','self_consistent','unrolled'),
-                             ('implicit','self_consistent','implicit')):
-    cfg = replace(config, mode=mode, scf_gradient_mode=backward)
-    train_step = jax.jit(make_molecular_train_step(functional, cfg))
-    evaluate = jax.jit(make_molecular_eval(functional, cfg))
-    state, rows = initial, []
+for name in ('fixed_density', 'explicit', 'implicit'):
+    trainer = training.Trainer(functional, params=params)
+    trainer.mode = name
+    trainer.loss = {'energy': {'mse': 1., 'mae': 1.}}
+    trainer.learning_rate = learning_rate
+    trainer.scf = scf_settings
+    trainer.adjoint = adjoint_settings
     start = perf_counter()
+    trainer.run(data, steps=steps)
+    elapsed = perf_counter()-start
+    history, rows = trainer.history, []
     for step in range(steps+1):
-        if step < steps:
-            new_state, metrics = train_step(state, datum)
-            accepted = bool(metrics['update_accepted'])
-        else:
-            final_loss, metrics = evaluate(state.params, datum)
-            metrics = dict(metrics, total_loss=final_loss)
-            accepted = None
-        predicted = float(metrics['predicted_e0_total_h'][0])
+        predicted = history['energy'][step][0]
         error = predicted-float(target)
-        convergence = np.asarray(metrics['scf_converged'])
-        cycles = np.asarray(metrics['scf_cycles'])
         row = dict(step=step, energy_hartree=predicted, energy_error_hartree=error,
-            mse=error**2, mae=abs(error), loss=float(metrics['total_loss']),
-            next_update_accepted=accepted,
-            scf_converged=None if not convergence.size else bool(np.all(convergence)),
-            scf_cycles=0 if not cycles.size else int(cycles[0]))
+            mse=history['energy_mse'][step], mae=history['energy_mae'][step],
+            loss=history['loss'][step],
+            next_update_accepted=history['update_accepted'][step+1] if step<steps else None,
+            scf_converged=history['scf_converged'][step], scf_cycles=int(history['scf_cycles'][step]))
         np.testing.assert_allclose(row['loss'], row['mse']+row['mae'], rtol=1e-10, atol=1e-14)
         rows.append(row)
         if step % 20 == 0:
             print(name, step, 'loss', row['loss'], 'error / Ha', error, flush=True)
-        if step < steps:
-            state = new_state
-    elapsed = perf_counter()-start
     with (folder/f'{name}.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys(), lineterminator='\n')
         writer.writeheader()
         writer.writerows(rows)
 
     # Evaluate every final model self-consistently as an additional diagnostic.
-    scf_config = replace(cfg, mode='self_consistent', scf_gradient_mode='implicit')
-    scf_loss, scf_metrics = make_molecular_eval(functional, scf_config)(state.params, datum)
-    scf_energy, scf_state = make_ground_state_predictor(functional, training_config=scf_config)(state.params, reference)
-    rho = density_on_grid(scf_state)
+    scf_metrics = trainer.evaluate(data, mode='implicit')
+    scf_loss = scf_metrics['loss']
+    scf_energy, scf_state = trainer.predict(reference, mode='implicit')
+    rho = training.density_on_grid(scf_state)
     density_l2 = jnp.sqrt(jnp.sum(reference.grid.weights*(rho-fci_rho)**2)
                           /jnp.sum(reference.grid.weights*fci_rho**2))
     report['runs'][name] = dict(initial=rows[0], final=rows[-1],
         accepted_updates=sum(bool(r['next_update_accepted']) for r in rows[:-1]),
-        optimizer_step=int(state.step), seconds_including_compile=elapsed,
+        optimizer_step=history['optimizer_step'][-1], seconds_including_compile=elapsed,
         self_consistent_final_energy_hartree=float(scf_energy),
         self_consistent_final_loss=float(scf_loss),
         self_consistent_final_converged=bool(np.all(scf_metrics['scf_converged'])),
         self_consistent_density_relative_l2_to_fci=float(density_l2))
     from flax.serialization import to_bytes
-    (folder/f'{name}_params.msgpack').write_bytes(to_bytes(state.params))
+    (folder/f'{name}_params.msgpack').write_bytes(to_bytes(trainer.params))
     (folder/'summary.json').write_text(json.dumps(report,indent=2)+'\n')
     print(name, 'accepted', report['runs'][name]['accepted_updates'], 'seconds', elapsed, flush=True)
 
@@ -148,6 +129,6 @@ print('Results:', folder, flush=True)
 # FCI energy / Ha: -1.1516725449612413
 # mode           initial loss       final loss          final MAE / Ha
 # fixed_density  1.112662199200644  0.437609924132773  0.329222481685569
-# unrolled       1.021108762032138  0.374749471532906  0.290410951045661
+# explicit       1.021108762032138  0.374749471532906  0.290410951045661
 # implicit       1.021108762032138  0.374749471527732  0.290410951042388
 # All three runs accepted 100/100 updates. This is not yet an accurate FCI fit.

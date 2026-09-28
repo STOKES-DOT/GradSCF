@@ -156,7 +156,7 @@ derivative rules. Supported inputs and derivative orders depend on the path:
 
 | Calculation path | Differentiable quantities | Coverage and conditions |
 | --- | --- | --- |
-| Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or unrolled modes; upstream integral/XC derivatives are required for the selected inputs |
+| Differentiable SCF | Energies and states versus numerical inputs and model parameters | Implicit or explicit modes; upstream integral/XC derivatives are required for the selected inputs |
 | TDA and CI | Eigenvalues; eigenvectors for coefficient-dependent objectives | Shared isolated-root response; CI coefficient AD requires `gradient_mode="implicit_eigenvector"` |
 | Spectral subspaces | Projector actions and sums of selected eigenvalues | [First-order JVP/VJP](src/gradscf/solvers/DEGENERACY.md) permits internal degeneracy; the boundary with excluded states must be resolved |
 | Ground-state CC | Energies and amplitudes versus MO integrals | Implicit response at converged roots; fixed topology and orbital ordering; first-order validated contract |

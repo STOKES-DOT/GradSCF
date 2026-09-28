@@ -163,7 +163,7 @@ class MolecularTrainingConfig:
     fractional_branch_scf_iterate_selection: (
         Literal["final", "best_rms", "first_converged"] | None
     ) = None
-    scf_gradient_mode: Literal["unrolled", "implicit", "expl", "impl"] = "impl"
+    scf_gradient_mode: Literal["explicit", "implicit", "expl", "impl", "unrolled"] = "impl"
     scf_implicit_diff_max_iter: int = 6
     scf_implicit_diff_tolerance: float = 1e-6
     scf_implicit_diff_regularization: float = 0.0
@@ -199,3 +199,23 @@ class MolecularTrainingConfig:
             value = getattr(self, name)
             if value is not None and int(value) <= 0:
                 raise ValueError(f"{name} must be positive when provided.")
+
+
+def Sample(molecule, *, energy=None, density=None, s1_energy=None,
+           excitation_energies=None, oscillator_strengths=None,
+           orbital_energies=None, orbital_occupations=None, spectrum=None,
+           xc_potential=None, xc_kernel=None, weight=1.):
+    """Construct a training sample using the existing validated PyTree record.
+
+    Energies are Hartree. Density is sampled on molecule.grid; spectrum is
+    (grid_in_eV, values). No additional copy or parallel sample type is created.
+    """
+    grid, curve = (None, None) if spectrum is None else spectrum
+    return MolecularTrainingDatum(
+        molecule=molecule, target_e0_total_h=energy, target_grid_density=density,
+        target_s1_total_h=s1_energy, target_excitation_gaps_h=excitation_energies,
+        target_oscillator_strengths=oscillator_strengths,
+        target_orbital_energies=orbital_energies,
+        target_orbital_occupations=orbital_occupations,
+        target_spectrum_grid_ev=grid, target_spectrum_curve=curve,
+        target_xc_potential=xc_potential, target_xc_kernel=xc_kernel, weight=weight)

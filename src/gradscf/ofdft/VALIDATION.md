@@ -59,7 +59,7 @@ The local DFTpy import emitted a caught optional numexpr/NumPy ABI warning; DFTp
 
 ## Solver fixes exercised by this work
 
-- Symmetric stationary starts require differentiable Newton refinements to retain unrolled response. The uniform periodic response regression compares with implicit AD and finite differences.
+- Symmetric stationary starts require differentiable Newton refinements to retain explicit response. The uniform periodic response regression compares with implicit AD and finite differences.
 - On JAX 0.8.1, incremental GMRES can underestimate its residual after an early Arnoldi exit. A diagonal 343-dimensional regression with eigenvalues 1...229 gives true relative residual 1.16e-8 despite requested 1e-10. The shared numerical solve now checks and retries the upstream batched path at the same tolerances; no OFDFT-specific Krylov algorithm was added. Both normal and 1e-10-scaled RHS and adjoint checks are covered.
 - Gaussian shell AO indices must remain NumPy static metadata when building traced coordinates; a one-line constructor correction is covered by a molecular nuclear-gradient test.
 

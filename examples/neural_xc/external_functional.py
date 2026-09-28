@@ -6,7 +6,6 @@ The network adds a correction to Dirac exchange; correlation is omitted.
 Teacher-generated targets demonstrate AD/training, not chemical accuracy.
 Run: PYTHONPATH=src JAX_PLATFORMS=cpu python examples/neural_xc/external_functional.py
 """
-from dataclasses import replace
 from time import perf_counter
 
 import jax
@@ -17,10 +16,7 @@ jax.config.update('jax_enable_x64', True)
 
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
 from gradscf.model.neural_xc import ExternalFunctional
-from gradscf.model.training import (
-    MolecularTrainingConfig, MolecularTrainingDatum, NeuralXCTrainer,
-    make_self_consistent_predictor, molecular_loss,
-)
+from gradscf.model import training
 
 
 # Both the feature schema and the architecture belong to this example.
@@ -53,27 +49,27 @@ reference = restricted_molecule_from_spec_with_jax_rks(
     grids_level=0, integral_backend='native')
 params = functional.init_from_molecule(jax.random.PRNGKey(0), reference)
 teacher = jax.tree.map(lambda x: x+.03, params)
-config = MolecularTrainingConfig(mode='self_consistent', scf_gradient_mode='implicit',
-    e0_total_mse_weight=1., scf_max_cycle=80, scf_damping=.2,
-    scf_conv_tol_energy=1e-11, scf_conv_tol_density=1e-9,
-    scf_eigenvalue_jitter=0., scf_implicit_diff_tolerance=1e-9,
-    scf_implicit_diff_max_iter=40)
-predict = make_self_consistent_predictor(functional, training_config=config)
-target_energy, _ = predict(teacher, reference)
-target_energy = jax.lax.stop_gradient(target_energy)
-datum = MolecularTrainingDatum(reference, target_e0_total_h=target_energy)
+scf_settings = dict(max_cycle=80, damping=.2, conv_tol_energy=1e-11,
+                    conv_tol_density=1e-9, eigenvalue_jitter=0.)
+adjoint_settings = dict(tolerance=1e-9, max_iter=40)
+reference_trainer = training.Trainer(functional)
+reference_trainer.mode = 'implicit'
+reference_trainer.scf = scf_settings
+reference_trainer.adjoint = adjoint_settings
+target_energy, _ = reference_trainer.predict(reference, params=teacher)
+data = [training.Sample(reference, energy=jax.lax.stop_gradient(target_energy))]
 print('Self-consistent teacher energy / Ha:', float(target_energy))
 
-for mode, backward in (('fixed_density', 'implicit'),
-                       ('self_consistent', 'unrolled'),
-                       ('self_consistent', 'implicit')):
+for mode in ('fixed_density', 'explicit', 'implicit'):
     started = perf_counter()
-    cfg = replace(config, mode=mode, scf_gradient_mode=backward)
-    before = float(molecular_loss(params, functional, datum, training_config=cfg)[0])
-    trained = NeuralXCTrainer(functional, [datum]).kernel(
-        steps=3, params=params, learning_rate=.002, training_config=cfg)
-    after = float(molecular_loss(trained.params, functional, datum, training_config=cfg)[0])
-    print(mode, backward, 'loss:', before, '->', after,
+    trainer = training.Trainer(functional, params=params)
+    trainer.mode = mode
+    trainer.learning_rate = .002
+    trainer.scf = scf_settings
+    trainer.adjoint = adjoint_settings
+    trainer.run(data, steps=3)
+    before, after = trainer.history['loss'][0], trainer.history['loss'][-1]
+    print(mode, 'loss:', before, '->', after,
           'seconds:', round(perf_counter()-started, 2))
     if not jnp.isfinite(after) or after >= before:
         raise RuntimeError('Expected a finite loss reduction in this demonstration')
@@ -81,6 +77,6 @@ for mode, backward in (('fixed_density', 'implicit'),
 # Measured CPU float64 output (Apple M4 Pro, JAX 0.8.1):
 # Self-consistent teacher energy / Ha: -1.0400905116545243
 # fixed_density         4.1417802781e-06 -> 9.2387785597e-07
-# self_consistent/unrolled 5.6129071029e-06 -> 1.6771517640e-06
+# self_consistent/explicit 5.6129071029e-06 -> 1.6771517640e-06
 # self_consistent/implicit 5.6129071029e-06 -> 1.6771517640e-06
 # Three Adam updates per mode; seed 0. Targets are synthetic.

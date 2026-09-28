@@ -144,7 +144,7 @@ volume, moving overlap, KEDF and XC parameters remain in the response graph.
 Failure to converge the forward stationarity residual or adjoint solve produces
 nonfinite derivatives rather than a misleading approximate response.
 
-`mode='unrolled'` differentiates the accepted finite iterates. Up to three local Newton
+`mode='explicit'` differentiates the accepted finite iterates. Up to three local Newton
 refinements (AD HVPs and the shared linear solver) polish a nearly converged
 state. Unrolled mode also performs these refinements at an already stationary
 initial density to retain its parameter response. Small refinement systems use
@@ -160,7 +160,7 @@ required. Any nonzero adjoint regularization biases the response.
 
 Tests cover analytic TF derivatives/HVPs, uniform WT/Lindhard response, density
 nodes, the Kohn anomaly, number conservation, implicit/FD density gradients,
-unrolled symmetric-start response, neural parameter gradients, lattice/volume
+explicit symmetric-start response, neural parameter gradients, lattice/volume
 response, molecular coordinate response, Gaussian/grid fixed-density parity,
 local-potential boundaries, and facade/input validation. jax-xc integration tests
 are optional when that dependency is unavailable. See `VALIDATION.md` for the

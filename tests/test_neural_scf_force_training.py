@@ -5,7 +5,7 @@ import runpy
 import pytest
 
 
-@pytest.mark.parametrize('mode', ['implicit','unrolled'])
+@pytest.mark.parametrize('mode', ['implicit','explicit'])
 def test_neural_scf_force_loss_gradient_and_training_step(mode):
     example = runpy.run_path(str(Path('examples/train_neural_scf_forces.py')))
     result = example['validate_and_train'](mode)

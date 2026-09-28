@@ -21,7 +21,7 @@ the requested loss. Flax, Haiku or pure-JAX networks can be called inside
 weights are explicit parameters, not mutable object state or captured traced
 closure variables. The current Flax TrainState-based trainer expects a mapping
 at the parameter root; nested parameter values can be PyTrees. Supply existing
-weights using `NeuralXCTrainer.kernel(params=...)`, or provide `init_fn`.
+weights using `training.Trainer(functional, params=...)`, or provide `init_fn`.
 
 ## SCF-current physical inputs
 
@@ -85,37 +85,59 @@ Both spin-stacked and spin-summed densities are supported. TDA/TDDFT use the
 same adiabatic real-density Hessian through their existing AO transition and
 projection routines. Parameter derivatives remain available through the kernel.
 
-## Existing training modes
+## Training API
 
-Use the existing `MolecularTrainingDatum`, `MolecularTrainingConfig` and
-`NeuralXCTrainer`; no external-network-specific training loop is introduced.
+```python
+from gradscf.model import training
 
-| Mode | Configuration |
+data = [training.Sample(reference, energy=e_fci)]
+trainer = training.Trainer(functional, params=params)
+trainer.mode = 'implicit'
+trainer.loss = {'energy': {'mse': 1., 'mae': 1.}}
+trainer.learning_rate = .002
+trainer.run(data, steps=100)
+print(trainer.history['loss'])
+print(trainer.params)
+```
+
+`Sample` constructs the existing validated PyTree record; `Trainer` uses the
+existing loss and optimizer-step functions. There is only one high-level
+trainer, with no external-network-specific training implementation.
+
+| `trainer.mode` | Behavior |
 |---|---|
-| Fixed density | `mode='fixed_density'` |
-| Unrolled SCF | `mode='self_consistent', scf_gradient_mode='unrolled'` |
-| Implicit SCF | `mode='self_consistent', scf_gradient_mode='implicit'` |
+| `fixed_density` | Evaluate at the supplied fixed density |
+| `explicit` | Differentiate the existing JAX SCF computation, implemented using `lax.scan` |
+| `implicit` | Differentiate the SCF fixed point using the shared adjoint solver |
 
-Fixed-density energy evaluation differentiates at the supplied state. A
-self-consistent objective runs the existing SCF with the current weights.
-Density-specific losses retain their existing behavior of requesting a
-self-consistent density. Unrolled AD differentiates the executed iterations;
-implicit AD uses the existing fixed-point adjoint and shared linear solver.
+The name `explicit` replaces the earlier public label. This does not change
+the SCF algorithm or gradient: it does not manually expand each iteration
+into a separate computation graph, and it does not freeze the final density.
+Historical `unrolled`/`expl` inputs remain aliases only at the low-level shared
+SCF policy boundary. New examples and Trainer use `explicit`.
 
-For external functionals, SCF training requires forward convergence by
-default in both backward modes. Set `scf_require_converged=False` explicitly
-to train finite, unconverged unrolled iterates. `scf_require_converged=True/False` explicitly controls that gate;
-`None` uses the functional's policy (legacy functionals retain their existing
-default). The implicit derivative requires a locally differentiable isolated
-fixed point; convergence alone does not prove stability or a global minimum.
+`trainer.scf` contains numerical SCF settings such as `max_cycle`,
+`conv_tol_energy`, `conv_tol_density` and `require_converged`.
+`trainer.adjoint` accepts `tolerance`, `max_iter` and `regularization`.
+The default external-functional policy requires SCF convergence. Failed or
+nonfinite updates leave parameters and optimizer state unchanged.
 
-The molecular train step rejects nonfinite loss/gradient updates and preserves
-both parameters and optimizer state. `update_accepted` and
-`nonfinite_grad_fraction` are retained in the `NeuralXCTrainer` history. The
-low-level loss helper still returns sanitized gradient arrays for compatibility;
-its nonfinite metric must be checked by callers writing their own optimizer
-loop. The XC energy-derivative helper no longer converts an invalid potential
-into zeros. Other legacy XC paths are unchanged.
+`trainer.evaluate(data)` returns the metrics in its current mode, while
+`trainer.predict(molecule)` returns energy and electronic state. Either
+supports `mode='implicit'` for a separate self-consistent diagnostic;
+`predict(..., params=teacher_params)` can evaluate a different parameter set
+without replacing the trainable weights.
+
+History includes step 0 and metrics after each attempted update. Repeated
+`run()` calls continue the optimizer/history. Replacing `params` or changing
+`learning_rate` restarts them. `history['update_accepted'][0]` is None; remaining
+entries correspond to the preceding update. `optimizer_step` counts accepted
+updates and can differ from the attempted `step` after a rejection.
+
+The new facade rejects density/orbital-energy supervision in fixed-density
+mode instead of silently running SCF. Low-level loss helpers retain their
+existing behavior for advanced callers. See
+[the training API guide](../training/README.md) for migration and metric names.
 
 ## Executed demonstration and validation
 
@@ -147,7 +169,7 @@ Three Adam steps, learning rate 0.002, SCF maximum 80 cycles, density tolerance
 | Mode | Initial energy MSE / Ha² | Final energy MSE / Ha² | Seconds |
 |---|---:|---:|---:|
 | Fixed density | 4.1417802781e-6 | 9.2387785597e-7 | 1.69 |
-| Unrolled SCF | 5.6129071029e-6 | 1.6771517640e-6 | 4.80 |
+| Explicit SCF | 5.6129071029e-6 | 1.6771517640e-6 | 4.80 |
 | Implicit SCF | 5.6129071029e-6 | 1.6771517640e-6 | 8.23 |
 
 Timings include different compilation/cache states and are not a performance
@@ -165,7 +187,7 @@ The legacy fixture lacks bind_to_molecule_for_scf. They were not repaired or
 reclassified as passing by this change. The final targeted results are listed
 below; no full-repository or GPU validation is claimed.
 
-Final targeted run after review corrections: **54 passed, 1 deselected**,
+Before the short-API refactor, the targeted run after review corrections recorded: **54 passed, 1 deselected**,
 58.59 seconds, CPU float64. The deselected case is the independently confirmed
 legacy fixture failure above. The external-functional suite alone has 15 tests.
 
@@ -186,3 +208,6 @@ against the GradSCF FCI total energy. Loss is energy MSE + MAE, with unit
 weights and energies numerically expressed in Hartree. Results, CSVs, plots,
 FCI cross-checks and limitations are in
 [h2_fci_results/README.md](../../../../examples/neural_xc/h2_fci_results/README.md).
+
+Current short-API/explicit-name validation: 106 passed, 3 skipped, 1 known
+baseline failure deselected; see [training/README.md](../training/README.md#validation).

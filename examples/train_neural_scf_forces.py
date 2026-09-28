@@ -135,7 +135,7 @@ def validate_and_train(mode='implicit'):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=['implicit','unrolled'],default='implicit')
+    parser.add_argument('--mode',choices=['implicit','explicit'],default='implicit')
     parser.add_argument('--output',type=Path)
     args=parser.parse_args()
     result=validate_and_train(args.mode)

@@ -66,7 +66,7 @@ def test_unconverged_response_is_not_silently_accepted():
     assert jnp.isnan(jax.grad(loss)(.4))
 
 
-def test_symmetric_stationary_start_retains_unrolled_response():
+def test_symmetric_stationary_start_retains_explicit_response():
     from gradscf.ofdft import periodic_inputs, run_ofdft, OFDFTConfig
     from gradscf.scf import SCFDifferentiationConfig
     data = periodic_inputs(jnp.eye(3)*5.,(3,3,3),nelectron=2.)
@@ -77,8 +77,8 @@ def test_symmetric_stationary_start_retains_unrolled_response():
         out = run_ofdft(replace(data,external_potential=p*probe),config=cfg)
         return jnp.sum(data.weights*probe*out.density)
     implicit = jax.grad(lambda t:loss(t,'implicit'))(0.)
-    unrolled = jax.grad(lambda t:loss(t,'unrolled'))(0.)
-    np.testing.assert_allclose(unrolled,implicit,rtol=1e-7,atol=1e-9)
+    explicit = jax.grad(lambda t:loss(t,'explicit'))(0.)
+    np.testing.assert_allclose(explicit,implicit,rtol=1e-7,atol=1e-9)
 
 
 def test_wt_dirac_exchange_reaches_requested_stationarity():

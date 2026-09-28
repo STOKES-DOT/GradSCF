@@ -25,7 +25,7 @@ within 8.9e-16. See `fci_reference_check.json`.
 | Mode | Initial loss | Final MSE / Ha² | Final MAE / Ha | Final loss | Accepted updates |
 |---|---:|---:|---:|---:|---:|
 | fixed_density | 1.112662199201 | 0.108387442447 | 0.329222481686 | 0.437609924133 | 100 |
-| unrolled | 1.021108762032 | 0.084338520487 | 0.290410951046 | 0.374749471533 | 100 |
+| explicit | 1.021108762032 | 0.084338520487 | 0.290410951046 | 0.374749471533 | 100 |
 | implicit | 1.021108762032 | 0.084338520485 | 0.290410951042 | 0.374749471528 | 100 |
 
 The CSVs contain 101 rows: initialization at step 0 and the losses after
@@ -33,7 +33,7 @@ updates 1...100. `next_update_accepted` describes the proposed update from
 that row to the next. The step-100 row has no subsequent update. All 300
 updates were accepted, all SCF evaluations in the two self-consistent histories
 converged, and all three recorded loss curves decrease monotonically.
-Maximum unrolled/implicit loss difference over the entire history: 2.44e-11.
+Maximum explicit/implicit loss difference over the entire history: 2.44e-11.
 
 Fixed-density training evaluates at the unchanged initial HF density and
 performs zero SCF cycles during training. The self-consistent modes evaluate
@@ -58,8 +58,8 @@ The corresponding grid-density relative L2 discrepancies from FCI are about
 the XC potential or establish density accuracy or transferability.
 
 Measurements: 2026-09-28, Apple M4 Pro, Python 3.12.2, JAX 0.8.1, CPU float64.
-The measured 100-step loop times were 0.47 s / 1.62 s / 2.22 s for fixed /
-unrolled / implicit. They include JIT invocation but benefit from existing
+The rerun with the short Trainer API took 0.42 s / 1.66 s / 2.35 s for fixed /
+explicit / implicit. They include JIT invocation but benefit from existing
 compilation caches, exclude reference preparation and post-training diagnostics,
 and are not a portable performance comparison. SCF and backward tolerances,
 full energies and diagnostics are recorded in `summary.json`.
@@ -72,10 +72,15 @@ PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
 MPLCONFIGDIR=/tmp/gradscf-mpl python examples/neural_xc/plot_h2_fci_training.py
 ```
 
-- `fixed_density.csv`, `unrolled.csv`, `implicit.csv`: step-by-step loss components,
+- `fixed_density.csv`, `explicit.csv`, `implicit.csv`: step-by-step loss components,
   energies, update acceptance and SCF convergence.
 - `summary.json`: settings, timing and final common-SCF diagnostics.
 - `reference.npz`: the FCI Hamiltonian, density, overlap and grid weights.
 - `*_params.msgpack`: final network parameters after exactly 100 updates.
 - `loss_curves.png` and `loss_curves.pdf`: plots of the recorded data, without
   smoothing or synthetic points.
+
+The public mode label is now `explicit`. The short Trainer API was checked
+against the previous 101-point CSV histories: total losses and predicted
+energies are identical at every step; MSE roundoff changes are below 3e-17.
+The SCF and derivative algorithms were not changed.

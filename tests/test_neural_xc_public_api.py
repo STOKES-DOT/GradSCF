@@ -10,7 +10,6 @@ from gradscf.model.neural_xc.defaults import (
     DEFAULT_NEURAL_XC_SEMILOCAL_XC,
 )
 from gradscf.integrals.backends.jax_reference.packed_eri import build_j_from_eri_pair_matrix
-import gradscf.model.training.neural_xc_trainer as neural_xc_trainer_module
 
 
 def test_neural_xc_config_drives_generic_functional_constructor():
@@ -193,13 +192,9 @@ def test_neural_xc_factory_stays_as_assembly_layer():
 
 
 def test_neural_xc_trainer_positive_steps_require_ground_state_data():
-    neural_trainer = training.NeuralXCTrainer(
-        functional=neural_xc.Functional(hidden_dims=(8,)),
-        molecules=[],
-    )
-
+    neural_trainer = training.Trainer(neural_xc.Functional(hidden_dims=(8,)))
     with pytest.raises(ValueError, match="requires at least one"):
-        neural_trainer.kernel(steps=1)
+        neural_trainer.run([], steps=1)
 
 
 class _Grid:
@@ -255,71 +250,26 @@ def _toy_trainable_density_functional():
 
 
 def test_neural_xc_trainer_runs_50_ground_state_steps_and_lowers_loss():
-    molecule = _ToyMolecule()
-    datum = training.MolecularTrainingDatum(
-        molecule=molecule,
-        target_e0_total_h=jnp.asarray(2.125),
-    )
-    trainer = training.NeuralXCTrainer(
-        functional=_toy_trainable_density_functional(),
-        molecules=[datum],
-    )
-
-    result = trainer.kernel(
-        steps=50,
-        learning_rate=0.1,
-        training_config=training.MolecularTrainingConfig(e0_total_mae_weight=1.0),
-    )
-
-    assert len(result.history["total_loss"]) == 50
-    assert result.history["total_loss"][-1] < result.history["total_loss"][0]
-    assert result.final_metrics["total_loss"] == result.history["total_loss"][-1]
-    assert result.params is not None
+    datum = training.Sample(_ToyMolecule(), energy=jnp.asarray(2.125))
+    trainer = training.Trainer(_toy_trainable_density_functional())
+    trainer.loss = {'energy': {'mae': 1.}}
+    trainer.learning_rate = .1
+    trainer.run([datum], steps=50)
+    assert len(trainer.history['loss']) == 51
+    assert trainer.history['loss'][-1] < trainer.history['loss'][0]
+    assert trainer.metrics['loss'] == trainer.history['loss'][-1]
+    assert trainer.params is not None
 
 
-def test_neural_xc_trainer_accepts_explicit_training_config(monkeypatch):
-    captured = {}
-
-    def _fake_make_train_step(functional, *, training_config=None, **kwargs):
-        del functional, kwargs
-        captured["training_config"] = training_config
-
-        def _step(state, data):
-            del data
-            return state, {
-                "total_loss": jnp.asarray([0.0]),
-                "e0_total_mae": jnp.asarray([0.0]),
-                "grid_density_mse": jnp.asarray([0.0]),
-                "orbital_energy_mae": jnp.asarray([0.0]),
-                "scf_cycles_mean": jnp.asarray([1.0]),
-                "scf_converged_fraction": jnp.asarray([1.0]),
-            }
-
-        return _step
-
-    monkeypatch.setattr(
-        neural_xc_trainer_module,
-        "make_molecular_train_step",
-        _fake_make_train_step,
-    )
-    molecule = _ToyMolecule()
-    datum = training.MolecularTrainingDatum(
-        molecule=molecule,
-        target_e0_total_h=jnp.asarray(0.0),
-    )
-    cfg = training.MolecularTrainingConfig(
-        mode="self_consistent",
-        scf_gradient_mode="impl",
-    )
-    trainer = training.NeuralXCTrainer(
-        functional=_toy_trainable_density_functional(),
-        molecules=[datum],
-    )
-
-    result = trainer.kernel(steps=1, training_config=cfg)
-
-    assert captured["training_config"] is cfg
-    assert result.history["scf_converged"] == [1.0]
+def test_trainer_evaluation_matches_shared_loss():
+    datum = training.Sample(_ToyMolecule(), energy=jnp.asarray(.3))
+    f = _toy_trainable_density_functional()
+    params = {'scale': jnp.asarray(.2)}
+    trainer = training.Trainer(f, params=params)
+    trainer.loss = {'energy': {'mse': .4, 'mae': .7}}
+    expected, _ = training.molecular_loss(params, f, datum,
+        training_config=training.MolecularTrainingConfig(e0_total_mse_weight=.4, e0_total_mae_weight=.7))
+    assert trainer.evaluate([datum])['loss'] == pytest.approx(float(expected))
 
 
 def test_training_coulomb_energy_accepts_packed_eri_pair_matrix():

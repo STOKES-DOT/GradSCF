@@ -18,10 +18,7 @@ jax.config.update('jax_enable_x64', True)
 
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
 from gradscf.model.neural_xc import ExternalFunctional
-from gradscf.model.training import (
-    MolecularTrainingConfig, MolecularTrainingDatum, NeuralXCTrainer,
-    density_on_grid, make_self_consistent_predictor, molecular_loss,
-)
+from gradscf.model import training
 
 
 # The input is the CURRENT spin-summed AO density matrix, supplied by GradSCF.
@@ -59,28 +56,25 @@ if __name__ == '__main__':
 
     # Both energy and density targets come from another parameter set, solved
     # self-consistently. Replace them with reference labels for real training.
-    config = MolecularTrainingConfig(
-        mode='self_consistent', scf_gradient_mode='implicit',
-        e0_total_mse_weight=1., grid_density_mse_weight=1.,
-        scf_max_cycle=80, scf_damping=.2,
-        scf_conv_tol_energy=1e-11, scf_conv_tol_density=1e-9,
-        scf_eigenvalue_jitter=0., scf_implicit_diff_tolerance=1e-9,
-        scf_implicit_diff_max_iter=40)
-    predict = make_self_consistent_predictor(functional, training_config=config)
+    trainer = training.Trainer(functional, params=params)
+    trainer.mode = 'implicit'
+    trainer.loss = {'energy': {'mse': 1.}, 'density': {'mse': 1.}}
+    trainer.learning_rate = .002
+    trainer.scf = dict(max_cycle=80, damping=.2, conv_tol_energy=1e-11,
+                       conv_tol_density=1e-9, eigenvalue_jitter=0.)
+    trainer.adjoint = dict(tolerance=1e-9, max_iter=40)
     teacher = jax.tree.map(lambda x: x+.02, params)
-    target_energy, target_state = predict(teacher, reference)
-    datum = MolecularTrainingDatum(
-        reference, target_e0_total_h=jax.lax.stop_gradient(target_energy),
-        target_grid_density=jax.lax.stop_gradient(density_on_grid(target_state)))
+    target_energy, target_state = trainer.predict(reference, params=teacher)
+    data = [training.Sample(reference,
+        energy=jax.lax.stop_gradient(target_energy),
+        density=jax.lax.stop_gradient(training.density_on_grid(target_state)))]
 
-    before = float(molecular_loss(params, functional, datum, training_config=config)[0])
-    trained = NeuralXCTrainer(functional, [datum]).kernel(
-        steps=5, params=params, learning_rate=.002, training_config=config)
-    after = float(molecular_loss(trained.params, functional, datum, training_config=config)[0])
+    trainer.run(data, steps=5)
+    before, after = trainer.history['loss'][0], trainer.history['loss'][-1]
     print('Training loss:', before, '->', after)
-    print('Accepted updates:', trained.history['update_accepted'])
-    print('SCF converged:', trained.history['scf_converged'])
-    if not all(trained.history['update_accepted']) or not jnp.isfinite(after) or after >= before:
+    print('Accepted updates:', trainer.history['update_accepted'][1:])
+    print('SCF converged:', trainer.history['scf_converged'][1:])
+    if not all(trainer.history['update_accepted'][1:]) or not jnp.isfinite(after) or after >= before:
         raise RuntimeError('Expected five valid updates and a finite loss reduction')
 
 # Measured output: CPU float64, JAX 0.8.1, random seed 0.
@@ -89,5 +83,5 @@ if __name__ == '__main__':
 # XC potential shape: (4, 4)
 # XC kernel action norm: 0.01573187494899862
 # Training loss: 2.15340029562302e-06 -> 1.8271876314836187e-06
-# Accepted updates: [1.0, 1.0, 1.0, 1.0, 1.0]
-# SCF converged: [1.0, 1.0, 1.0, 1.0, 1.0]
+# Accepted updates: [True, True, True, True, True]
+# SCF converged: [True, True, True, True, True]

@@ -63,7 +63,7 @@ def _compiled_lorentzian_spectrum():
 
 def _resolve_training_scf_gradient_mode(
     config: NeuralXCTrainingConfig,
-) -> Literal["implicit", "unrolled"]:
+) -> Literal["implicit", "explicit"]:
     return normalize_scf_gradient_mode(config.objective.scf_gradient_mode)
 
 

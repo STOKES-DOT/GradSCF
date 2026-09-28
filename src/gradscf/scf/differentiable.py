@@ -644,7 +644,7 @@ class DifferentiableSCFConfig:
     """Configuration for fixed-density / self-consistent differentiable SCF."""
 
     mode: Literal["fixed_density", "self_consistent"] = "fixed_density"
-    gradient_mode: Literal["unrolled", "implicit", "expl", "impl"] = "expl"
+    gradient_mode: Literal["explicit", "implicit", "expl", "impl", "unrolled"] = "expl"
     max_cycle: int = 12
     damping: float = 0.25
     level_shift: float = 0.0

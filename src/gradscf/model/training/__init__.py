@@ -1,6 +1,9 @@
-"""Differentiable molecular training API."""
+"""Differentiable training: use Sample and Trainer for ordinary workflows.
 
-from .config import MolecularTrainingConfig, MolecularTrainingDatum
+Detailed loss/configuration helpers remain available for advanced workflows.
+"""
+
+from .config import Sample, MolecularTrainingConfig, MolecularTrainingDatum
 from .checkpoints import load_params_checkpoint, save_params_checkpoint
 from .targets import (
     density_on_grid,
@@ -23,6 +26,7 @@ from .predictors import (
     predict_ground_state_molecule,
 )
 from .trainer import (
+    Trainer,
     create_train_state,
     create_train_state_from_molecule,
     make_molecular_eval,
@@ -34,8 +38,6 @@ from .excited_state_trainer import (
     ExcitedStateFineTuneResult,
     ExcitedStateFineTuner,
 )
-from .neural_xc_trainer import NeuralXCTrainer
-from .results import TrainingResult
 from .forces import (
     EnergyAndForces,
     energy_and_forces,
@@ -44,6 +46,8 @@ from .forces import (
 )
 
 __all__ = [
+    "Sample",
+    "Trainer",
     "MolecularTrainingDatum",
     "MolecularTrainingConfig",
     "load_params_checkpoint",
@@ -72,8 +76,6 @@ __all__ = [
     "ExcitedStateFineTuneConfig",
     "ExcitedStateFineTuneResult",
     "ExcitedStateFineTuner",
-    "NeuralXCTrainer",
-    "TrainingResult",
     "EnergyAndForces",
     "energy_and_forces",
     "force_matching_loss",

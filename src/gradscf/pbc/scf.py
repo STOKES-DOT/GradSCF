@@ -44,7 +44,7 @@ def run_gamma_scf(inputs,*,nelec,xc='hf',exxdiv='ewald',max_cycle=100,
                   conv_tol=1e-10,conv_tol_density=1e-8,conv_tol_grad=1e-7,
                   damping=0.,level_shift=0.,init_density=None,
                   differentiation=None):
-    """Array-valued SCF with implicit/unrolled derivatives on fixed FFT topology."""
+    """Array-valued SCF with implicit/explicit derivatives on fixed FFT topology."""
     if inputs.overlap.shape[0]!=1:
         raise NotImplementedError('This solver currently accepts Gamma only.')
     if xc_type(xc) not in ('HF','LDA','GGA'):
@@ -52,7 +52,7 @@ def run_gamma_scf(inputs,*,nelec,xc='hf',exxdiv='ewald',max_cycle=100,
     n=inputs.overlap.shape[-1]
     if any(v<0 or v>n for v in nelec) or sum(nelec)==0 or max_cycle<1:
         raise ValueError('Invalid occupations or max_cycle.')
-    config=differentiation or SCFDifferentiationConfig(mode='unrolled')
+    config=differentiation or SCFDifferentiationConfig(mode='explicit')
     s=inputs.overlap[0];x=_orthogonalizer(s,1e-10)
     eps,c=_diagonalize_fock(inputs.hcore[0],x)
     occ=jnp.stack([(jnp.arange(n)<count).astype(s.dtype) for count in nelec])
