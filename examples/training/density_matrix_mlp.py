@@ -8,7 +8,7 @@ This fixed-basis example has synthetic teacher targets. A flattened AO matrix
 is basis/order dependent and the MLP imposes no size consistency or exact XC
 constraints. It demonstrates the external-functional interface, not accuracy.
 
-Run: PYTHONPATH=src JAX_PLATFORMS=cpu python examples/neural_xc/density_matrix_mlp.py
+Run: PYTHONPATH=src JAX_PLATFORMS=cpu python examples/training/density_matrix_mlp.py
 """
 import jax
 import jax.numpy as jnp
@@ -17,8 +17,7 @@ from flax import linen as nn
 jax.config.update('jax_enable_x64', True)
 
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
-from gradscf.model.neural_xc import ExternalFunctional
-from gradscf.model import training
+from gradscf import dft, training
 
 
 # The input is the CURRENT spin-summed AO density matrix, supplied by GradSCF.
@@ -37,7 +36,7 @@ class XCNetwork(nn.Module):
 
 
 model = XCNetwork()
-functional = ExternalFunctional(make_inputs, model.apply, init_fn=model.init)
+functional = dft.Functional(make_inputs, model.apply, init_fn=model.init)
 
 if __name__ == '__main__':
     # GradSCF supplies integrals and an HF initial density. Learned SCF then uses

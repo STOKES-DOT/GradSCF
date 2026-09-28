@@ -2,7 +2,8 @@ import pytest
 
 import jax.numpy as jnp
 
-from gradscf.model import neural_xc, training
+from gradscf.model import neural_xc
+from gradscf import training
 from gradscf.model.neural_xc.defaults import (
     DEFAULT_NEURAL_XC_HF_INPUT_MODE,
     DEFAULT_NEURAL_XC_RESPONSE_HF_MODE,
@@ -273,7 +274,7 @@ def test_trainer_evaluation_matches_shared_loss():
 
 
 def test_training_coulomb_energy_accepts_packed_eri_pair_matrix():
-    from gradscf.model.training.targets import _coulomb_energy
+    from gradscf.training.targets import _coulomb_energy
 
     rep_tensor = jnp.asarray(
         [

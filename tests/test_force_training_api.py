@@ -6,7 +6,7 @@ import numpy as np
 import optax
 import pytest
 
-from gradscf.model import training
+from gradscf import training
 
 
 def _harmonic_energy(params, coordinates):

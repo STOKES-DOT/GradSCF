@@ -183,9 +183,11 @@ entry is currently disabled; it is not the interface for the lower-level
 ## Machine learning with electronic structure
 
 **Neural exchange–correlation functionals.**
-[model.neural_xc](src/gradscf/model/neural_xc) defines configurable XC models,
-features, and molecular bindings. [model.training](src/gradscf/model/training)
-provides self-consistent and response-aware training utilities. The
+[model.neural_xc](src/gradscf/model/neural_xc) defines the built-in XC model and
+its presets. External architectures use [dft.Functional](src/gradscf/dft/FUNCTIONAL.md)
+to connect their energy callbacks to generic XC derivatives.
+[training](src/gradscf/training/README.md) provides the shared `Sample` / `Trainer`
+API for both built-in and external models. The
 [force-supervision example](examples/train_neural_scf_forces.py) demonstrates a
 small neural XC energy with differentiable SCF on a finite test quadrature;
 it is a derivative demonstration rather than an accurate production DFT grid.

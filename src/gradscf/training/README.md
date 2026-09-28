@@ -15,12 +15,17 @@ print(trainer.history['loss'])
 print(trainer.evaluate(data))
 ```
 
-The functional can be built in or an `ExternalFunctional`. `reference` is a
+The functional can be built in or a generic `dft.Functional`. `reference` is a
 GradSCF molecular state containing integrals, grid and initial density/orbitals.
 Energies use Hartree; density targets use that state's grid. Parameters may
 be supplied explicitly or initialized by the functional using `trainer.seed`
 (default 0). This facade retains the existing loss, SCF and differentiation
 implementations. It owns JIT, Adam state, update rejection, and history.
+
+This module is shared framework code, independent of `gradscf.model.neural_xc`.
+Use `dft.Functional` for user-defined energy callbacks, or pass the built-in
+`model.neural_xc.Functional` directly. The old `gradscf.model.training` import
+path has been removed. See [DFT module ownership](../dft/FUNCTIONAL.md#module-ownership).
 
 ## Three modes
 
@@ -115,7 +120,7 @@ The H2/6-31G* FCI example now imports only the `training` namespace. Three
 100-update runs reproduce every recorded old total loss and energy exactly;
 MSE roundoff differences are below 3e-17. The `explicit.csv` series replaces
 the old label. The four-layer network and scalar objective are unchanged.
-See `examples/neural_xc/h2_fci_training.py` and its recorded results.
+See `examples/training/h2_fci_training.py` and its recorded results.
 
 ## Validation
 
@@ -137,6 +142,6 @@ PYTHONPATH=src JAX_PLATFORMS=cpu python -m pytest -q \
 ```
 
 All three neural-XC examples were executed. The 100-step FCI comparison is
-recorded in `examples/neural_xc/h2_fci_results/api_equivalence.json`, using
+recorded in `examples/training/h2_fci_results/api_equivalence.json`, using
 commit `a9f15f4` as its reference. Every total loss and total energy matches
 exactly; the largest MSE roundoff difference is 2.78e-17.

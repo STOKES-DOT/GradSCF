@@ -6,7 +6,7 @@ optimizer. Loss = delta_E**2 + abs(delta_E), using numerical energies in Ha
 activating density supervision would request SCF even in fixed-density mode.
 No reference correlation energy is mislabeled as an XC energy.
 
-Run: PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/neural_xc/h2_fci_training.py
+Run: PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/training/h2_fci_training.py
 """
 from pathlib import Path
 from time import perf_counter
@@ -23,7 +23,7 @@ jax.config.update('jax_enable_x64', True)
 from gradscf import fci
 from gradscf.integrals.mo import transform_integrals
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
-from gradscf.model import training
+from gradscf import training
 from density_matrix_mlp import functional
 
 
@@ -68,7 +68,7 @@ report = dict(atom='H 0 0 0; H 0 0 .74', unit='Angstrom', basis='6-31g*',
     nuclear_repulsion_hartree=float(reference.nuclear_repulsion),
     scf=dict(max_cycle=80,damping=.2,energy_tolerance=1e-11,density_tolerance=1e-9),
     implicit=dict(tolerance=1e-9,max_iter=40),
-    command='PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/neural_xc/h2_fci_training.py',
+    command='PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/training/h2_fci_training.py',
     row_semantics='step k is loss after k completed attempts; next_update_accepted refers to k -> k+1',
     runs={})
 np.savez_compressed(folder/'reference.npz', h1_mo=np.asarray(h1), eri_mo=np.asarray(eri),

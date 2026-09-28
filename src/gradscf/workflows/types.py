@@ -19,7 +19,7 @@ from gradscf.model.neural_xc import (
     DEFAULT_NETWORK_ARCHITECTURE,
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
-from gradscf.model.training import MolecularTrainingConfig
+from gradscf.training import MolecularTrainingConfig
 
 
 @dataclass(frozen=True)

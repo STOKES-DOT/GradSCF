@@ -3,7 +3,7 @@
 Lazy ``__getattr__`` dispatch (same pattern as ``gradscf/__init__.py``) so
 that importing the leaf subpackage ``gradscf.dft.libxc_jax`` does not pull
 in the SCF facade chain (which would create a circular import via
-``scf -> model.neural_xc -> dft``).
+``scf -> dft``).
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORTS = {
+    "Functional": "dft.functional",
+    "DensityInputs": "dft.functional",
+    "XCEnergyPotentialResult": "dft.derivatives",
+    "xc_energy_and_potential_from_density": "dft.derivatives",
+    "xc_kernel_action": "dft.derivatives",
     "RKS": "scf",
     "UKS": "scf",
     "ROKS": "dft.roks",
@@ -43,7 +48,7 @@ _EXPORTS = {
     "xc_type": "dft.xc",
 }
 
-_SUBMODULES = ("xc", "rks", "uks", "roks", "gks", "libxc_jax")
+_SUBMODULES = ("xc", "functional", "derivatives", "hfx", "pt2", "rks", "uks", "roks", "gks", "libxc_jax")
 
 
 def __getattr__(name: str):

@@ -6,7 +6,7 @@ pytestmark = []
 
 from gradscf.model import neural_xc
 from pyscf_reference import restricted_reference_from_pyscf
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
     create_train_state_from_molecule,

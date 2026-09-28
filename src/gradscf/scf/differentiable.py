@@ -13,13 +13,11 @@ from jaxtyping import Array, PyTree
 
 from gradscf.integrals import build_j_from_eri_pair_matrix
 from ..df import build_j_from_df, build_jk_from_df
-from ..model.neural_xc.inputs import (
-    hfx_nu_source,
-)
+from gradscf.dft.hfx import hfx_nu_source
 from .core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
 from .autodiff import SCFDifferentiationConfig, normalize_scf_gradient_mode
 from ..solvers.nonlinear import implicit_fixed_point_solution
-from .xc_energy import xc_energy_and_potential_from_density
+from ..dft.derivatives import xc_energy_and_potential_from_density
 from .energy import (XCContribution, restricted_energy, restricted_fock,
                      unrestricted_energy, unrestricted_fock)
 from .rks import (

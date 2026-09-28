@@ -20,17 +20,15 @@ from gradscf.model.neural_xc import (
     make_neural_xc_functional,
 )
 from gradscf.model.neural_xc.factory import NeuralXCFunctional
-from gradscf.model.neural_xc.inputs import (
-    ChunkedHFXNu,
-    canonical_input_features,
-)
+from gradscf.dft.hfx import ChunkedHFXNu
+from gradscf.model.neural_xc.inputs import canonical_input_features
 import gradscf.model.neural_xc.model as neural_xc_model
 import gradscf.model.neural_xc.binding as neural_xc_binding
 import gradscf.model.neural_xc.components as neural_xc_components
 import gradscf.model.neural_xc.projection as neural_xc_projection
 from gradscf.tools.features import has_explicit_spin_axis, restricted_grid_features
 import gradscf.scf.differentiable as scf_differentiable
-from gradscf.scf.xc_energy import xc_energy_and_potential_from_density
+from gradscf.dft.derivatives import xc_energy_and_potential_from_density
 from pyscf_reference import restricted_reference_from_pyscf
 from gradscf.tools.spectra import HARTREE_TO_EV, oscillator_strengths
 from gradscf.tddft import (
@@ -47,7 +45,7 @@ from gradscf.tddft.response import (
 )
 import gradscf.tddft.response as response_module
 from gradscf.tddft.unrestricted import build_unrestricted_tda_operator
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,
@@ -1873,7 +1871,7 @@ def test_reference_can_cache_local_pt2_feature_and_functional_reuses_it():
 
 
 def test_local_pt2_feature_supports_packed_eri_pair_matrix():
-    from gradscf.model.neural_xc.inputs import _local_pt2_feature_from_restricted_orbitals
+    from gradscf.dft.pt2 import _local_pt2_feature_from_restricted_orbitals
 
     ao = jnp.asarray(
         [

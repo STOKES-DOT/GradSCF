@@ -4,7 +4,7 @@ H2/6-31G*, native CPU integrals, float64. The initial HF orbitals and grid
 come from GradSCF; every learned SCF uses the external energy functional.
 The network adds a correction to Dirac exchange; correlation is omitted.
 Teacher-generated targets demonstrate AD/training, not chemical accuracy.
-Run: PYTHONPATH=src JAX_PLATFORMS=cpu python examples/neural_xc/external_functional.py
+Run: PYTHONPATH=src JAX_PLATFORMS=cpu python examples/training/external_functional.py
 """
 from time import perf_counter
 
@@ -15,8 +15,7 @@ from flax import linen as nn
 jax.config.update('jax_enable_x64', True)
 
 from gradscf.scf import restricted_molecule_from_spec_with_jax_rks
-from gradscf.model.neural_xc import ExternalFunctional
-from gradscf.model import training
+from gradscf import dft, training
 
 
 # Both the feature schema and the architecture belong to this example.
@@ -42,7 +41,7 @@ def energy(params, inputs):
     return jnp.sum(inputs['weights']*(baseline+correction))
 
 
-functional = ExternalFunctional(make_inputs, energy,
+functional = dft.Functional(make_inputs, energy,
     init_fn=lambda key, x: model.init(key, x['x']))
 reference = restricted_molecule_from_spec_with_jax_rks(
     atom='H 0 0 0; H 0 0 .74', basis='6-31g*', xc_spec='hf',

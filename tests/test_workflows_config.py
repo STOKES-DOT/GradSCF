@@ -1,5 +1,5 @@
 import pytest
-from gradscf.model.training import MolecularTrainingConfig
+from gradscf.training import MolecularTrainingConfig
 
 from gradscf.workflows import (
     ExperimentConfig,

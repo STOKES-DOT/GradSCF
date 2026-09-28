@@ -23,7 +23,7 @@ from gradscf.scf.builders import (
 from gradscf.scf import RHFConfig, RKSConfig, UKSConfig
 from gradscf.scf.autodiff import normalize_scf_gradient_mode
 from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     MolecularTrainingDatum,
     create_train_state_from_molecule,

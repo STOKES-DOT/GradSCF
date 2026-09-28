@@ -15,10 +15,8 @@ from gradscf.integrals import (
     overlap_matrix,
 )
 from gradscf.dft.libxc_jax.jax_libxc import parse_xc
-from gradscf.model.neural_xc.inputs import (
-    _local_hfx_features_from_basis_dm,
-    _local_pt2_feature_from_restricted_orbitals,
-)
+from gradscf.dft.hfx import _local_hfx_features_from_basis_dm
+from gradscf.dft.pt2 import _local_pt2_feature_from_restricted_orbitals
 from gradscf.scf.builders import restricted_molecule_from_spec_with_jax_rks
 from reference_scf_features import (
     _charge_center,

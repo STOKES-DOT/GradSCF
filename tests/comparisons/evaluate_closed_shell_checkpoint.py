@@ -34,7 +34,7 @@ from gradscf.model.neural_xc import (
     DEFAULT_NETWORK_HIDDEN_DIMS,
     DEFAULT_NEURAL_XC_RESPONSE_HF_MODE,
 )
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingConfig,
     load_params_checkpoint,
     predict_ground_state_total_energy,

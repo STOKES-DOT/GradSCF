@@ -15,8 +15,8 @@ from ...tools.features import (
     grid_features_for_molecule,
     requires_unrestricted_spin_treatment,
 )
-from .inputs import (
-    _local_pt2_feature_from_unrestricted_orbitals,
+from gradscf.dft.pt2 import _local_pt2_feature_from_unrestricted_orbitals
+from gradscf.dft.hfx import (
     has_hfx_nu_source,
     hfx_nu_grid_chunk_padded,
     hfx_nu_shape,

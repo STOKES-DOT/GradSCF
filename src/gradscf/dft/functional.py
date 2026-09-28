@@ -5,8 +5,8 @@ from typing import Any, Callable, ClassVar
 import jax
 import jax.numpy as jnp
 
-from ...scf.xc_energy import xc_energy_and_potential_from_density, xc_kernel_action
-from ...tools.features import (
+from .derivatives import xc_energy_and_potential_from_density, xc_kernel_action
+from ..tools.features import (
     _ao_and_derivatives, _ao_laplacian, _restricted_rho_kernel,
     _spin_density_and_gradient, _spin_tau, _spin_laplacian,
 )
@@ -92,7 +92,7 @@ class DensityInputs:
 
 
 @dataclass(frozen=True)
-class ExternalFunctional:
+class Functional:
     """External features + external scalar energy; no network architecture imposed.
 
     input_fn(DensityInputs) -> arbitrary array PyTree
@@ -122,7 +122,7 @@ class ExternalFunctional:
     def inputs_for_density(self, molecule, density):
         dm = jnp.asarray(density)
         if jnp.iscomplexobj(dm):
-            raise ValueError('ExternalFunctional currently requires real density matrices.')
+            raise ValueError('Functional currently requires real density matrices.')
         if dm.ndim == 2:
             dm = jnp.stack([.5*dm, .5*dm])
         if dm.ndim != 3 or dm.shape[0] != 2 or dm.shape[1:] != (molecule.ao.shape[1],)*2:
@@ -161,13 +161,13 @@ class ExternalFunctional:
             tangent=tangent, xc_energy_fn=self.energy_for_density)
 
     def bind_to_molecule_for_response(self, params, molecule):
-        return _BoundExternalFunctional(self, params)
+        return _BoundFunctional(self, params)
 
 
 
 @dataclass(frozen=True)
-class _BoundExternalFunctional:
-    functional: ExternalFunctional
+class _BoundFunctional:
+    functional: Functional
     params: Any
     exact_exchange_fraction: float = 0.0
 

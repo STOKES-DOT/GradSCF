@@ -106,8 +106,8 @@ def _load_runtime_dependencies(logger: "RunLogger | None" = None) -> None:
     )
     _log("[bootstrap] import gradscf.tools.spectra")
     from gradscf.tools.spectra import HARTREE_TO_EV as _HARTREE_TO_EV
-    _log("[bootstrap] import gradscf.model.training")
-    from gradscf.model.training import (
+    _log("[bootstrap] import gradscf.training")
+    from gradscf.training import (
         MolecularTrainingDatum as _MolecularTrainingDatum,
         MolecularTrainingConfig as _MolecularTrainingConfig,
         create_train_state_from_molecule as _create_train_state_from_molecule,
@@ -118,8 +118,8 @@ def _load_runtime_dependencies(logger: "RunLogger | None" = None) -> None:
         make_ground_state_predictor as _make_ground_state_predictor,
         save_params_checkpoint as _save_params_checkpoint,
     )
-    _log("[bootstrap] import gradscf.model.training.targets")
-    from gradscf.model.training.targets import predict_excitation_energies as _predict_excitation_energies
+    _log("[bootstrap] import gradscf.training.targets")
+    from gradscf.training.targets import predict_excitation_energies as _predict_excitation_energies
 
     neural_xc = _neural_xc
     restricted_reference_from_pyscf = _restricted_reference_from_pyscf

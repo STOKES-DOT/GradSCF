@@ -3,7 +3,7 @@ import math
 import pytest
 
 import jax.numpy as jnp
-from gradscf.model.training import MolecularTrainingConfig
+from gradscf.training import MolecularTrainingConfig
 
 from gradscf.workflows.core import (
     _canonicalize_graddft_ground_state_config,
@@ -56,7 +56,7 @@ def test_build_spectrum_handles_empty_neural_states():
 
 
 @pytest.mark.parametrize('mode, expected', [
-    ('impl','implicit'), ('implicit','implicit'), ('expl','unrolled'), ('unrolled','unrolled'),
+    ('impl','implicit'), ('implicit','implicit'), ('expl','explicit'), ('unrolled','explicit'), ('explicit','explicit'),
 ])
 def test_training_scf_gradient_mode_honors_the_shared_policy(mode, expected):
     config = NeuralXCTrainingConfig(

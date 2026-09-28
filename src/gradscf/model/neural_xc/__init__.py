@@ -1,4 +1,3 @@
-from .external import DensityInputs, ExternalFunctional
 from .api import (
     Functional,
     make_functional,
@@ -49,8 +48,6 @@ from .factory import (
 )
 
 __all__ = [
-    "DensityInputs",
-    "ExternalFunctional",
     "BoundNeuralXCFunctional",
     "ChannelSpec",
     "COMMON_SEMILOCAL_COMPONENT_SPECS",

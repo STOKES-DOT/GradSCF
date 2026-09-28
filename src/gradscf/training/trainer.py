@@ -296,7 +296,7 @@ class Trainer:
         self.steps, self._last_accepted = 0, None
 
     def _functions(self, config, data):
-        from ...scf.differentiable import _is_traceable_pytree
+        from ..scf.differentiable import _is_traceable_pytree
         use_jit = _is_traceable_pytree(data)
         key = (id(self.functional), config, use_jit)
         if key not in self._compiled:

@@ -41,7 +41,7 @@ from gradscf.model.neural_xc import (
     DEFAULT_NETWORK_HIDDEN_DIMS,
 )
 from gradscf.scf import UKSConfig, unrestricted_molecule_from_spec_with_jax_uks
-from gradscf.model.training import (
+from gradscf.training import (
     MolecularTrainingDatum,
     MolecularTrainingConfig,
     create_train_state_from_molecule,

@@ -2,6 +2,18 @@
 
 ## Unreleased — GradSCF
 
+### Functional and model ownership
+
+- Keep `model.neural_xc` as the concrete built-in neural XC model. Move the
+  generic callback adapter to `dft.Functional` and shared training to
+  `gradscf.training` (`Sample` / `Trainer`).
+- Move XC derivatives to `dft.derivatives` and shared physical HFX/PT2 inputs
+  to `dft.hfx` / `dft.pt2`. SCF, data loading, and external-model training no
+  longer import the built-in neural model to obtain physical primitives.
+- Remove old forwarding paths and the ambiguous root `Functional` export.
+  Move user-defined-network examples to `examples/training` and verify the
+  existing three-mode H2/FCI training histories remain unchanged.
+
 ### Full configuration interaction
 
 - Add an independent real common-orbital FCI module with alpha/beta string
@@ -19,10 +31,10 @@
 
 - Move the neural-network model code into the new `gradscf.model` subpackage:
   `gradscf.neural_xc` -> `gradscf.model.neural_xc`, `gradscf.neural_d` ->
-  `gradscf.model.neural_d`, `gradscf.training` -> `gradscf.model.training`,
+  `gradscf.model.neural_d`,
   and the top-level `nnao` package -> `gradscf.model.nnao`.  The vendored
   mace-jax project remains a separate top-level package (sources unchanged).
-  Top-level `gradscf` symbols (e.g. `Functional`, `make_neural_xc_functional`,
+  Top-level explicitly named convenience symbols (e.g. `make_neural_xc_functional`,
   `MolecularTrainingConfig`) are unchanged.  No compatibility aliases are
   kept for the old import paths.
 

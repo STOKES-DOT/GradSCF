@@ -141,18 +141,17 @@ def test_legacy_mean_field_tddft_calls_are_not_in_runtime_code():
     assert offenders == []
 
 
-def test_scf_features_do_not_expose_neural_training_only_hf_pt2_helpers():
+def test_physical_hf_pt2_helpers_are_owned_by_dft_not_a_neural_model():
     import reference_scf_features as scf_features
     from gradscf.model.neural_xc import inputs
-
-    hidden = (
-        "_local_hfx_features_from_basis_dm",
-        "_local_pt2_feature_from_restricted_orbitals",
-    )
-    for name in hidden:
+    from gradscf.dft import hfx, pt2
+    for name, owner in (
+        ('_local_hfx_features_from_basis_dm', hfx),
+        ('_local_pt2_feature_from_restricted_orbitals', pt2),
+    ):
         assert not hasattr(scf_features, name)
-        assert hasattr(inputs, name)
-    assert not hasattr(inputs, "_local_hfx_features_from_dm")
+        assert not hasattr(inputs, name)
+        assert hasattr(owner, name)
 
 
 def test_restricted_response_hvp_uses_factorized_transition_features():

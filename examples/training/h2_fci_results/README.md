@@ -68,8 +68,8 @@ full energies and diagnostics are recorded in `summary.json`.
 
 ```bash
 PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
-  python examples/neural_xc/h2_fci_training.py
-MPLCONFIGDIR=/tmp/gradscf-mpl python examples/neural_xc/plot_h2_fci_training.py
+  python examples/training/h2_fci_training.py
+MPLCONFIGDIR=/tmp/gradscf-mpl python examples/training/plot_h2_fci_training.py
 ```
 
 - `fixed_density.csv`, `explicit.csv`, `implicit.csv`: step-by-step loss components,
@@ -84,3 +84,11 @@ The public mode label is now `explicit`. The short Trainer API was checked
 against the previous 101-point CSV histories: total losses and predicted
 energies are identical at every step; MSE roundoff changes are below 3e-17.
 The SCF and derivative algorithms were not changed.
+
+The examples now live in `examples/training/` and import `dft.Functional` and
+root `training`, without importing the built-in neural XC model. After this
+module relocation, another 100-step run per mode matches baseline `b5af8ed`
+exactly for all loss components and energies (`layout_equivalence.json`).
+Current per-loop timings are fixed_density: 0.38 s, explicit: 1.88 s, implicit: 2.37 s.
+As above, compilation caches and host-side diagnostics make these timings
+unsuitable as a portable speed comparison.
