@@ -176,3 +176,13 @@ PYTHONPATH=src JAX_PLATFORMS=cpu python -m pytest -q \
   tests/test_training.py \
   --deselect=tests/test_training.py::test_orbital_energy_loss_uses_explicit_target_and_weights
 ```
+
+
+## FCI-supervised 100-step comparison
+
+[h2_fci_training.py](../../../../examples/neural_xc/h2_fci_training.py) reuses
+that same density-matrix network and trains all three modes for 100 steps
+against the GradSCF FCI total energy. Loss is energy MSE + MAE, with unit
+weights and energies numerically expressed in Hartree. Results, CSVs, plots,
+FCI cross-checks and limitations are in
+[h2_fci_results/README.md](../../../../examples/neural_xc/h2_fci_results/README.md).
