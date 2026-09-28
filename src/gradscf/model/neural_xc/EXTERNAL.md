@@ -119,6 +119,14 @@ into zeros. Other legacy XC paths are unchanged.
 
 ## Executed demonstration and validation
 
+For a direct matrix-to-energy example, see
+[density_matrix_mlp.py](../../../../examples/neural_xc/density_matrix_mlp.py):
+`D.flatten() -> 16 -> 16 -> 16 -> 1`, three tanh hidden layers plus a scalar
+output layer. The external MLP defines the entire XC energy, without an
+additional baseline. It demonstrates the shared potential/kernel derivatives
+and implicit SCF training with synthetic energy and density targets. Its input
+is tied to a fixed AO basis and ordering.
+
 [external_functional.py](../../../../examples/neural_xc/external_functional.py)
 uses external Flax features/architecture and GradSCF H2/6-31G* native integrals.
 It adds a neural correction to Dirac exchange, with correlation omitted.
