@@ -6,7 +6,7 @@ from .types import BSEConfig
 from .space import make_bse_space
 from .reference import reference_from_source, source_signature
 from .response import run_bse
-from .properties import transition_dipoles, oscillator_strengths
+from .properties import transition_dipoles, oscillator_strengths, polarizability, absorption_cross_section
 
 
 class BSE:
@@ -68,8 +68,8 @@ class BSE:
         screen = make_bse_space(
             nmo,
             ref.nocc,
-            occupied=self.screening_occupied,
-            virtual=self.screening_virtual,
+            occupied=ref.screening_occupied if self.screening_occupied is None else self.screening_occupied,
+            virtual=ref.screening_virtual if self.screening_virtual is None else self.screening_virtual,
         )
         selected = list(space.occupied + space.virtual)
         for mask in (ref.qp_computed_mask, ref.qp_converged_mask):
@@ -124,3 +124,15 @@ class BSE:
     def oscillator_strength(self):
         self._ready()
         return oscillator_strengths(self.result, self.reference.dipole_mo, self.space)
+
+
+    def polarizability(self, omega=0., *, eta=0.):
+        """Retarded tensor (a0^3), with frequencies and broadening in Ha."""
+        self._ready()
+        return polarizability(self.result, self.reference.dipole_mo, self.space, omega, eta=eta)
+
+    def absorption_cross_section(self, omega, *, eta=.01, polarization=None, unit='au'):
+        """Finite-root absorption, averaged or polarized, in a0^2 or Mb."""
+        self._ready()
+        return absorption_cross_section(self.result, self.reference.dipole_mo, self.space,
+            omega, eta=eta, polarization=polarization, unit=unit)

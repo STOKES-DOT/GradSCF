@@ -1,7 +1,8 @@
 """Differentiable GW (Hedin) module for molecular and periodic systems.
 
 Molecular restricted/unrestricted G0W0 uses contour-deformation (CD)
-self-energies and implicit/unrolled quasiparticle differentiation. evGW
+self-energies and implicit/unrolled quasiparticle differentiation. Restricted
+GW additionally exposes independent G/W windows and fixed-W evGW0. evGW
 and real restricted qsGW provide eager self-consistency loops; their outer
 fixed points do not yet have AD rules. Periodic Gamma/k-point drivers are
 available with the staged AD coverage documented in their modules.

@@ -96,15 +96,24 @@ def evgw_cd_restricted(
     max_iter: int = 20,
     tol: float = 1e-6,
     damping: float = 0.0,
+    update_w: bool = True,
+    g_orbitals: Sequence[int] | None = None,
+    screening_occupied: Sequence[int] | None = None,
+    screening_virtual: Sequence[int] | None = None,
 ) -> GWResult:
     """Spin-restricted evGW with contour deformation.
 
     Parameters are those of :func:`gradscf.gw.g0w0_cd_restricted` plus the
     iteration controls ``max_iter`` / ``tol`` / ``damping``.  Note the evGW
-    loop evaluates every orbital each iteration; restricting ``orbs``
-    freezes the remaining energies at their mean-field values.
+    loop evaluates the requested orbitals; restricting ``orbs`` freezes the
+    remaining energies at mean-field values. ``update_w=False`` implements
+    evGW0 with the original spectrum in W throughout the iterations. W is
+    currently rebuilt from that fixed spectrum, not cached between calls.
+    Correlation windows are passed through unchanged to the shared CD driver.
     """
-    return _evgw_loop(
+    if type(update_w) is not bool:
+        raise TypeError("update_w must be boolean")
+    result = _evgw_loop(
         g0w0_cd_restricted,
         mo_energy,
         mo_energy=mo_energy,
@@ -121,7 +130,13 @@ def evgw_cd_restricted(
         max_iter=int(max_iter),
         tol=float(tol),
         damping=float(damping),
+        screening_energy=None if update_w else mo_energy,
+        g_orbitals=g_orbitals,
+        screening_occupied=screening_occupied,
+        screening_virtual=screening_virtual,
     )
+
+    return replace(result, method="evgw" if update_w else "evgw0")
 
 
 def evgw_cd_unrestricted(

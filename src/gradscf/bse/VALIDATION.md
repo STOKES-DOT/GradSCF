@@ -451,3 +451,125 @@ These two sets are disjoint: 80 tests passed. They include isolated-root optical
 JVP/VJP, finite differences, shared nonsymmetric block transposes, failed-solve
 propagation, true per-column residuals and forward/reverse storage checks.
 The broader repository suite and GPU backends were not run.
+
+
+## Molecular MolGW comparison and controls (2026-09-30)
+
+This is an executed external molecular HF -> GW -> BSE comparison, distinct
+from the earlier synthetic QuAcK A/B oracle. MolGW 3.4 was built from unmodified
+tracked sources at `b831818d7a845c36f295d036dc8ceef59daf9991`. The comparison
+uses MolGW's analytic spectral self-energy and graphical QP roots against
+GradSCF's contour-deformation implementation. Source and executable hashes,
+complete inputs, external values, deviations and per-case times are recorded in
+[the committed JSON](../../../tests/bse/data/molgw_molecular.json).
+
+Seven cases use HF/STO-3G: H2 G0W0/evGW0/evGW; water G0W0 with all states,
+with its core excluded only from W, with that core excluded from both G/W,
+and with one virtual removed only from W using matched Weigend RI. Each case
+compares singlet TDA, singlet full BSE and triplet full BSE (21 optical runs).
+H2 is at 0.74 Angstrom. Water has O=(0,0,0), H=(0,+/-0.757,0.587) Angstrom.
+The optical space matches MolGW's screening window for this comparison; the
+GradSCF API also permits independent optical windows.
+
+Both codes use Cartesian orbitals, SCF tolerance 1e-12, and no implicit
+frozen-core rule. The first six cases use full ERIs; the RI case uses the same
+Weigend auxiliary basis. GradSCF uses nw=200 and eta=1e-5 Ha for GW; MolGW's
+self-energy grid has 40001 points at step 5e-5 Ha and the same eta. evGW/evGW0
+use 40 MolGW steps and a GradSCF residual target 1e-10 Ha. Optical eta is .01 Ha.
+MolGW's documented 27.21138505 eV/Ha is used to parse its output, separately
+from GradSCF's physical constants. All energies below are compared in Ha.
+
+| Maximum absolute difference, all applicable cases | Value |
+|---|---:|
+| HF total energy (Ha; MolGW YAML is rounded) | 2.97e-8 |
+| Computed QP energy (Ha) | 7.79e-9 |
+| Local QP weight Z (dimensionless; G0W0 cases) | 1.29e-5 |
+| BSE excitation energy (Ha) | 1.76e-8 |
+| Oscillator strength | 1.34e-8 |
+| Static polarizability tensor (a0^3) | 2.87e-8 |
+| Sampled average absorption cross section (a0^2) | 1.77e-6 |
+
+Measured case times sum to 37.07 s on macOS arm64 CPU, Python 3.12.2,
+JAX 0.8.1, float64. Times include GradSCF compilation/calculation, MolGW
+execution and I/O, not source compilation; they are not throughput benchmarks.
+The finite STO-3G orbital spaces are implementation checks, not spectroscopy
+accuracy claims. GPU, large molecules and unrestricted BSE were not benchmarked.
+
+### Numerical settings discovered during comparison
+
+- MolGW estimates graphical Z from adjacent self-energy grid points. At .001 Ha
+  spacing the water error was about 2.45e-4; decreasing spacing to 5e-5 Ha brought
+  it below the preselected 5e-5 tolerance. GradSCF uses the local AD derivative.
+  We refined the independent reference rather than loosening the tolerance.
+- MolGW's no-RI route also truncates its W product representation with its
+  virtual cutoff. Tests with that route did not reproduce the intended
+  independent W-transition-only model (observed QP differences up to .021 Ha).
+  The independent virtual-window reference therefore uses RI. That no-RI
+  cutoff case is not certified by these results or silently matched by
+  changing GradSCF's window semantics. The remaining no-RI cutoff discrepancy
+  was not resolved in this increment; independent virtual-window agreement
+  is established by the RI case.
+- MolGW discards Coulomb-metric modes below 1e-6. GradSCF's existing Cholesky
+  whitening only uses its eigenvalue cutoff when Cholesky fails. The tested
+  cc-pVDZ-RI metric had a 6.52e-7 mode, producing a 4.25e-5 Ha HF discrepancy.
+  Weigend's smallest mode is 1.30e-5, so neither code drops a mode and the
+  discrepancy vanishes. No integral-module behavior was changed here.
+
+### Reproduction and offline tests
+
+The standalone comparison requires a prebuilt executable and its exact source
+checkout; it checks the pinned revision and that tracked sources are unmodified.
+Each case directory must be empty to avoid stale RESTART/SCREENED_COULOMB files.
+It writes no reference values unless MolGW actually executes successfully.
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+python tests/comparisons/compare_molgw_gw_bse.py /path/to/molgw \
+  --source /path/to/molgw-source --workdir /tmp/fresh-molgw-cases \
+  --output /tmp/molgw-results.json
+
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+python -m pytest -q tests/bse/test_molgw_fixture.py
+```
+
+The offline fixture test reruns GradSCF for the seven recorded cases and checks
+external values, not the saved GradSCF predictions: **7 passed in 34.21 s**.
+It needs neither MolGW nor a Fortran compiler.
+
+For this macOS reference build, GNU Fortran 15.1, Accelerate LAPACK/BLAS,
+Homebrew LibXC and libcint were used. libcint was built at
+`3d36c4f4e24ca5aaf91be7299f93dd541db0f50b`, with `WITH_CINT2_INTERFACE=ON`
+and `WITH_FORTRAN=OFF`; PySCF's bundled library did not export MolGW's legacy
+CINT2 symbols. `FCFLAGS=-cpp -O1 -ffree-line-length-none -fallow-argument-mismatch`.
+Inherited Conda `LIBTOOL` and `LDFLAGS` were cleared in `my_machine.arch` to
+avoid conflicting Fortran runtimes. The temporary libcint directory was supplied
+through `DYLD_LIBRARY_PATH`. No numerical MolGW source was patched, and no
+system-wide library or GradSCF integral backend was modified.
+
+
+### Final affected-area verification
+
+On the same CPU/float64 environment, the molecular-control, optical-response,
+QP, evGW, G0W0 AD, BSE API/provenance/QuAcK, UGW and two complex Gamma/k-point
+compatibility checks gave **63 passed in 90.73 s**, with 10 complex-to-real AD
+warnings. Together with the disjoint seven-case offline MolGW fixture test,
+**70 tests passed**. Older run counts above overlap and must not be added.
+The new native `examples/bse/molecular_spectrum.py` was executed separately.
+
+```sh
+PYTHONPATH=src:tests/gw:tests/bse JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+python -m pytest -q --import-mode=importlib \
+  tests/gw/test_molecular_controls.py tests/bse/test_optical_spectrum.py \
+  tests/gw/test_gw_qp.py tests/gw/test_gw_evgw.py tests/gw/test_gw_differentiability.py \
+  tests/bse/test_api.py tests/bse/test_gw_reference.py tests/bse/test_quack_fixture.py \
+  tests/gw/test_gw_cd_ugw.py \
+  tests/gw/pbc/test_kpoint_invariants.py::test_gamma_matches_single_k_with_complex_orbitals \
+  tests/gw/pbc/test_kpoint_invariants.py::test_gamma_unrestricted_preserves_independent_spin_phases
+```
+
+Read-only review identified and resolved mutable-window signature aliasing and
+stale MolGW W-file reuse. Regression tests cover immutable BSE snapshots and
+in-place edits to a facade's assigned window list. A direct preflight check
+confirmed a directory containing only stale SCREENED_COULOMB is rejected
+before any reference execution. No SCF, integral or shared solver sources
+were changed in this feature increment.

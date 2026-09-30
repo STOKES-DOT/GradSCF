@@ -61,6 +61,16 @@ def _requested_orbitals(orbs, nmo):
     return tuple(map(int, indices))
 
 
+def _window_indices(indices, allowed, name):
+    """Static original-MO indices; an empty correlation window is allowed."""
+    allowed = tuple(allowed)
+    selected = allowed if indices is None else tuple(indices)
+    if any(not isinstance(i, Integral) or isinstance(i, bool) or i not in allowed
+           for i in selected) or len(set(selected)) != len(selected):
+        raise ValueError(f"{name} must contain distinct indices in {allowed}")
+    return tuple(map(int, selected))
+
+
 def _mo_factors(df_factors: Array, mo_coeff: Array) -> Array:
     """Transform low-rank factors to the MO basis: B_Q[m,n] (naux,nmo,nmo)."""
     return jnp.einsum(
@@ -100,7 +110,9 @@ def _qp_loop(
     e_mf: Array | None = None,
     linearized: bool = False,
     evaluate_only: bool = False,
-) -> tuple[Array, Array, Array, Array, Array]:
+    g_orbitals=None,
+    return_weight=False,
+) -> tuple[Array, ...]:
     """Solve the QP equation for every orbital in ``orbs`` (one spin channel).
 
     All orbitals are solved simultaneously in one vectorized secant loop
@@ -136,6 +148,11 @@ def _qp_loop(
     if del00 is not None:
         stacked["del_w"] = del00[None, :] + delP0[jnp.asarray(orbs)]  # (norb, nw)
         stacked["p_index"] = jnp.asarray(orbs)
+    if g_orbitals is not None:
+        gi = jnp.asarray(g_orbitals, dtype=jnp.int32)
+        shared["mo_energy"] = mo_energy[gi]
+        for key in ("wmn_p", "b_pm", "b_mp"):
+            stacked[key] = stacked[key][..., gi]
     occupied = jnp.asarray([p < nocc for p in orbs])
     omega0 = mo_energy[jnp.asarray(orbs)]
     e_base = e_mf[jnp.asarray(orbs)]
@@ -178,7 +195,14 @@ def _qp_loop(
     sigma_qp = sigma_qp.at[jnp.asarray(orbs)].set(sig_roots)
     converged_mask = converged_mask.at[jnp.asarray(orbs)].set(done)
     qp_residual = jnp.zeros_like(qp_energy).at[jnp.asarray(orbs)].set(residual)
-    return qp_energy, sigma_qp, converged_mask, jnp.all(done), qp_residual
+    result = (qp_energy, sigma_qp, converged_mask, jnp.all(done), qp_residual)
+    if not return_weight:
+        return result
+    slope = _df_dw_batch(roots, e_base, dv, shared, stacked)
+    valid_slope = jnp.isfinite(slope) & (jnp.abs(slope) > 1e-10)
+    weights = jnp.full_like(qp_energy, jnp.nan).at[jnp.asarray(orbs)].set(
+        jnp.where(valid_slope, 1 / slope, jnp.nan))
+    return (*result, weights)
 
 
 def g0w0_cd_restricted(
@@ -197,6 +221,10 @@ def g0w0_cd_restricted(
     mo_energy_poles: Array | None = None,
     linearized: bool = False,
     evaluate_only: bool = False,
+    screening_energy: Array | None = None,
+    g_orbitals: Sequence[int] | None = None,
+    screening_occupied: Sequence[int] | None = None,
+    screening_virtual: Sequence[int] | None = None,
 ) -> GWResult:
     """Spin-restricted G0W0 with contour deformation.
 
@@ -225,6 +253,14 @@ def g0w0_cd_restricted(
     diff_mode:
         ``"implicit"`` or ``"unrolled"``; see
         :func:`gradscf.gw.qp.solve_qp_orbital`.
+    screening_energy:
+        Independent spectrum in W. Defaults to the G pole spectrum; fixing it
+        to mean-field energies implements W0 during evGW0 iterations.
+    g_orbitals, screening_occupied, screening_virtual:
+        Independent static windows in original MO numbering, defaulting to all
+        valid orbitals. They restrict correlation sums, never mean-field J/K.
+        Empty windows give zero correlation self-energy. The target ``orbs``
+        window is independent. The full bare MO factors remain resident.
     linearized:
         Take one Newton update about the pole energies, with G/W fixed.
         The frequency derivative holds the active residue set fixed; this
@@ -245,7 +281,13 @@ def g0w0_cd_restricted(
     orbs = _requested_orbitals(orbs,nmo)
 
     b_mn = _mo_factors(df_factors, mo_coeff)
-    b_ov = b_mn[:, :nocc, nocc:]
+    if not 0 < nocc < nmo:
+        raise ValueError("Restricted GW requires occupied and virtual orbitals")
+    gi = _window_indices(g_orbitals, range(nmo), "g_orbitals")
+    oi = _window_indices(screening_occupied, range(nocc), "screening_occupied")
+    va = _window_indices(screening_virtual, range(nocc, nmo), "screening_virtual")
+    oi_array, va_array = jnp.asarray(oi, dtype=jnp.int32), jnp.asarray(va, dtype=jnp.int32)
+    b_ov = b_mn[:, oi_array[:, None], va_array[None, :]]
 
     j_mat = build_j_from_df(df_factors, jnp.asarray(density_matrix))
     v_mf = jnp.asarray(fock_matrix) - jnp.asarray(hcore_matrix) - j_mat
@@ -258,18 +300,22 @@ def g0w0_cd_restricted(
         if mo_energy_poles is None
         else jnp.asarray(mo_energy_poles, dtype=jnp.float64)
     )
+    screen = poles if screening_energy is None else jnp.asarray(screening_energy, dtype=poles.dtype)
+    if poles.shape != mo_energy.shape or screen.shape != mo_energy.shape:
+        raise ValueError("G/W energy spectra must have shape (nmo,)")
+    screen_pairs = (screen[oi_array], screen[va_array])
     ef = 0.5 * (poles[nocc - 1] + poles[nocc])
     freqs, wts = scaled_legendre_grid(nw)
 
     def response_fn(omega):
-        return rho_response_iw(omega, poles, b_ov, spin_factor=4.0)
+        return rho_response_iw(omega, screen_pairs, b_ov, spin_factor=4.0)
 
     wmn = screened_w_imag_axis(b_mn, response_fn, freqs)
 
-    qp_energy, sigma_qp, converged_mask, converged, residual = _qp_loop(
+    qp_energy, sigma_qp, converged_mask, converged, residual, weight = _qp_loop(
         mo_energy=poles,
         b_mn=b_mn,
-        channels=((poles, b_ov, 2.0),),
+        channels=((screen_pairs, b_ov, 2.0),),
         wmn=wmn,
         freqs=freqs,
         wts=wts,
@@ -282,6 +328,8 @@ def g0w0_cd_restricted(
         e_mf=mo_energy,
         linearized=linearized,
         evaluate_only=evaluate_only,
+        g_orbitals=gi,
+        return_weight=True,
     )
     return GWResult(
         mo_energy=qp_energy,
@@ -292,7 +340,12 @@ def g0w0_cd_restricted(
         nw=int(nw),
         qp_residual=residual,
         qp_computed_mask=jnp.zeros_like(qp_energy,dtype=bool).at[jnp.asarray(orbs)].set(not evaluate_only),
-        screening_energy=poles,
+        screening_energy=screen,
+        qp_weight=weight,
+        g_orbitals=gi,
+        screening_occupied=oi,
+        screening_virtual=va,
+        method="g0w0",
     )
 
 

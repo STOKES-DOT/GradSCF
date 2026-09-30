@@ -44,7 +44,7 @@ one common orthonormal orbital frame; they are not verified by running GW.
 all occupied/virtual orbitals. Omitting core transitions from the optical
 window does not automatically remove their screening contributions.
 
-GW-backed input uses G0W0's original MF spectrum for W0. No QP re-screening is
+For G0W0 and evGW0, GW-backed input uses the original MF spectrum for W0. No QP re-screening is
 silently introduced. QP energies of every selected level must be covered by
 both `qp_computed_mask` and `converged_mask`; the legacy GW result marks
 unrequested MF-filled levels converged, so that flag alone is insufficient.
@@ -54,7 +54,7 @@ restricted/unrestricted CD drivers. A restricted result can be converted with
 This preserves QP coverage/convergence masks and the recorded screening spectrum;
 missing metadata is rejected. For converged evGW, that spectrum equals the final
 QP spectrum, including any frozen unrequested MF levels. Factors and dipoles
-must be in the returned orbital frame. This supports fixed-frame evGW output as
+must be in the returned orbital frame. The GW facade now accepts `method="g0w0"`, `"evgw"`, or `"evgw0"`. This supports fixed-frame evGW output as
 BSE input; it does not differentiate the evGW outer fixed point. qsGW/scGW
 results without this provenance still require a separately justified explicit
 reference and are not automatically adapted.
@@ -219,3 +219,41 @@ storage remain future work.
 Run [water_tda.py](../../../examples/bse/water_tda.py) or
 [water_full.py](../../../examples/bse/water_full.py) for native examples.
 Executed checks and limitations are in [VALIDATION.md](VALIDATION.md).
+
+
+## Frequency-dependent optical properties
+
+After a successful calculation with dipoles:
+
+```python
+alpha = response.polarizability(omega, eta=.01)  # a0^3, (...,3,3)
+sigma = response.absorption_cross_section(omega, eta=.01, unit='Mb')
+sigma_z = response.absorption_cross_section(
+    omega, eta=.01, polarization=(0., 0., 1.), unit='Mb')
+alpha_static = response.polarizability()  # omega=eta=0
+```
+
+`omega` is a real scalar or 1D array in Hartree; `eta` is a Lorentzian
+half-width in Hartree. Polarizability includes both signs of the poles:
+
+```text
+alpha_ab(w) = sum_s mu_sa mu_sb [1/(Omega_s-w-i eta) + 1/(Omega_s+w+i eta)]
+sigma(w) = (4 pi w/c) Im Tr(alpha(w))/3
+```
+
+A polarization selects a normalized real direction instead of the average.
+Cross sections use a0^2 by default (`unit='au'`); `Mb` denotes 1e-18 cm^2.
+The low-level functions with the same names accept `(result,dipole_mo,space,omega)`
+and retain the validated isolated-root JVP/VJP contract. Only computed roots
+contribute: a truncated spectrum is not a complete polarizability or a TRK
+sum-rule certificate. Triplet electric-dipole strengths remain zero without SOC.
+
+Default screening windows are inherited from the GW snapshot; an explicitly
+supplied BSE screening window intentionally selects a different screening model.
+Optical windows never implicitly remove screening transitions. Mutable input
+lists are copied into immutable reference-window tuples.
+
+See [the native spectrum example](../../../examples/bse/molecular_spectrum.py),
+[GW controls](../gw/README.md), and the MolGW numerical comparison in
+[VALIDATION.md](VALIDATION.md). MolGW uses the same resonant/antiresonant optical
+construction in [m_spectra.f90](https://github.com/molgw/molgw/blob/b831818d7a845c36f295d036dc8ceef59daf9991/src/m_spectra.f90).
