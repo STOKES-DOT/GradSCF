@@ -11,7 +11,7 @@ from .gmres import gmres_solve
 
 def checked_linear_solve(matvec, rhs, *, config, converged=True,
                          preconditioner=None, transpose_preconditioner=None):
-    """Internal scalar-vector kernel; validity is checked inside the opaque solve.
+    """Internal vector/block kernel; validity is checked inside the opaque solve.
 
     Placing a nonlinear residual predicate in a linear tangent map would break
     transposition. Both primal and transposed numerical solves are checked here.
@@ -47,13 +47,33 @@ def checked_linear_solve(matvec, rhs, *, config, converged=True,
             return jnp.where(valid, result, jnp.full_like(result, jnp.nan)), (norm, valid)
         return solve
 
+    if rhs.ndim == 2:
+        # Keep the column loop INSIDE the opaque linear solve. Mapping public
+        # solves outside it breaks linear_transpose of the block action.
+        transpose = jax.linear_transpose(matvec, jnp.zeros(rhs.shape[0], rhs.dtype))
+
+        def block_factory(vector_operator, precond):
+            def solve(operator, value):
+                solution, (norms, valid) = jax.lax.map(
+                    lambda column: factory(precond)(vector_operator, column), value.T
+                )
+                return solution.T, (jnp.linalg.norm(norms), jnp.all(valid))
+            return solve
+
+        return jax.lax.custom_linear_solve(
+            lambda x: jax.vmap(matvec, in_axes=1, out_axes=1)(x), rhs,
+            solve=block_factory(matvec, preconditioner),
+            transpose_solve=block_factory(lambda x: transpose(x)[0], transpose_preconditioner),
+            has_aux=True,
+        )
+
     return jax.lax.custom_linear_solve(matvec, rhs, solve=factory(preconditioner),
         transpose_solve=factory(transpose_preconditioner), has_aux=True)
 
 
 def solve_linear(matrix_or_operator, rhs, *, config=None, preconditioner=None,
                  transpose_preconditioner=None):
-    """Solve a real square system; direct solves also accept a (n,nrhs) block.
+    """Solve a real square system for a vector or (n,nrhs) block.
 
     maxiter counts GMRES restart cycles. True residuals certify convergence;
     the upstream GMRES info flag is never treated as a convergence certificate.
@@ -63,8 +83,8 @@ def solve_linear(matrix_or_operator, rhs, *, config=None, preconditioner=None,
     validate_real_square(op)
     rhs = jnp.asarray(rhs)
     if not (rhs.shape == (op.shape[0],) or
-            (config.method == "direct" and rhs.ndim == 2 and rhs.shape[0] == op.shape[0])):
-        raise ValueError("rhs shape must be (n,), or (n,nrhs) for a direct solve")
+            (rhs.ndim == 2 and rhs.shape[0] == op.shape[0])):
+        raise ValueError("rhs shape must be (n,) or (n,nrhs)")
     if not jnp.issubdtype(rhs.dtype, jnp.floating):
         raise ValueError("rhs must have real floating-point dtype")
     rhs = rhs.astype(jnp.result_type(rhs.dtype, op.dtype))

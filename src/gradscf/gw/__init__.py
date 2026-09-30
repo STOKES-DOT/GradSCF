@@ -46,7 +46,7 @@ from .qp import (
 from .qsgw import qsgw_cd_restricted
 from .rgw import GW
 from .scgw import SCGWResult, scgw_cd_restricted, scgw_matsubara_restricted
-from .screened import screened_w_imag_axis, StaticScreening, build_static_screening, apply_static_screening
+from .screened import screened_w_imag_axis, StaticScreening, build_static_screening, apply_static_screening, solve_static_screening
 from .self_energy import (
     sigma_cd,
 )
@@ -72,6 +72,7 @@ __all__ = [
     'StaticScreening',
     'build_static_screening',
     'apply_static_screening',
+    'solve_static_screening',
     'sigma_cd',
     'solve_qp_orbital',
 ]

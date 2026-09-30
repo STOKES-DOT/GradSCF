@@ -57,7 +57,8 @@ def run_bse(
     if (screen.nmo, screen.nocc) != (space.nmo, space.nocc):
         raise ValueError("Screening and excitation spaces must share a reference")
     state = build_static_screening(
-        e, l, occupied=screen.occupied, virtual=screen.virtual, max_aux=cfg.max_aux
+        e, l, occupied=screen.occupied, virtual=screen.virtual, max_aux=cfg.max_aux,
+        config=cfg.screening_config
     )
     selected = jnp.asarray(space.occupied + space.virtual)
     valid = state.valid & jnp.all(jnp.isfinite(qp[selected]))

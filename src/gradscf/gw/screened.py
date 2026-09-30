@@ -25,22 +25,47 @@ import jax
 import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
-from typing import NamedTuple
+from dataclasses import dataclass
 from math import isfinite
 from numbers import Integral
-from ..solvers import LinearSolverConfig, solve_linear
+from ..solvers import LinearOperator, LinearSolverConfig, solve_linear
+from ..scf._pytree import pytree_dataclass
 from ..solvers.diagnostics import require_converged_derivative
 
 
-class StaticScreening(NamedTuple):
-    """Full auxiliary dielectric, not the self-energy's contracted W-v."""
-    dielectric: Array
+@pytree_dataclass(static_fields=("config",))
+@dataclass(frozen=True)
+class StaticScreening:
+    """Full static W metric, stored densely or through transition factors."""
+    dielectric: object
     valid: Array
     min_gap: Array
+    transition_factors: object = None
+    inverse_gaps: object = None
+    config: object = None
+
+    @property
+    def naux(self):
+        data = self.dielectric if self.dielectric is not None else self.transition_factors
+        return data.shape[0]
+
+    def operator(self):
+        if self.dielectric is not None:
+            from ..solvers.operators import as_operator
+            return as_operator(self.dielectric)
+        l, inverse_gaps = self.transition_factors, self.inverse_gaps
+
+        def apply(v):
+            return v + 4 * (l @ (inverse_gaps * (l.T @ v)))
+
+        diagonal = 1 + 4 * jnp.sum(l**2 * inverse_gaps, axis=1)
+        return LinearOperator((self.naux, self.naux), l.dtype, apply,
+                              diagonal=diagonal, transpose_matvec=apply)
 
 
 def build_static_screening(
-    mo_energy, mo_factors, *, occupied, virtual, gap_tol=1e-10, max_aux=1024
+    mo_energy, mo_factors, *, occupied, virtual, gap_tol=1e-10, max_aux=1024,
+    config=None
 ):
     """Closed-shell static RPA epsilon=I-Pi(0) for metric-whitened real factors.
 
@@ -48,6 +73,8 @@ def build_static_screening(
     screening transitions give epsilon=I (bare interaction). Real symmetric
     MO factors and positive screening gaps are required. Invalid numerical
     inputs retain diagnostics with valid=False; there is no gap clipping model.
+    A GMRES LinearSolverConfig stores only transition factors and gaps, never
+    the dense dielectric. Direct screening is the default bounded reference.
     """
     e, l = jnp.asarray(mo_energy), jnp.asarray(mo_factors)
     if e.ndim != 1 or l.ndim != 3 or l.shape[1:] != (e.size, e.size):
@@ -61,8 +88,14 @@ def build_static_screening(
         or max_aux < 1
     ):
         raise ValueError("Invalid static screening tolerance or auxiliary limit")
+    if config is not None and not isinstance(config, LinearSolverConfig):
+        raise TypeError("screening config must be a LinearSolverConfig")
+    cfg = config or LinearSolverConfig(method="direct", rtol=1e-11, atol=1e-13,
+                                       max_dense=max_aux)
     if l.shape[0] > max_aux:
         raise ValueError("Static screening exceeds max_aux")
+    if cfg.method == "direct" and l.shape[0] > cfg.max_dense:
+        raise ValueError("Static screening direct solve exceeds max_dense")
     occ, vir = tuple(occupied), tuple(virtual)
     if any(
         not isinstance(p, Integral) or not 0 <= p < e.size for p in occ + vir
@@ -85,36 +118,51 @@ def build_static_screening(
     )
     lov = l[:, oi[:, None], va[None, :]]
     safe_gaps = jnp.where(gaps > gap_tol, gaps, 1.0)
+    if cfg.method == "gmres":
+        return StaticScreening(None, valid, minimum,
+                               lov.reshape(l.shape[0], len(occ) * len(vir)),
+                               (1 / safe_gaps).reshape(-1), cfg)
     dielectric = jnp.eye(l.shape[0], dtype=dtype) + 4 * jnp.einsum(
         "Pia,Qia,ia->PQ", lov, lov, 1 / safe_gaps
     )
-    return StaticScreening(dielectric, valid, minimum)
+    return StaticScreening(dielectric, valid, minimum, config=cfg)
 
 
-def apply_static_screening(state, values):
-    """Apply the full screened auxiliary metric epsilon^-1 to one/block RHS.
+def solve_static_screening(state, values):
+    """Return the checked full-W solve and residual diagnostics.
 
-    Shared direct linear solves factor the matrix for a block of right sides;
-    they own primal, transpose and implicit response checks. No inverse is built.
+    Direct mode factors a dense metric for each RHS block; GMRES processes
+    columns sequentially with the shared implicit primal/transpose rules.
+    The solution alone remains a linear action in RHS for kernel transposes.
+    Input validity and true solve residuals are included in converged/status.
     """
     values = jnp.asarray(values)
-    naux = state.dielectric.shape[0]
+    naux = state.naux
     if values.ndim < 1 or values.shape[0] != naux:
         raise ValueError("Screening RHS must have leading dimension naux")
     columns = 1
     for n in values.shape[1:]:
         columns *= n
     rhs = values.reshape(naux, columns)
-    out = solve_linear(
-        state.dielectric,
-        rhs,
-        config=LinearSolverConfig(
-            method="direct", rtol=1e-11, atol=1e-13, max_dense=max(1, naux)
-        ),
+    cfg = state.config or LinearSolverConfig(
+        method="direct", rtol=1e-11, atol=1e-13, max_dense=max(1, naux)
     )
+    op = state.operator()
+    # Use the physical residual metric. Left diagonal preconditioning can
+    # satisfy JAX's stopping test before the unpreconditioned residual passes.
+    out = solve_linear(op, rhs, config=cfg)
+    valid = state.valid & out.converged
+    solution = require_converged_derivative(out.solution, state.valid)
+    solution = jnp.where(state.valid, solution, jnp.nan).reshape(values.shape)
+    return out._replace(solution=solution, converged=valid, status=jnp.where(valid, 0, 1))
+
+
+def apply_static_screening(state, values):
+    """Apply epsilon^-1 with physical input and primal/AD validity guards."""
+    out = solve_static_screening(state, values)
     valid = state.valid & out.converged
     result = require_converged_derivative(out.solution, valid)
-    return jnp.where(valid, result, jnp.nan).reshape(values.shape)
+    return jnp.where(valid, result, jnp.nan)
 
 
 def screened_w_imag_axis(
@@ -163,7 +211,8 @@ def screened_w_imag_axis(
 
 
 __all__ = ["screened_w_imag_axis", "screened_w_imag_axis_matrix",
-           "StaticScreening", "build_static_screening", "apply_static_screening"]
+           "StaticScreening", "build_static_screening", "apply_static_screening",
+           "solve_static_screening"]
 
 
 def screened_w_imag_axis_matrix(

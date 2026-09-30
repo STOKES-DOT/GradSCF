@@ -3,12 +3,14 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 
-def test_direct_block_solve_response_and_failure():
+@pytest.mark.parametrize("method", ["direct", "gmres"])
+def test_block_solve_response_and_failure(method):
     from gradscf.solvers import solve_linear, LinearSolverConfig
 
-    cfg = LinearSolverConfig(method="direct", rtol=1e-12)
+    cfg = LinearSolverConfig(method=method, rtol=1e-12)
     rhs = jnp.arange(6, dtype=float).reshape(2, 3) * 0.1
 
     def value(x):
@@ -23,5 +25,10 @@ def test_direct_block_solve_response_and_failure():
     np.testing.assert_allclose(
         jax.jit(jax.grad(value))(0.0), (value(1e-5) - value(-1e-5)) / 2e-5, atol=1e-10
     )
+    matrix = jnp.array([[2.0, 0.3], [0.1, 1.4]])
+    action = lambda b: solve_linear(matrix, b, config=cfg).solution
+    transposed = jax.linear_transpose(action, rhs)(jnp.ones_like(rhs))[0]
+    np.testing.assert_allclose(transposed, np.linalg.solve(matrix.T, np.ones_like(rhs)),
+                               atol=1e-12)
     bad = solve_linear(jnp.zeros((2, 2)), rhs, config=cfg)
     assert not bad.converged and np.isnan(bad.solution).all()

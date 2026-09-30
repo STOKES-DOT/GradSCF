@@ -158,11 +158,42 @@ rule across GW residue/pole crossings.
 
 ## Storage and solver boundaries
 
-The default Davidson path does not form the transition-space A matrix or a
-four-index W tensor. Screened virtual-pair factors are prepared in slabs and
-the direct-kernel action is accumulated in auxiliary blocks. Static blocks are
-used so the action supports the linear transpose needed by the common adjoint.
-There is still a dense auxiliary dielectric and stored full MO/screened factors.
+The default Davidson path does not form the transition-space A/B matrices or
+four-index W. A/B actions screen contracted trial vectors in orbital blocks;
+for wider trial blocks they instead screen a bare factor slab and contract it
+in auxiliary blocks. Neither path caches full screened virtual-pair or
+occupied-virtual factors. Reverse mode rematerializes these block intermediates.
+The bare MO factor input remains resident.
+
+Static screening defaults to the bounded dense/direct solve. Select a
+matrix-free auxiliary dielectric explicitly with the shared linear config:
+
+```python
+from gradscf.solvers import LinearSolverConfig
+
+response = bse.BSE(
+    mygw, tda=False, nroots=3,
+    screening_config=LinearSolverConfig(
+        method="gmres", rtol=1e-11, atol=1e-13, restart=20, maxiter=100,
+    ),
+).run()
+```
+
+This applies `epsilon v = v + 4 L_ov ((L_ov.T v)/gaps)` without an
+`naux x naux` array. GMRES uses the unpreconditioned physical residual metric. Multiple RHS columns are solved
+sequentially inside the shared implicit solve, bounding Krylov storage by the
+restart size rather than the number of RHS. True primal/transpose residuals
+are checked; failed screening does not trigger a dense fallback. The screening
+config is independent of the dense/Davidson excitation-solver choice. Its
+`maxiter` counts restart cycles. `gw.solve_static_screening` exposes the
+screening solution, residual norm and convergence/status for explicit callers;
+`screening_valid` in BSEResult continues to describe input validity.
+
+The direct method and all existing auxiliary/factor capacity limits remain
+available. GMRES saves dielectric storage but introduces repeated inner solves;
+its runtime and convergence depend on the screening spectrum and RHS. Neither
+this path nor orbital blocking removes the full bare MO factor input or the
+cost of the preceding GW calculation.
 
 Defaults: `max_aux=1024`, `max_factor_elements=20_000_000`, `max_space=40`,
 `block_size=16`. The first two are checked before the GW facade transforms AO
@@ -180,11 +211,10 @@ correction slots (unless it already spans the full transition dimension).
 Increase `max_space` or `max_cycle` if a requested or guard root fails; there
 is no hidden dense fallback or automatic relaxation of tolerances. Davidson requires
 space for the requested roots plus its guard root and uses deterministic
-full-support guesses (seed 0 by default). Shared direct linear solves now accept
-multiple RHS columns, allowing one factorization per screening slab with checked
-implicit and transposed solves. Large-auxiliary matrix-free screening, true RI
-versus spectral-ERI-factor benchmarks, GPU scaling and out-of-core operation
-remain future work.
+full-support guesses (seed 0 by default). Shared direct solves factor once per RHS block; shared GMRES solves RHS columns
+sequentially, with checked implicit and transposed solves in both modes. True RI
+versus spectral-ERI-factor benchmarks, GPU scaling and out-of-core bare factor
+storage remain future work.
 
 Run [water_tda.py](../../../examples/bse/water_tda.py) or
 [water_full.py](../../../examples/bse/water_full.py) for native examples.

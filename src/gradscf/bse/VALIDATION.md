@@ -313,3 +313,141 @@ in the broader run. The complete repository suite and GPU backends were not run.
 The synthetic run metadata is retained in
 `tests/bse/data/matrix_free_rpa_300_cpu.json`; it is a measurement record, not
 an external physical reference fixture.
+
+
+## Screening and kernel memory update (2026-09-24)
+
+A/B actions now screen contracted trial vectors or bounded factor slabs instead
+of retaining full screened pair factors. The optional GMRES screening mode uses
+an auxiliary operator and shared sequential multiple-RHS implicit solves. Direct
+screening remains the default. Existing bare MO factors remain resident.
+
+New checks cover independent A/B actions and diagonals, vector and block linear
+transposes, TDA/full-BSE optical JVP/VJP through dense and Davidson roots, empty
+screening/auxiliary spaces, explicit GMRES failure and invalid optical access,
+and recursive forward/reverse JAXPR storage inspection. Narrow and wide trial
+blocks must have no auxiliary-square matrix or full screened virtual-pair array.
+
+A 384-auxiliary regression exposed a stopping-metric issue with left diagonal
+preconditioning: a B-kernel RHS had a true residual 1.052 times the configured
+limit. Without that optional preconditioner its ratio is 0.787. Screening now
+uses unpreconditioned GMRES, retains the original strict physical-residual check,
+and rejects failed columns. The shared scalar solver was not modified to relax
+its convergence criteria.
+
+### Synthetic action and gradient measurements
+
+Command:
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python tests/comparisons/compare_bse_screening_memory.py
+```
+
+macOS 26.6.2 arm64 CPU, Python 3.12.2, JAX 0.8.1, float64, seed 701,
+6 occupied orbitals, orbital block size 8. Factors are symmetric normal random
+arrays with scale .03. The objective is `||(A+B)x||^2` for a fixed random probe;
+the differentiated input is the full symmetric MO factor tensor. This is a
+synthetic kernel/screening measurement, not SCF/GW or a molecular spectrum.
+
+Baseline is release commit `13610c4`, using the same measurement function.
+Each row runs in a fresh process. XLA temporary storage is from
+`compiled.memory_analysis()`; peak RSS includes Python, compilation and runtime.
+All MB below are decimal. Unrelated host CPU activity was present, so timings
+are indicative rather than a controlled throughput benchmark.
+
+| naux / nvir | Implementation | XLA temporary MB | Peak RSS MB | Steady value+grad seconds |
+| --- | --- | ---: | ---: | ---: |
+| 192 / 40 | baseline direct | 83.759 | 596.984 | 0.01427 |
+| 192 / 40 | streamed direct | 12.689 | 377.635 | 0.00399 |
+| 192 / 40 | streamed GMRES | 13.213 | 679.903 | 0.26838 |
+| 384 / 64 | baseline direct | 734.992 | 1242.169 | 0.17096 |
+| 384 / 64 | streamed direct | 59.139 | 588.349 | 0.04042 |
+| 384 / 64 | streamed GMRES | 67.706 | 1008.976 | 1.58818 |
+
+The larger streamed direct case reduces compiled temporary storage by 92.0%
+and measured process peak RSS by 52.6%. Its objective equals the baseline at
+printed precision; the maximum componentwise factor-gradient error is
+8.53e-14. For GMRES, the larger objective error is 1.40e-10, maximum gradient
+component error 3.60e-10, and relative gradient L2 error 8.80e-13. The objective
+and its factor-scale directional derivative carry squared-Hartree units; they
+are not excitation-energy error estimates.
+
+GMRES removes the auxiliary-square array, but is slower and has higher total
+RSS than streamed direct in both measured cases. It stays opt-in. These data do
+not establish GPU performance, out-of-core scaling, or a reduction in the
+memory of the preceding GW calculation. Raw settings, measurements and exact
+baseline commands are in `tests/bse/data/screening_memory_cpu.json`.
+
+### Native integration
+
+The extended `examples/bse/water_full.py` runs one native RHF/STO-3G G0W0
+calculation (`nw=100`) followed by TDA and full BSE, including Davidson with
+GMRES screening. Geometry, SCF and BSE tolerances match the prior water example.
+QP levels converge. Direct and GMRES screening print identical full-BSE roots
+to 8 decimal eV places for singlets and triplets; singlet strengths are
+`[0.00311599129, ~4e-29, 0.0681077152]` and triplet strengths are zero.
+The largest GMRES-screened physical root residual is 9.71e-16 Hartree.
+Iterative stability screening still reports `stability_certified=False`.
+
+### Regression result
+
+After the stopping-metric correction and final source changes:
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+  /opt/anaconda3/bin/python -m pytest -q tests/bse \
+  tests/solvers/test_block_linear.py tests/solvers/test_shared.py --tb=short
+```
+
+**77 passed**, no skips, one existing GW complex-to-real reverse-pass warning,
+353.69 seconds. After extending storage inspection to both narrow and wide
+trial blocks, the focused command
+`python -m pytest -q tests/bse/test_screening_memory.py -k auxiliary_and_screened_pair_storage`
+with the same environment gave **2 passed, 11 deselected**, 11.95 seconds.
+These counts overlap. Independent read-only code review found no blocking
+issues in the contractions, transposes, failure propagation or memory claims.
+The full repository suite and GPU execution were not run.
+
+
+## Scoped release integration (2026-09-30)
+
+The GW/BSE changes from `32b279e` were ported onto release base `ff1a07e`.
+The only change outside GW/BSE source, examples and dedicated tests is the
+required multiple-RHS extension in `solvers/linear/implicit.py`, together with
+its existing block-solve regression. Current scalar GMRES precision handling
+and the simplified public namespaces are preserved. No SCF, DFT, CI, CC,
+training, OFDFT or periodic-method source files are changed.
+
+The 2026-09-24 performance table above is historical; its timing and memory
+measurements were not repeated for this integration. Default screening stays
+dense/direct; GMRES is explicitly selected. Full bare MO factors remain resident.
+
+The native water example was rerun with CPU float64, JAX 0.8.1, the same
+RHF/STO-3G geometry and `nw=100`. Dense/direct, Davidson/direct and
+Davidson/GMRES full-BSE energies agree at the printed 8 decimal eV places:
+singlets `[12.75085069, 14.99788371, 16.56916724]` and triplets
+`[10.66783729, 13.25957339, 13.67628826]`. The largest GMRES-screened
+root residual is `9.71e-16 Ha`; iterative stability remains uncertified.
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python examples/bse/water_full.py
+```
+
+Fresh integration checks (CPU float64, Python 3.12.2, JAX 0.8.1):
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python -m pytest -q \
+  tests/solvers/test_block_linear.py tests/bse/test_screening_memory.py
+# 15 passed, 375.53 seconds
+
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python -m pytest -q \
+  tests/bse --ignore=tests/bse/test_screening_memory.py \
+  tests/solvers/test_shared.py tests/solvers/test_gmres_accuracy.py
+# 65 passed, 148.49 seconds; one existing GW complex-to-real AD warning
+```
+
+These two sets are disjoint: 80 tests passed. They include isolated-root optical
+JVP/VJP, finite differences, shared nonsymmetric block transposes, failed-solve
+propagation, true per-column residuals and forward/reverse storage checks.
+The broader repository suite and GPU backends were not run.
