@@ -8,14 +8,14 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
-from gradscf import gto, dft, cc
+from gradscf import gto, scf, cc
 from gradscf.cc.integrals import prepare_integrals
 
 
 def main():
     atom = "H 0 0 0; H 0 0 .8; H 0 0 1.9; H 0 0 3.1"
-    mf = dft.RKS(
-        gto.M(atom=atom, basis="sto-3g", unit="Angstrom"), xc="hf", conv_tol=1e-12
+    mf = scf.RHF(
+        gto.M(atom=atom, basis="sto-3g", unit="Angstrom"), conv_tol=1e-12
     ).run()
     report = {
         "atom": atom,

@@ -36,10 +36,10 @@ Quadratic CI is a separate nonlinear approximation: restricted `QCISD` and
 nonlinear amplitude solver. They are not aliases of variational `CISD` or `CCSD`.
 
 ```python
-from gradscf import gto, dft, ci
+from gradscf import gto, scf, ci
 
 mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
-mf = dft.RKS(mol, xc="hf").run()
+mf = scf.RHF(mol).run()
 myci = ci.CISD(mf).run()  # equivalently mf.CISD().run()
 print(myci.e_tot, myci.e_corr, myci.converged)
 
@@ -97,7 +97,7 @@ For explicit inputs to a facade use
 `CIReference(h1_mo, eri_mo, nocc, nuclear_repulsion=..., mo_energy=...)`.
 For AO inputs, `integrals.mo.transform_integrals` supports full ERIs, an s4
 AO-pair matrix, or density-fitting factors with shape `(naux, nao, nao)`.
-The SCF facade adapter is eager and accepts converged GradSCF `RKS(xc="hf")`,
+The SCF facade adapter is eager and accepts converged GradSCF `scf.RHF` (or `RKS(xc="hf")`),
 `UHF` and `ROHF`; the latter two use `UnrestrictedReference` and `make_uci_space`.
 use functional kernels inside `jax.jit`, `jax.grad`, and `jax.jvp`.
 

@@ -2,6 +2,12 @@
 
 ## Unreleased — GradSCF
 
+### Restricted Hartree-Fock entry point
+
+- Add `scf.RHF(mol).run()` with fixed HF settings, sharing the existing RKS
+  solver, integral backends and reference pipeline. Keep `RKS(xc="hf")` valid.
+- Use the RHF entry in tracked HF examples and public documentation.
+
 ### Public API ownership
 
 - Keep domain namespaces at the root; migrate 144 flat exports to their owners.

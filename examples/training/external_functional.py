@@ -14,7 +14,7 @@ from flax import linen as nn
 
 jax.config.update('jax_enable_x64', True)
 
-from gradscf import gto, dft, training
+from gradscf import gto, scf, dft, training
 
 
 # Both the feature schema and the architecture belong to this example.
@@ -43,7 +43,7 @@ def energy(params, inputs):
 functional = dft.Functional(make_inputs, energy,
     init_fn=lambda key, x: model.init(key, x['x']))
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-mf = dft.RKS(mol, xc='hf', grids_level=0, integral_backend='native').run()
+mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
 reference = mf.to_reference()
 params = functional.init_from_molecule(jax.random.PRNGKey(0), reference)
 teacher = jax.tree.map(lambda x: x+.03, params)

@@ -22,10 +22,10 @@ No PySCF runtime calls are made by the CC kernels.
 ## Public facade
 
 ```python
-from gradscf import gto, dft, cc
+from gradscf import gto, scf, cc
 
 mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
-mf = dft.RKS(mol, xc="hf").run()
+mf = scf.RHF(mol).run()
 mycc = cc.CCSD(mf).run()  # also mf.CCSD().run()
 print(mycc.e_tot, mycc.e_corr, mycc.converged)
 e_corr, t1, t2 = mycc.kernel()
@@ -45,7 +45,7 @@ the quadratic CI residual. Its `.qcisd_t()` adds the QCI triples correction.
 `CCS`, `CCD`, `CC2`, `LCCD`, and `LCCSD` use the same constructor convention;
 `RCCSD` explicitly requires a restricted reference. `CC(mf, method="cc2")` selects a model
 explicitly. Unsupported names are rejected, not mapped to CCSD. The facade
-accepts converged closed-shell GradSCF `RKS(xc="hf")` or explicit
+accepts converged closed-shell GradSCF `scf.RHF` (or `RKS(xc="hf")`) or explicit
 `CCReference(h1_mo, eri_mo, nocc, nuclear_repulsion=...)` data for restricted models.
 CCSD/CCD additionally accept UHF/ROHF and explicit `UnrestrictedReference`.
 GHF, complex orbitals and DFT references are not accepted.

@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gradscf import dft, gto
+from gradscf import gto, scf
 from gradscf.df import eri_pair_matrix_to_df_factors
 from gradscf.gw import scgw_matsubara_restricted
 from gradscf.scf import SCFDifferentiationConfig
@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", cart=True)
-    mf = dft.RKS(mol, xc="hf").run()
+    mf = scf.RHF(mol).run()
     if not mf.converged:
         raise ArithmeticError("HF reference did not converge.")
     ref = mf.scf_result

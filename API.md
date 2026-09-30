@@ -3,10 +3,10 @@
 Import domain namespaces, then construct calculation objects:
 
 ```python
-from gradscf import gto, dft, fci, training
+from gradscf import gto, scf, fci, training
 
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-mf = dft.RKS(mol, xc='hf').run()
+mf = scf.RHF(mol).run()
 e_fci = fci.FCI(mf, solver='dense').run().e_tot
 
 data = [training.Sample(mf, energy=e_fci)]
@@ -31,7 +31,7 @@ removed root export and the additional facade relocations.
 | Task | Public entry |
 |---|---|
 | Molecule | `gto.M(...)` |
-| Ground state | `dft.RKS(mol)` / `dft.UKS(mol)`; HF with `xc='hf'` |
+| Ground state | `scf.RHF(mol)` / `scf.UHF(mol)` for HF; `dft.RKS(mol)` / `dft.UKS(mol)` for DFT |
 | AO density | `mf.make_rdm1()` |
 | Reusable AO/grid reference | `mf.to_reference()` |
 | External XC architecture | `dft.Functional(inputs, apply, init_fn=...)` |
@@ -57,9 +57,16 @@ preset implementations use `water_experiment_config` and
 particular return and file-writing contracts, so they are not renamed to
 ordinary molecule constructors.
 
+`scf.RHF` fixes full exact exchange and zero semilocal XC while reusing the
+RKS solver, integral backends, reference conversion and differentiation rules.
+Its defaults match the existing `dft.RKS(mol, xc="hf")` object (including
+`max_cycle=80`), not the separate low-level `RHFConfig` defaults. The generic
+RKS HF configuration remains valid; examples use `scf.RHF` to identify the
+physical reference explicitly. Use RKS for configurable XC.
+
 ## Solved references
 
-`mf.to_reference()` reuses the converged RKS/UKS solution and integral inputs,
+`mf.to_reference()` reuses the converged RHF/UHF or RKS/UKS solution and integral inputs,
 completing missing grid/response data on demand. It does not rerun SCF.
 `training.Sample(mf, ...)` and `trainer.predict(mf)` use this same conversion.
 The shared eager adapter is `scf.as_reference`; post-HF MO Hamiltonians and
@@ -113,3 +120,13 @@ short API. All 101 loss/energy/MSE/MAE rows per mode match the recorded
 [the equivalence record](examples/training/h2_fci_results/public_api_equivalence.json).
 This verifies the refactor, not quantitative accuracy of the small network.
 The final energy errors remain about 0.29–0.33 Ha.
+
+
+## RHF entry validation (2026-09-30)
+
+CPU float64: 62 focused SCF/API tests passed, including the new RHF checks.
+Two PBE tests were deselected because `jax_xc` is unavailable. RHF and
+RKS-with-HF agree for full, DF and direct integral backends; cached training
+references and CI/CC/FCI/GW-BSE consumers are covered. The four-layer MLP
+example also ran with unchanged output after the constructor migration.
+The full repository suite and GPU backends were not run.

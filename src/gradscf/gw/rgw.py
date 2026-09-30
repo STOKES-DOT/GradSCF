@@ -2,11 +2,11 @@
 
 Example
 -------
->>> from gradscf import gto, dft
+>>> from gradscf import gto, scf
 >>> from gradscf.gw import GW
 >>> mol = gto.M(atom="O 0 0 0.117; H 0 0.755 -0.471; H 0 -0.755 -0.471",
 ...             basis="cc-pvdz")
->>> mf = dft.RKS(mol, xc="hf").run()
+>>> mf = scf.RHF(mol).run()
 >>> gw = GW(mf).run()
 >>> gw.mo_energy  # quasiparticle energies
 
@@ -33,7 +33,8 @@ class GW:
     Parameters
     ----------
     mf:
-        A converged :class:`gradscf.dft.RKS` facade object (any ``xc``,
+        A converged :class:`gradscf.scf.RHF` or :class:`gradscf.dft.RKS`
+        facade object (any ``xc``,
         including ``"hf"``).
     nw:
         Imaginary-axis quadrature size (default 100, PySCF convention).

@@ -18,10 +18,10 @@ properties are not exposed as implemented methods.
 ## Public workflow
 
 ```python
-from gradscf import bse, dft, gto, gw
+from gradscf import bse, gto, scf, gw
 
 mol = gto.M(atom="O 0 0 0; H 0 -.757 .587; H 0 .757 .587", basis="sto-3g")
-mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+mf = scf.RHF(mol, conv_tol=1e-12).run()
 mygw = gw.GW(mf, nw=100).run()
 response = bse.BSE(mygw, nroots=3, singlet=True).run()
 print(response.e)                     # Hartree

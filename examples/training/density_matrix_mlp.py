@@ -16,7 +16,7 @@ from flax import linen as nn
 
 jax.config.update('jax_enable_x64', True)
 
-from gradscf import gto, dft, training
+from gradscf import gto, scf, dft, training
 
 
 # The input is the CURRENT spin-summed AO density matrix, supplied by GradSCF.
@@ -41,7 +41,7 @@ if __name__ == '__main__':
     # GradSCF supplies integrals and an HF initial density. Learned SCF then uses
     # only the MLP for XC; the HF exchange energy is not retained as a baseline.
     mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-    mf = dft.RKS(mol, xc='hf', grids_level=0, integral_backend='native').run()
+    mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
     reference = mf.to_reference()
     dm = mf.make_rdm1()
     params = model.init(jax.random.PRNGKey(0), dm)
