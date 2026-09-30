@@ -31,9 +31,10 @@ class UGW:
         Imaginary-grid size and broadening.
     """
 
-    def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3):
+    def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3, qp_solver="secant"):
         if getattr(mf, "mo_energy", None) is None:
             raise RuntimeError("UGW requires a converged mean-field object; call mf.kernel() first.")
+        self.qp_solver = qp_solver
         self._scf = mf
         self.nw = int(nw)
         self.eta = float(eta)
@@ -108,6 +109,7 @@ class UGW:
             nw=self.nw,
             eta=self.eta,
             orbs=orbs,
+            qp_solver=self.qp_solver,
         )
         self.result = res
         self.converged = res.converged

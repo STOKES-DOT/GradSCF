@@ -244,3 +244,15 @@ rank merely by taking real parts. This repair occurs in the projected matrix for
 Davidson and the bounded physical matrix for dense solving. It preserves the
 original eigenvalues and all physical residual/conditioning checks; it is not
 Hermitianization, a pseudoinverse, or a new degenerate-root AD policy.
+
+
+## Independent scalar roots
+
+`solvers.nonlinear.solve_scalar_roots(function, x0, config=ScalarRootConfig(...))`
+provides bounded secant, AD-Newton and hybrid forward iterations. Each residual
+component must depend only on its corresponding trial component; for coupled
+systems use the general nonlinear interfaces. The result includes per-lane
+convergence/iterations and batch evaluation counters. `scan=True` permits
+explicit trajectory AD; an implicit physical root rule can wrap the default
+while-loop solver, as GW does. Rejected nonfinite trials do not enter the
+explicit derivative graph. See [QP usage and validation](../gw/QP_SOLVERS.md).

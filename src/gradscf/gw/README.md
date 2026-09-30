@@ -72,3 +72,12 @@ revision `b831818d7a845c36f295d036dc8ceef59daf9991`:
 GradSCF retains its JAX contour-deformation implementation and shared solvers.
 The executable comparison uses MolGW's independent analytic spectral route;
 its graphical QP weights require a separate frequency-grid convergence check.
+
+
+## Optional QP forward solvers
+
+`GW(mf, qp_solver='newton')` and `GW(mf, qp_solver='hybrid')` use AD frequency
+slopes for the inner G0W0 root calculation. `UGW` accepts the same choice.
+The default remains secant; the measured small CPU cases do not show a speedup.
+Forward method selection does not change the implicit backward. See
+[algorithms, safeguards and measured costs](QP_SOLVERS.md).

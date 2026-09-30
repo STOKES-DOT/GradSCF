@@ -103,6 +103,7 @@ def _qp_loop(
     nocc: int,
     orbs: Sequence[int],
     diff_mode: str,
+    qp_solver: str = "secant",
     conjugate: bool = False,
     del00: Array | None = None,
     delP0: Array | None = None,
@@ -120,6 +121,10 @@ def _qp_loop(
     spectrum inside G0/W; ``e_mf`` is the base of the QP equation
     (defaults to ``mo_energy``; the two differ under evGW iterations).
     """
+    if qp_solver not in {"secant", "newton", "hybrid"}:
+        raise ValueError("qp_solver must be secant, newton or hybrid")
+    if qp_solver != "secant" and (linearized or evaluate_only):
+        raise ValueError("qp_solver requires a nonlinear QP solve")
     mo_energy = jnp.asarray(mo_energy)
     if linearized and evaluate_only:
         raise ValueError("linearized and evaluate_only are mutually exclusive.")
@@ -177,6 +182,7 @@ def _qp_loop(
             stacked,
             occupied=occupied,
             diff_mode=diff_mode,
+            method=qp_solver,
         )
 
     # Compute the same observables and status eagerly and under transforms.
@@ -218,6 +224,7 @@ def g0w0_cd_restricted(
     eta: float = 1e-3,
     orbs: Sequence[int] | None = None,
     diff_mode: str = "implicit",
+    qp_solver: str = "secant",
     mo_energy_poles: Array | None = None,
     linearized: bool = False,
     evaluate_only: bool = False,
@@ -261,6 +268,9 @@ def g0w0_cd_restricted(
         valid orbitals. They restrict correlation sums, never mean-field J/K.
         Empty windows give zero correlation self-energy. The target ``orbs``
         window is independent. The full bare MO factors remain resident.
+    qp_solver:
+        Nonlinear forward root method: secant, newton or hybrid. Alternative
+        methods require a nonlinear solve, not linearized/evaluate-only mode.
     linearized:
         Take one Newton update about the pole energies, with G/W fixed.
         The frequency derivative holds the active residue set fixed; this
@@ -325,6 +335,7 @@ def g0w0_cd_restricted(
         nocc=nocc,
         orbs=orbs,
         diff_mode=diff_mode,
+        qp_solver=qp_solver,
         e_mf=mo_energy,
         linearized=linearized,
         evaluate_only=evaluate_only,
@@ -362,6 +373,7 @@ def g0w0_cd_unrestricted(
     eta: float = 1e-3,
     orbs: Sequence[int] | None = None,
     diff_mode: str = "implicit",
+    qp_solver: str = "secant",
     mo_energy_poles: tuple[Array, Array] | None = None,
     linearized: bool = False,
     evaluate_only: bool = False,
@@ -456,6 +468,7 @@ def g0w0_cd_unrestricted(
         nocc=nocc_a,
         orbs=orbs,
         diff_mode=diff_mode,
+        qp_solver=qp_solver,
         e_mf=e_a,
         linearized=linearized,
         evaluate_only=evaluate_only,
@@ -474,6 +487,7 @@ def g0w0_cd_unrestricted(
         nocc=nocc_b,
         orbs=orbs,
         diff_mode=diff_mode,
+        qp_solver=qp_solver,
         e_mf=e_b,
         linearized=linearized,
         evaluate_only=evaluate_only,
