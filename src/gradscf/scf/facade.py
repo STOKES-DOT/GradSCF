@@ -345,6 +345,22 @@ class RKS(_BaseKS):
 
 
 @dataclass
+class RHF(RKS):
+    """Restricted Hartree-Fock using the shared RKS solver and reference flow.
+
+    Full exact exchange and zero semilocal XC are fixed by the method. SCF
+    controls, integral backends and differentiation retain the RKS contracts.
+    """
+
+    xc: str = field(default="hf", init=False)
+
+    def _config(self) -> RKSConfig:
+        if self.xc != "hf":
+            raise ValueError("RHF requires xc='hf'; use RKS for a DFT functional.")
+        return super()._config()
+
+
+@dataclass
 class UKS(_BaseKS):
     conv_tol_grad: float = 1e-7
     jk_backend: Literal['full','df'] = 'full'

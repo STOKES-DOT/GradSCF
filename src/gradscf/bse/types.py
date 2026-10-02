@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from math import isfinite
 from numbers import Integral
 from ..scf._pytree import pytree_dataclass
+from ..solvers import LinearSolverConfig
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,13 @@ class BSEConfig:
     max_factor_elements: int = 20_000_000
     block_size: int = 16
     seed: int = 0
+    screening_config: LinearSolverConfig | None = None
 
     def __post_init__(self):
+        if self.screening_config is not None and not isinstance(
+            self.screening_config, LinearSolverConfig
+        ):
+            raise TypeError("screening_config must be a LinearSolverConfig")
         if type(self.singlet) is not bool or type(self.tda) is not bool:
             raise ValueError("singlet and tda must be booleans")
         if self.solver not in {"dense", "davidson"} or self.gradient_mode not in {

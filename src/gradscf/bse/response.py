@@ -56,8 +56,17 @@ def run_bse(
     )
     if (screen.nmo, screen.nocc) != (space.nmo, space.nocc):
         raise ValueError("Screening and excitation spaces must share a reference")
+    # Canonicalize only contraction-sized roundoff, once, before both W and
+    # the kernel use these factors. Larger asymmetry remains untouched and
+    # is rejected by screening validation. Within the accepted neighborhood,
+    # AD differentiates the same linear symmetric projection.
+    scale = jnp.maximum(1., jnp.max(jnp.abs(l), initial=0.))
+    tolerance = 64 * space.nmo * jnp.finfo(jnp.result_type(l, 1.)).eps * scale
+    roundoff = jnp.max(jnp.abs(l - l.swapaxes(1, 2)), initial=0.) <= tolerance
+    l = jnp.where(roundoff, (l + l.swapaxes(1, 2)) * .5, l)
     state = build_static_screening(
-        e, l, occupied=screen.occupied, virtual=screen.virtual, max_aux=cfg.max_aux
+        e, l, occupied=screen.occupied, virtual=screen.virtual, max_aux=cfg.max_aux,
+        config=cfg.screening_config
     )
     selected = jnp.asarray(space.occupied + space.virtual)
     valid = state.valid & jnp.all(jnp.isfinite(qp[selected]))
@@ -85,7 +94,7 @@ def run_bse(
                 method=cfg.solver,
                 nroots=cfg.nroots,
                 maxiter=cfg.max_cycle,
-                max_subspace=cfg.max_space,
+                max_subspace=None if cfg.solver == "dense" else cfg.max_space,
                 atol=cfg.conv_tol,
                 max_dense=cfg.max_dense,
                 gradient_mode=cfg.gradient_mode,
@@ -130,7 +139,7 @@ def run_bse(
             nroots=cfg.nroots,
             atol=cfg.conv_tol,
             maxiter=cfg.max_cycle,
-            max_subspace=cfg.max_space,
+            max_subspace=None if cfg.solver == "dense" else cfg.max_space,
             max_dense=cfg.max_dense,
             seed=cfg.seed,
         ),

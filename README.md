@@ -64,16 +64,16 @@ energies are in Hartree.
 
 ### Run a ground-state calculation
 
-Use `RKS(xc="hf")` for the closed-shell HF facade, then correlate its reference
+Use `scf.RHF` for the closed-shell HF facade, then correlate its reference
 with CCSD. The same mean-field object can also supply CI and response calculations.
 
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
-from gradscf import gto, dft, cc
+from gradscf import gto, scf, cc
 
 mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
-mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+mf = scf.RHF(mol, conv_tol=1e-12).run()
 assert mf.converged
 mycc = cc.CCSD(mf).run()
 assert mycc.converged
@@ -93,10 +93,10 @@ also provides full TDHF/TDDFT for supported references and XC kernels.
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
-from gradscf import gto, dft, tdscf
+from gradscf import gto, scf, tdscf
 
 mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
-mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+mf = scf.RHF(mol, conv_tol=1e-12).run()
 assert mf.converged
 td = tdscf.TDA(mf, nstates=1)
 td.kernel()
@@ -113,11 +113,11 @@ amplitudes. It is an integral-parameter derivative, not a nuclear force.
 ```python
 import jax
 jax.config.update("jax_enable_x64", True)
-from gradscf import gto, dft, cc
+from gradscf import gto, scf, cc
 from gradscf.scf.reference import reference_from_source
 
 mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
-mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
+mf = scf.RHF(mol, conv_tol=1e-12).run()
 ref = reference_from_source(mf)
 config = cc.CCConfig(conv_tol=1e-12, residual_tol=1e-11)
 
@@ -137,7 +137,7 @@ module documentation for reference restrictions, inputs, and validated paths.
 
 | Family | Available methods | Scope and documentation |
 | --- | --- | --- |
-| Molecular mean field | RHF, UHF, ROHF, GHF; RKS, UKS, ROKS, GKS; UHF/UKS stability analysis | [SCF](src/gradscf/scf) and [DFT](src/gradscf/dft) interfaces; closed-shell HF facade uses `RKS(xc="hf")` |
+| Molecular mean field | RHF, UHF, ROHF, GHF; RKS, UKS, ROKS, GKS; UHF/UKS stability analysis | [SCF](src/gradscf/scf) and [DFT](src/gradscf/dft) interfaces; closed-shell HF facade uses `scf.RHF` |
 | Periodic mean field | Gamma/k-point HF and DFT, GTH pseudopotentials, FFT density fitting, bands | [Periodic modules](src/gradscf/pbc); [example](examples/periodic_h2.py) |
 | Excited-state response | TDA and full TDHF/TDDFT, transition properties and spectra; periodic q=0 response | [Molecular facade](src/gradscf/tdscf), [periodic response](src/gradscf/pbc/tdscf.py); reference/kernel restrictions apply |
 | Configuration interaction | Restricted singlet/triplet CIS, singlet CIS(D), spin-conserving UCIS; CISD/CISDT/CISDTQ and general rank truncation | [CI guide](src/gradscf/ci/README.md); real molecular determinant spaces from RHF/UHF/ROHF |

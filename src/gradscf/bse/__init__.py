@@ -4,7 +4,7 @@ from .space import BSESpace, make_bse_space
 from .types import BSEConfig, BSEResult
 from .kernel import build_tda_operator, build_bse_operators
 from .response import run_bse
-from .properties import transition_dipoles, oscillator_strengths
+from .properties import transition_dipoles, oscillator_strengths, polarizability, absorption_cross_section
 from .reference import (
     BSEReference,
 )
@@ -20,6 +20,8 @@ __all__ = [
     'run_bse',
     'transition_dipoles',
     'oscillator_strengths',
+    'polarizability',
+    'absorption_cross_section',
     'BSEReference',
     'BSE',
 ]

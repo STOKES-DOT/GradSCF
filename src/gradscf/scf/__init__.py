@@ -27,7 +27,7 @@ from .uks import (
     UKSResult,
     run_uks_from_integrals,
 )
-from .facade import RKS, UKS
+from .facade import RHF, RKS, UKS
 from .multistart import (
     RestrictedSCFAttempt, RestrictedMultistartResult, run_restricted_multistart,
 )
@@ -74,6 +74,7 @@ __all__ = [
     'DifferentiableSCF',
     'DifferentiableSCFConfig',
     'DifferentiableSCFInfo',
+    'RHF',
     'RHFConfig',
     'RHFResult',
     'nuclear_repulsion_energy',

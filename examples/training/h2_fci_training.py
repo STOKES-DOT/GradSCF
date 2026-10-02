@@ -20,14 +20,14 @@ import numpy as np
 
 jax.config.update('jax_enable_x64', True)
 
-from gradscf import gto, dft, fci
+from gradscf import gto, scf, fci
 from gradscf.integrals.mo import transform_integrals
 from gradscf import training
 from density_matrix_mlp import functional
 
 
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-mf = dft.RKS(mol, xc='hf', grids_level=0, integral_backend='native').run()
+mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
 reference = mf.to_reference()
 coeff = reference.mo_coeff[0]
 solver = fci.FCI(mf, solver='dense', conv_tol=1e-12).run()

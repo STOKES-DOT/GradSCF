@@ -6,9 +6,9 @@ solves complete alpha/beta occupation-string spaces for arbitrary integer
 not require a reference determinant or an excitation-rank cutoff.
 
 ```python
-from gradscf import gto, dft, fci
+from gradscf import gto, scf, fci
 
-mf = dft.RKS(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g"), xc="hf").run()
+mf = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g")).run()
 result = fci.FCI(mf).run()
 print(result.e_tot)                 # Total energy, Hartree
 print(result.ci.shape)              # (n_alpha_strings, n_beta_strings)
@@ -41,7 +41,7 @@ intended to be called by future CAS drivers, not as a drop-in implementation of
 every optional PySCF FCI argument or addon.
 
 `FCI(source, core=..., active=...)` accepts a converged GradSCF common-orbital
-RKS/ROHF object or `FCIReference(h1,eri,nelec,ecore)`. `core` is a count or a
+RHF/HF-configured RKS/ROHF object or `FCIReference(h1,eri,nelec,ecore)`. `core` is a count or a
 sequence of doubly occupied orbital indices. `active` preserves its supplied
 orbital order; excluded non-core orbitals are empty. Core folding is also
 available as `fold_core(h1,eri,core=...,active=...,ecore=...)`.

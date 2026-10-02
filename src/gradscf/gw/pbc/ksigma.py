@@ -37,7 +37,7 @@ from jaxtyping import Array
 from ...integrals.periodic.fft import get_kpoint_jk
 from ..freq import scaled_legendre_grid
 from ..polarizability import rho_response_iw
-from ..qp import _secant_batch
+from ...solvers.nonlinear import ScalarRootConfig, solve_scalar_roots
 from ..self_energy import sigma_imag_part, sigma_residue_part
 from ..types import GWResult
 from .momentum import momentum_transfer_table
@@ -316,9 +316,8 @@ def g0w0_cd_kpoints(
             wmn_p_flat = jnp.concatenate([w_q[q][:, kn, :, p] for q in range(nk)], axis=1)
             f = lambda w: jnp.asarray([qp_residual(w[0], kn, p, e_flat, wmn_p_flat)])
             x0 = e_k[kn][p] + (-1e-2 if p < nocc else 1e-2)
-            root, conv = _secant_batch(
-                f, x0[None], (x0 + 1e-4)[None], tol=1e-6, maxiter=100
-            )
+            solved = solve_scalar_roots(f, x0[None], config=ScalarRootConfig())
+            root, conv = solved.roots, solved.converged
             converged = converged and bool(conv[0])
             converged_mask = converged_mask.at[kn, p].set(bool(conv[0]))
             qp_energy = qp_energy.at[kn, p].set(root[0])

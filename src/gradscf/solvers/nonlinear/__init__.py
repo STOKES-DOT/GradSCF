@@ -7,3 +7,6 @@ __all__ = ["attach_root", "ImplicitFixedPointConfig", "implicit_fixed_point_solu
 
 from .sphere import SphereConfig, SphereResult, minimize_sphere
 __all__ += ['SphereConfig', 'SphereResult', 'minimize_sphere']
+
+from .scalar import ScalarRootConfig, ScalarRootResult, solve_scalar_roots
+__all__ += ['ScalarRootConfig', 'ScalarRootResult', 'solve_scalar_roots']

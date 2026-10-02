@@ -4,7 +4,7 @@ The quasiparticle energy e_p^QP is the graphical (Dyson) solution of
 
     f(w) = w - e_p^mf - [ Re Sigma_p(w) + v^x_pp - v^mf_pp ] = 0
 
-solved by a secant iteration (matching scipy.optimize.newton as used by
+solved by a shared independent-scalar iteration (default secant, as used by
 PySCF ``gw_cd``).  All requested orbitals are solved **simultaneously** in
 one vectorized ``lax.while_loop`` (one compiled XLA program instead of
 hundreds of eager dispatches -- this matters for CPU-bound hosts).
@@ -18,11 +18,11 @@ Two differentiation modes are provided:
 
   where df_p/dw = 1 - d(Re Sigma_p)/dw is the inverse quasiparticle
   renormalization factor 1/Z.  Only one extra VJP of Sigma at the
-  converged roots is needed; the secant trajectory is not unrolled.
+  converged roots is needed; the forward trajectory is not differentiated.
 
-- ``unrolled``: differentiates through every secant iteration via a
+- ``explicit``: differentiates through the chosen forward iterations via a
   static-length ``lax.scan`` (useful for cross-checking the implicit rule
-  on small systems).
+  on small systems). ``unrolled`` remains a legacy alias.
 
 The pole-selection mask in the self-energy is piecewise constant, so in
 pole-dense regions the secant iteration can oscillate without meeting the
@@ -53,6 +53,7 @@ import numpy as np
 from jaxtyping import Array
 
 from .self_energy import sigma_cd
+from ..solvers.nonlinear import ScalarRootConfig, solve_scalar_roots
 
 _DFDW_MIN = 1e-10
 _TOL = 1e-6
@@ -69,7 +70,7 @@ def qp_residual(omega: Array, e_mf: Array, delta_v: Array, ctx: dict) -> Array:
     return omega - e_mf - (jnp.real(sigma) + delta_v)
 
 
-def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array) -> dict:
+def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array, wmn_static=None) -> dict:
     ctx = {
         "mo_energy": shared["mo_energy"],
         "wmn_p": wmn_p,
@@ -82,8 +83,16 @@ def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array) -> dic
         "wts": shared["wts"],
         "conjugate": shared.get("conjugate", False),
     }
+    if wmn_static is not None:
+        ctx["wmn_static"] = wmn_static
+        if "occupation_sign" in shared:
+            ctx["occupation_sign"] = shared["occupation_sign"]
     if "q0" in shared:
         ctx["q0"] = shared["q0"]
+    if "g_indices" in shared:
+        ctx["g_indices"] = shared["g_indices"]
+    if "resolvent_data" in shared:
+        ctx["resolvent_data"] = shared["resolvent_data"]
     return ctx
 
 
@@ -94,15 +103,18 @@ def sigma_cd_batch(omega: Array, shared: dict, stacked: dict) -> Array:
     :func:`qp_residual_batch`.
     """
 
-    def fn(w, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return sigma_cd(w, ctx)
 
-    args = (omega, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (omega, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(omega.shape[0])))
     if "del_w" in stacked:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -131,15 +143,18 @@ def qp_residual_batch(
     """
     has_q0 = "del_w" in stacked
 
-    def fn(w, e, dv, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return qp_residual(w, e, dv, ctx)
 
-    args = (omega, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (omega, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(omega.shape[0])))
     if has_q0:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -152,15 +167,18 @@ def qp_residual_batch(
 def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
     """Per-orbital df/dw at the roots (inverse Z factors), memory-bounded."""
 
-    def fn(w, e, dv, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return jax.grad(lambda ww: qp_residual(ww, e, dv, ctx))(w)
 
-    args = (root, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (root, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(root.shape[0])))
     if "del_w" in stacked:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -170,112 +188,30 @@ def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
     return jax.vmap(fn)(*args)
 
 
-def _secant_step(f, x_prev, x, f_prev, fx):
-    denom = fx - f_prev
-    # A converged lane is still evaluated by the static scan / orbital
-    # batch. Keep 0/0 out of its primal and adjoint, even when masked later.
-    safe_denom = jnp.where(denom != 0.0, denom, 1.0)
-    raw_step = jnp.where(denom != 0.0, fx * (x - x_prev) / safe_denom, 0.0)
-    step = jnp.clip(raw_step, -_STEP_CAP, _STEP_CAP)
-    x_new = x - step
-    return x_new, f(x_new)
+def _qp_forward(f, x0, *, tol, maxiter, method, scan=False):
+    cfg = ScalarRootConfig(method=method, ftol=tol, xtol=tol, maxiter=maxiter,
+                           step_cap=_STEP_CAP, slope_floor=_DFDW_MIN)
+    out = solve_scalar_roots(f, x0, config=cfg, scan=scan)
+    return out.roots, out.converged
 
 
-def _secant_batch(f, x0, x1, *, tol: float, maxiter: int):
-    """Vectorized secant solver (while_loop, forward-only).
-
-    Returns (roots, converged_mask); unconverged orbitals return their
-    best (min |f|) iterate.
-    """
-
-    def cond(state):
-        _, _, _, _, i, done, _, _ = state
-        return (~jnp.all(done)) & (i < maxiter)
-
-    def body(state):
-        x_prev, x, f_prev, fx, i, done, best_x, best_f = state
-        x_cand, f_cand = _secant_step(f, x_prev, x, f_prev, fx)
-        converged = (jnp.abs(x_cand - x) < tol) & (jnp.abs(f_cand) < tol)
-        take = ~done
-        x_new = jnp.where(take, x_cand, x)
-        f_new = jnp.where(take, f_cand, fx)
-        xp_new = jnp.where(take, x, x_prev)
-        fp_new = jnp.where(take, fx, f_prev)
-        better = take & (jnp.abs(f_new) < jnp.abs(best_f))
-        best_x = jnp.where(better, x_new, best_x)
-        best_f = jnp.where(better, f_new, best_f)
-        return (xp_new, x_new, fp_new, f_new, i + 1, done | converged, best_x, best_f)
-
-    f0 = f(x0)
-    f1 = f(x1)
-    better1 = jnp.abs(f1) < jnp.abs(f0)
-    state = (
-        x0,
-        x1,
-        f0,
-        f1,
-        0,
-        jnp.zeros_like(x0, dtype=bool),
-        jnp.where(better1, x1, x0),
-        jnp.where(better1, f1, f0),
-    )
-    _, root, _, _, _, done, best_x, _ = jax.lax.while_loop(cond, body, state)
-    return jnp.where(done, root, best_x), done
-
-
-def _secant_batch_scan(f, x0, x1, *, tol: float, maxiter: int):
-    """Vectorized secant solver (static scan, reverse-mode differentiable)."""
-    f0 = f(x0)
-    f1 = f(x1)
-    better1 = jnp.abs(f1) < jnp.abs(f0)
-
-    def body(carry, _):
-        x_prev, x, f_prev, fx, done, best_x, best_f = carry
-        x_cand, f_cand = _secant_step(f, x_prev, x, f_prev, fx)
-        converged = (jnp.abs(x_cand - x) < tol) & (jnp.abs(f_cand) < tol)
-        take = ~done
-        better = take & (jnp.abs(f_cand) < jnp.abs(best_f))
-        carry_out = (
-            jnp.where(take, x, x_prev),
-            jnp.where(take, x_cand, x),
-            jnp.where(take, fx, f_prev),
-            jnp.where(take, f_cand, fx),
-            done | converged,
-            jnp.where(better, x_cand, best_x),
-            jnp.where(better, f_cand, best_f),
-        )
-        return carry_out, None
-
-    init = (
-        x0,
-        x1,
-        f0,
-        f1,
-        jnp.zeros_like(x0, dtype=bool),
-        jnp.where(better1, x1, x0),
-        jnp.where(better1, f1, f0),
-    )
-    (_, root, _, _, done, best_x, _), _ = jax.lax.scan(body, init, None, length=int(maxiter))
-    return jnp.where(done, root, best_x), done
-
-
-@partial(jax.custom_vjp, nondiff_argnums=(5, 6, 7))
+@partial(jax.custom_vjp, nondiff_argnums=(5, 6, 7, 8))
 def _qp_solve_implicit(
     x0: Array, e_mf: Array, delta_v: Array, shared: dict, stacked: dict,
-    conjugate: bool, tol: float, maxiter: int,
+    conjugate: bool, tol: float, maxiter: int, method: str,
 ) -> tuple[Array, Array]:
     context = {**shared, "conjugate": conjugate}
     f = lambda w: qp_residual_batch(w, e_mf, delta_v, context, stacked)
-    root, done = _secant_batch(f, x0, x0 + 1e-4, tol=tol, maxiter=maxiter)
+    root, done = _qp_forward(f, x0, tol=tol, maxiter=maxiter, method=method)
     # Encode auxiliary status as a real output inside custom_vjp. Boolean
     # custom outputs can acquire active float0 tangents on some JAX versions.
     return root, done.astype(root.dtype)
 
 
-def _qp_solve_implicit_fwd(x0, e_mf, delta_v, shared, stacked, conjugate, tol, maxiter):
+def _qp_solve_implicit_fwd(x0, e_mf, delta_v, shared, stacked, conjugate, tol, maxiter, method):
     context = {**shared, "conjugate": conjugate}
     f = lambda w: qp_residual_batch(w, e_mf, delta_v, context, stacked)
-    root, done = _secant_batch(f, x0, x0 + 1e-4, tol=tol, maxiter=maxiter)
+    root, done = _qp_forward(f, x0, tol=tol, maxiter=maxiter, method=method)
     return (root, done.astype(root.dtype)), (root, done, e_mf, delta_v, shared, stacked)
 
 
@@ -290,7 +226,7 @@ def _raise_invalid_implicit_gradient(done, df_dw):
         )
 
 
-def _qp_solve_implicit_bwd(conjugate, tol, maxiter, res, cotangents):
+def _qp_solve_implicit_bwd(conjugate, tol, maxiter, method, res, cotangents):
     root, done, e_mf, delta_v, shared, stacked = res
     g, _ = cotangents  # Auxiliary convergence status has no derivative.
     context = {**shared, "conjugate": conjugate}
@@ -330,6 +266,7 @@ def solve_qp_batch(
     tol: float = _TOL,
     maxiter: int = _MAXITER,
     diff_mode: str = "implicit",
+    method: str = "secant",
 ) -> tuple[Array, Array]:
     """Solve the quasiparticle equation for a batch of orbitals.
 
@@ -342,12 +279,18 @@ def solve_qp_batch(
     occupied:
         ``(norb,)`` boolean; selects the initial-guess offset sign
         (-1e-2 occupied, +1e-2 virtual, following PySCF ``gw_cd``).
+    method:
+        Static forward algorithm: "secant" (default), "newton" (AD JVP slopes),
+        or "hybrid" (periodic/stalled AD refresh). All use the same implicit
+        backward and step/residual convergence checks. Safeguards do not
+        establish pole-free brackets or guarantee a particular satellite root.
     tol, maxiter:
         Absolute step and residual tolerance (Ha), and iteration cap.
         These and ``shared['conjugate']`` are static configuration under JIT.
     diff_mode:
         ``"implicit"`` (custom VJP via the implicit function theorem) or
-        ``"unrolled"`` (AD through a static secant scan).
+        ``"explicit"`` (AD through a static scan of the chosen method).
+        The historical ``"unrolled"`` spelling remains accepted.
 
     Returns
     -------
@@ -355,8 +298,8 @@ def solve_qp_batch(
     is preserved under JAX transformations. Unconverged forward calls
     return the best-residual iterate; implicit backward calls reject it.
     """
-    if diff_mode not in ("implicit", "unrolled"):
-        raise ValueError(f"diff_mode must be 'implicit' or 'unrolled', got {diff_mode!r}")
+    if diff_mode not in ("implicit", "explicit", "unrolled"):
+        raise ValueError(f"diff_mode must be 'implicit' or 'explicit', got {diff_mode!r}")
     e_mf = jnp.asarray(e_mf, dtype=jnp.float64)
     delta_v = jnp.asarray(delta_v, dtype=jnp.float64)
     occupied = jnp.asarray(occupied, dtype=bool)
@@ -369,11 +312,11 @@ def solve_qp_batch(
         dynamic_shared = {key: value for key, value in shared.items() if key != "conjugate"}
         root, status = _qp_solve_implicit(
             x0, e_mf, delta_v, dynamic_shared, stacked,
-            shared.get("conjugate", False), float(tol), int(maxiter),
+            shared.get("conjugate", False), float(tol), int(maxiter), method,
         )
         done = status > 0.5
     else:
-        root, done = _secant_batch_scan(f, x0, x0 + 1e-4, tol=float(tol), maxiter=int(maxiter))
+        root, done = _qp_forward(f, x0, tol=float(tol), maxiter=int(maxiter), method=method, scan=True)
 
     # Status is an observable, not a differentiable output of the custom
     # root rule. In particular, boolean reductions must not enter its AD chain.
@@ -390,6 +333,7 @@ def solve_qp_orbital(
     tol: float = 1e-6,
     maxiter: int = 100,
     diff_mode: str = "implicit",
+    method: str = "secant",
 ) -> tuple[float, bool]:
     """Single-orbital convenience wrapper around :func:`solve_qp_batch`."""
     shared = {
@@ -401,6 +345,8 @@ def solve_qp_orbital(
         "wts": ctx["wts"],
         "conjugate": ctx.get("conjugate", False),
     }
+    if "occupation_sign" in ctx:
+        shared["occupation_sign"] = ctx["occupation_sign"]
     if "q0" in ctx:
         shared["q0"] = ctx["q0"]
     stacked = {
@@ -408,6 +354,8 @@ def solve_qp_orbital(
         "b_pm": ctx["b_pm"][None],
         "b_mp": ctx["b_mp"][None],
     }
+    if "wmn_static" in ctx:
+        stacked["wmn_static"] = ctx["wmn_static"][None]
     if "del_w" in ctx:
         stacked["del_w"] = ctx["del_w"][None]
         stacked["p_index"] = jnp.asarray([ctx["p_index"]])
@@ -420,6 +368,7 @@ def solve_qp_orbital(
         tol=tol,
         maxiter=maxiter,
         diff_mode=diff_mode,
+        method=method,
     )
     if isinstance(root, jax.core.Tracer):
         return root[0], done[0]

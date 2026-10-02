@@ -65,12 +65,15 @@ def _static_self_energy(
         return rho_response_iw(omega, mo_energy, b_ov, spin_factor=4.0)
 
     wmn_full = screened_w_imag_axis_matrix(b_mn, response_fn, freqs)  # (nw, nq, m, n)
+    w_static = screened_w_imag_axis_matrix(b_mn, response_fn, jnp.zeros(1))[0]
+    static = dict(wmn_static=w_static,
+                  occupation_sign=jnp.where(jnp.arange(nmo) < nocc, -1., 1.))
     channels = ((mo_energy, b_ov, 2.0),)
 
     def at_endpoint(args):
         m, omega = args
-        sigma = sigma_imag_matrix(omega, wmn_full, mo_energy, ef, freqs, wts, eta)
-        sigma = sigma + sigma_residue_matrix(omega, mo_energy, b_mn, channels, ef, eta)
+        sigma = sigma_imag_matrix(omega, wmn_full, mo_energy, ef, freqs, wts, eta, **static)
+        sigma = sigma + sigma_residue_matrix(omega, mo_energy, b_mn, channels, ef, eta, **static)
         # Re Sigma is the Hermitian part at this frequency. Retain only
         # the required row instead of stacking nmo full self-energy matrices.
         return 0.5 * (sigma[m] + sigma[:, m].conj()).real

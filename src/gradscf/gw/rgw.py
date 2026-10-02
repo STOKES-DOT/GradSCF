@@ -2,11 +2,11 @@
 
 Example
 -------
->>> from gradscf import gto, dft
+>>> from gradscf import gto, scf
 >>> from gradscf.gw import GW
 >>> mol = gto.M(atom="O 0 0 0.117; H 0 0.755 -0.471; H 0 -0.755 -0.471",
 ...             basis="cc-pvdz")
->>> mf = dft.RKS(mol, xc="hf").run()
+>>> mf = scf.RHF(mol).run()
 >>> gw = GW(mf).run()
 >>> gw.mo_energy  # quasiparticle energies
 
@@ -24,26 +24,52 @@ import numpy as np
 
 from ..df import eri_pair_matrix_to_df_factors
 from .g0w0 import g0w0_cd_restricted, _mo_factors
+from .evgw import evgw_cd_restricted
 from ..scf.reference import reference_state_signature, _array_signature
 
 
 class GW:
-    """Spin-restricted G0W0 (contour deformation) on top of RHF/RKS.
+    """Spin-restricted G0W0/evGW/evGW0 (contour deformation) on RHF/RKS.
 
     Parameters
     ----------
     mf:
-        A converged :class:`gradscf.dft.RKS` facade object (any ``xc``,
+        A converged :class:`gradscf.scf.RHF` or :class:`gradscf.dft.RKS`
+        facade object (any ``xc``,
         including ``"hf"``).
+    method:
+        "g0w0" (default), "evgw" (update G and W), or "evgw0" (fixed W0).
+        The eigenvalue-self-consistent outer loops are eager, not differentiable.
+    max_cycle, conv_tol, damp:
+        Outer evGW/evGW0 iteration limit, Dyson residual tolerance (Ha), and
+        damping. These do not alter the inner G0W0 secant controls.
+    g_orbitals, screening_occupied, screening_virtual:
+        Independent correlation-sum windows in original zero-based MO indices.
+        None retains all allowed indices; empty windows suppress correlation.
+        QP target indices are supplied separately to run(orbs=...).
+    qp_solver:
+        G0W0 forward root method: "secant" (default), "newton" or "hybrid".
+        This is separate from the physical method and cannot select an evGW
+        outer iteration algorithm. The implicit QP backward is shared.
     nw:
         Imaginary-axis quadrature size (default 100, PySCF convention).
     eta:
-        Broadening of the Green's function / retarded response (1e-3).
+        Real-frequency W broadening (1e-3 Ha). The subtracted imaginary-axis
+        Green denominator uses its analytic zero-broadening limit.
     """
 
-    def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3):
+    def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3,
+                 method: str = "g0w0", max_cycle: int = 20, conv_tol: float = 1e-6,
+                 damp: float = 0.0, g_orbitals=None, screening_occupied=None,
+                 screening_virtual=None, qp_solver="secant"):
         if getattr(mf, "mo_energy", None) is None:
             raise RuntimeError("GW requires a converged mean-field object; call mf.kernel() first.")
+        self.qp_solver = qp_solver
+        self.method = str(method).lower()
+        self.max_cycle, self.conv_tol, self.damp = max_cycle, conv_tol, damp
+        self.g_orbitals = None if g_orbitals is None else tuple(g_orbitals)
+        self.screening_occupied = None if screening_occupied is None else tuple(screening_occupied)
+        self.screening_virtual = None if screening_virtual is None else tuple(screening_virtual)
         self._scf = mf
         self.nw = int(nw)
         self.eta = float(eta)
@@ -82,6 +108,9 @@ class GW:
         return (
             self.nw,
             self.eta,
+            self.method, self.max_cycle, self.conv_tol, self.damp, self.qp_solver,
+            tuple(None if x is None else tuple(x) for x in
+                  (self.g_orbitals, self.screening_occupied, self.screening_virtual)),
             reference_state_signature(mf),
             tuple(None if x is None else _array_signature(x) for x in arrays),
         )
@@ -110,12 +139,14 @@ class GW:
         )
         return (
             self._source_key,
+            self.result.g_orbitals, self.result.screening_occupied,
+            self.result.screening_virtual, self.result.method,
             id(self.result),
             tuple(None if x is None else _array_signature(x) for x in arrays),
         )
 
     def get_bse_inputs(self, *, max_aux=1024, max_factor_elements=20_000_000):
-        """Validated G0W0/W0 snapshot; no BSE implementation is imported here."""
+        """Validated fixed-frame GW screening snapshot; no BSE dependency."""
         if self.result is None or self._ao_factors is None:
             raise RuntimeError("Run GW before requesting BSE inputs")
         naux = self._ao_factors.shape[0]
@@ -152,6 +183,8 @@ class GW:
             dipole_ao=self._dipole_ao,
             qp_computed_mask=self.result.qp_computed_mask,
             qp_converged_mask=self.result.converged_mask,
+            screening_occupied=self.result.screening_occupied,
+            screening_virtual=self.result.screening_virtual,
         )
 
     def _df_factors(self):
@@ -169,6 +202,15 @@ class GW:
         return eri_pair_matrix_to_df_factors(pair, nao=nao, tol=1e-12)
 
     def kernel(self, orbs: Sequence[int] | None = None):
+        self.result = None
+        self.converged = False
+        self._source_key = None
+        if self.method not in {"g0w0", "evgw", "evgw0"}:
+            raise ValueError("GW method must be g0w0, evgw or evgw0")
+        if self.qp_solver not in {"secant", "newton", "hybrid"}:
+            raise ValueError("qp_solver must be secant, newton or hybrid")
+        if self.method != "g0w0" and self.qp_solver != "secant":
+            raise ValueError("qp_solver selects the inner G0W0 root, not the evGW outer fixed point")
         mf = self._scf
         signature=self._source_signature()
         result = getattr(mf, "scf_result", None)
@@ -184,7 +226,11 @@ class GW:
         if not np.array_equal(mo_occ,np.r_[np.full(nocc,2.),np.zeros(len(mo_occ)-nocc)]):
             raise ValueError("Restricted GW requires integer closed-shell occupations, occupied first")
         factors=self._df_factors()
-        res = g0w0_cd_restricted(
+        driver = g0w0_cd_restricted if self.method == "g0w0" else evgw_cd_restricted
+        controls = dict(qp_solver=self.qp_solver) if self.method == "g0w0" else dict(
+            max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
+            update_w=self.method == "evgw")
+        res = driver(
             mo_energy=result.mo_energy,
             mo_coeff=result.mo_coeff,
             nocc=nocc,
@@ -195,6 +241,10 @@ class GW:
             nw=self.nw,
             eta=self.eta,
             orbs=orbs,
+            g_orbitals=self.g_orbitals,
+            screening_occupied=self.screening_occupied,
+            screening_virtual=self.screening_virtual,
+            **controls,
         )
         self.result = res
         self.converged = res.converged
