@@ -44,6 +44,7 @@ def factor_shifted(matrix):
     return ShiftedFactorization(matrix, values, vectors, inverse, spectral_valid)
 
 
+@jax.jit
 def solve_shifted(state, rhs, shift):
     """Solve a real/complex scalar shift for a vector or matrix RHS.
 
