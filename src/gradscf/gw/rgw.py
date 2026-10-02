@@ -54,7 +54,8 @@ class GW:
     nw:
         Imaginary-axis quadrature size (default 100, PySCF convention).
     eta:
-        Broadening of the Green's function / retarded response (1e-3).
+        Real-frequency W broadening (1e-3 Ha). The subtracted imaginary-axis
+        Green denominator uses its analytic zero-broadening limit.
     """
 
     def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3,

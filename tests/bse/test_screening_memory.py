@@ -140,3 +140,16 @@ def test_large_auxiliary_screening_checks_physical_column_residuals():
     residuals = jnp.linalg.norm(state.operator().apply(out.solution) - rhs, axis=0)
     limits = cfg.atol + cfg.rtol*jnp.linalg.norm(rhs, axis=0)
     assert np.all(residuals <= limits)
+
+
+def test_cached_screening_rejects_an_inaccurate_factor():
+    _, e, l, _ = model()
+    state = build_static_screening(e, l, occupied=(0, 1), virtual=(2, 3, 4))
+    state = replace(state, cholesky=state.cholesky*1.01)
+    rhs = jnp.arange(l.shape[0], dtype=float) + 1
+    out = solve_static_screening(state, rhs)
+    assert not out.converged and np.isnan(out.solution).all()
+    loss = lambda t: jnp.sum(solve_static_screening(state, rhs*t).solution)
+    assert np.isnan(jax.grad(loss)(1.))
+    transpose = jax.linear_transpose(lambda b: solve_static_screening(state, b).solution, rhs)
+    assert np.isnan(transpose(rhs)[0]).all()

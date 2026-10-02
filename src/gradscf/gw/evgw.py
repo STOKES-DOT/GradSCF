@@ -13,7 +13,8 @@ in G and W, retaining the original mean-field base in the Dyson equation.
 The outer convergence loop is eager-only; ``diff_mode`` does not provide
 implicit differentiation of this self-consistent fixed point.
 Convergence certifies the on-shell residual of the chosen discrete CD
-grid. Frequency-grid / own-pole limit accuracy requires separate validation.
+grid. Molecular static-W subtraction supplies the contour's own-pole limit;
+frequency-grid accuracy still requires independent convergence checks.
 
 References
 ----------
@@ -33,7 +34,11 @@ from dataclasses import replace
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from .g0w0 import g0w0_cd_restricted, g0w0_cd_unrestricted
+from .g0w0 import (
+    build_screened_w_restricted,
+    g0w0_cd_restricted,
+    g0w0_cd_unrestricted,
+)
 from .types import GWResult
 
 
@@ -108,11 +113,19 @@ def evgw_cd_restricted(
     loop evaluates the requested orbitals; restricting ``orbs`` freezes the
     remaining energies at mean-field values. ``update_w=False`` implements
     evGW0 with the original spectrum in W throughout the iterations. W is
-    currently rebuilt from that fixed spectrum, not cached between calls.
+    built once per evGW0 call and reused across the outer iterations.
     Correlation windows are passed through unchanged to the shared CD driver.
     """
     if type(update_w) is not bool:
         raise TypeError("update_w must be boolean")
+    fixed_w = None
+    if not update_w:
+        fixed_w = build_screened_w_restricted(
+            mo_energy=mo_energy, mo_coeff=mo_coeff, nocc=int(nocc),
+            df_factors=df_factors, nw=int(nw), eta=float(eta),
+            screening_occupied=screening_occupied,
+            screening_virtual=screening_virtual,
+        )
     result = _evgw_loop(
         g0w0_cd_restricted,
         mo_energy,
@@ -131,6 +144,10 @@ def evgw_cd_restricted(
         tol=float(tol),
         damping=float(damping),
         screening_energy=None if update_w else mo_energy,
+        wmn_fixed=None if fixed_w is None else fixed_w["wmn"],
+        wmn_static_fixed=None if fixed_w is None else fixed_w["wmn_static"],
+        resolvent_expansion=True,
+        resolvent_data_fixed=None if fixed_w is None else fixed_w["resolvent_data"],
         g_orbitals=g_orbitals,
         screening_occupied=screening_occupied,
         screening_virtual=screening_virtual,

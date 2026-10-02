@@ -70,7 +70,7 @@ def qp_residual(omega: Array, e_mf: Array, delta_v: Array, ctx: dict) -> Array:
     return omega - e_mf - (jnp.real(sigma) + delta_v)
 
 
-def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array) -> dict:
+def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array, wmn_static=None) -> dict:
     ctx = {
         "mo_energy": shared["mo_energy"],
         "wmn_p": wmn_p,
@@ -83,8 +83,16 @@ def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array) -> dic
         "wts": shared["wts"],
         "conjugate": shared.get("conjugate", False),
     }
+    if wmn_static is not None:
+        ctx["wmn_static"] = wmn_static
+        if "occupation_sign" in shared:
+            ctx["occupation_sign"] = shared["occupation_sign"]
     if "q0" in shared:
         ctx["q0"] = shared["q0"]
+    if "g_indices" in shared:
+        ctx["g_indices"] = shared["g_indices"]
+    if "resolvent_data" in shared:
+        ctx["resolvent_data"] = shared["resolvent_data"]
     return ctx
 
 
@@ -95,15 +103,18 @@ def sigma_cd_batch(omega: Array, shared: dict, stacked: dict) -> Array:
     :func:`qp_residual_batch`.
     """
 
-    def fn(w, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return sigma_cd(w, ctx)
 
-    args = (omega, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (omega, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(omega.shape[0])))
     if "del_w" in stacked:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -132,15 +143,18 @@ def qp_residual_batch(
     """
     has_q0 = "del_w" in stacked
 
-    def fn(w, e, dv, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return qp_residual(w, e, dv, ctx)
 
-    args = (omega, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (omega, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(omega.shape[0])))
     if has_q0:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -153,15 +167,18 @@ def qp_residual_batch(
 def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
     """Per-orbital df/dw at the roots (inverse Z factors), memory-bounded."""
 
-    def fn(w, e, dv, wp, bp, bm, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm)
+    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
+        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None)
+        ctx["p_index"] = pidx
         if extra:
             ctx["del_w"], ctx["p_index"] = extra
             if "q0" in shared:
                 ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
         return jax.grad(lambda ww: qp_residual(ww, e, dv, ctx))(w)
 
-    args = (root, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"])
+    args = (root, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
+            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
+            stacked.get("p_index", jnp.arange(root.shape[0])))
     if "del_w" in stacked:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
@@ -328,6 +345,8 @@ def solve_qp_orbital(
         "wts": ctx["wts"],
         "conjugate": ctx.get("conjugate", False),
     }
+    if "occupation_sign" in ctx:
+        shared["occupation_sign"] = ctx["occupation_sign"]
     if "q0" in ctx:
         shared["q0"] = ctx["q0"]
     stacked = {
@@ -335,6 +354,8 @@ def solve_qp_orbital(
         "b_pm": ctx["b_pm"][None],
         "b_mp": ctx["b_mp"][None],
     }
+    if "wmn_static" in ctx:
+        stacked["wmn_static"] = ctx["wmn_static"][None]
     if "del_w" in ctx:
         stacked["del_w"] = ctx["del_w"][None]
         stacked["p_index"] = jnp.asarray([ctx["p_index"]])

@@ -43,6 +43,7 @@ class StaticScreening:
     transition_factors: object = None
     inverse_gaps: object = None
     config: object = None
+    cholesky: object = None
 
     @property
     def naux(self):
@@ -125,13 +126,16 @@ def build_static_screening(
     dielectric = jnp.eye(l.shape[0], dtype=dtype) + 4 * jnp.einsum(
         "Pia,Qia,ia->PQ", lov, lov, 1 / safe_gaps
     )
-    return StaticScreening(dielectric, valid, minimum, config=cfg)
+    return StaticScreening(
+        dielectric, valid, minimum, config=cfg,
+        cholesky=jnp.linalg.cholesky(dielectric),
+    )
 
 
 def solve_static_screening(state, values):
     """Return the checked full-W solve and residual diagnostics.
 
-    Direct mode factors a dense metric for each RHS block; GMRES processes
+    Direct mode reuses the state's dense Cholesky factor; GMRES processes
     columns sequentially with the shared implicit primal/transpose rules.
     The solution alone remains a linear action in RHS for kernel transposes.
     Input validity and true solve residuals are included in converged/status.
@@ -150,7 +154,7 @@ def solve_static_screening(state, values):
     op = state.operator()
     # Use the physical residual metric. Left diagonal preconditioning can
     # satisfy JAX's stopping test before the unpreconditioned residual passes.
-    out = solve_linear(op, rhs, config=cfg)
+    out = solve_linear(op, rhs, config=cfg, cholesky=state.cholesky)
     valid = state.valid & out.converged
     solution = require_converged_derivative(out.solution, state.valid)
     solution = jnp.where(state.valid, solution, jnp.nan).reshape(values.shape)

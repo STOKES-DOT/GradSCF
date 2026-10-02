@@ -44,6 +44,10 @@ from .freq import scaled_legendre_grid
 from .polarizability import rho_response_iw
 from .qp import _df_dw_batch, sigma_cd_batch, solve_qp_batch
 from .screened import screened_w_imag_axis
+from .poles import (
+    rpa_resolvent,
+    screened_w_imag_resolvent,
+)
 from .types import GWResult
 
 
@@ -82,6 +86,31 @@ def _mo_factors(df_factors: Array, mo_coeff: Array) -> Array:
     )
 
 
+def build_screened_w_restricted(
+    *, mo_energy, mo_coeff, nocc, df_factors, nw, eta,
+    screening_occupied=None, screening_virtual=None,
+):
+    """Build dynamic and static W once for a fixed restricted spectrum."""
+    energy = jnp.asarray(mo_energy, dtype=jnp.float64)
+    coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
+    factors = _mo_factors(df_factors, coeff)
+    nmo = energy.shape[0]
+    oi = _window_indices(screening_occupied, range(nocc), "screening_occupied")
+    va = _window_indices(screening_virtual, range(nocc, nmo), "screening_virtual")
+    oi_array = jnp.asarray(oi, dtype=jnp.int32)
+    va_array = jnp.asarray(va, dtype=jnp.int32)
+    b_ov = factors[:, oi_array[:, None], va_array[None, :]]
+    pairs = (energy[oi_array], energy[va_array])
+    freqs, _ = scaled_legendre_grid(nw)
+
+    resolvent_data = rpa_resolvent(jnp.concatenate(pairs), b_ov, factors, eta=eta)
+    return {
+        "wmn": screened_w_imag_resolvent(resolvent_data, freqs),
+        "wmn_static": screened_w_imag_resolvent(resolvent_data, jnp.zeros(1))[0],
+        "resolvent_data": resolvent_data,
+    }
+
+
 def _exchange_mo(b_mn: Array, nocc: int) -> Array:
     """Exact-exchange potential in the MO basis: v^x[n,m] = -sum_i B[n,i] B[i,m]."""
     return -jnp.einsum(
@@ -113,6 +142,8 @@ def _qp_loop(
     evaluate_only: bool = False,
     g_orbitals=None,
     return_weight=False,
+    wmn_static=None,
+    resolvent_data=None,
 ) -> tuple[Array, ...]:
     """Solve the QP equation for every orbital in ``orbs`` (one spin channel).
 
@@ -141,22 +172,30 @@ def _qp_loop(
     }
     if q0 is not None:
         shared["q0"] = q0
+    if resolvent_data is not None:
+        shared["resolvent_data"] = resolvent_data
     stacked = {
         "wmn_p": wmn[:, :, jnp.asarray(orbs)].transpose(2, 0, 1),  # (norb, nw, nmo)
         "b_pm": b_mn[:, jnp.asarray(orbs), :].transpose(1, 0, 2),  # (norb, naux, nmo)
         "b_mp": b_mn[:, :, jnp.asarray(orbs)].transpose(2, 0, 1),  # (norb, naux, nmo)
+        "p_index": jnp.asarray(orbs),
     }
+    if wmn_static is not None:
+        stacked["wmn_static"] = wmn_static[:, jnp.asarray(orbs)].T
+        shared["occupation_sign"] = jnp.where(jnp.arange(mo_energy.size) < nocc, -1., 1.)
     if conjugate:
         # Periodic factors are ordered (intermediate m, external p).
         # The two vertices must be the same pair, contracted as b^dagger W b.
         stacked["b_pm"] = stacked["b_mp"]
     if del00 is not None:
         stacked["del_w"] = del00[None, :] + delP0[jnp.asarray(orbs)]  # (norb, nw)
-        stacked["p_index"] = jnp.asarray(orbs)
     if g_orbitals is not None:
         gi = jnp.asarray(g_orbitals, dtype=jnp.int32)
         shared["mo_energy"] = mo_energy[gi]
-        for key in ("wmn_p", "b_pm", "b_mp"):
+        shared["g_indices"] = gi
+        if wmn_static is not None:
+            shared["occupation_sign"] = shared["occupation_sign"][gi]
+        for key in ("wmn_p", "b_pm", "b_mp") + (("wmn_static",) if wmn_static is not None else ()):
             stacked[key] = stacked[key][..., gi]
     occupied = jnp.asarray([p < nocc for p in orbs])
     omega0 = mo_energy[jnp.asarray(orbs)]
@@ -232,6 +271,10 @@ def g0w0_cd_restricted(
     g_orbitals: Sequence[int] | None = None,
     screening_occupied: Sequence[int] | None = None,
     screening_virtual: Sequence[int] | None = None,
+    wmn_fixed: Array | None = None,
+    wmn_static_fixed: Array | None = None,
+    resolvent_expansion: bool = False,
+    resolvent_data_fixed: dict | None = None,
 ) -> GWResult:
     """Spin-restricted G0W0 with contour deformation.
 
@@ -254,7 +297,9 @@ def g0w0_cd_restricted(
         potential is reconstructed as ``v^mf = F - h - J[D]`` which equals
         ``v_xc`` for DFT and ``-K`` for HF starting points.
     nw, eta:
-        Imaginary-grid size and broadening.
+        Imaginary-grid size and real-frequency W broadening. Static Wc(0)
+        subtraction treats the imaginary Green denominator in its zero-eta
+        limit, including the contour boundary at an intermediate G pole.
     orbs:
         Orbital indices for the self-energy correction; default all.
     diff_mode:
@@ -320,7 +365,18 @@ def g0w0_cd_restricted(
     def response_fn(omega):
         return rho_response_iw(omega, screen_pairs, b_ov, spin_factor=4.0)
 
-    wmn = screened_w_imag_axis(b_mn, response_fn, freqs)
+    resolvent_data = resolvent_data_fixed
+    if resolvent_expansion and resolvent_data is None:
+        resolvent_data = rpa_resolvent(jnp.concatenate(screen_pairs), b_ov, b_mn, eta=eta)
+    if resolvent_data is not None:
+        wmn = (screened_w_imag_resolvent(resolvent_data, freqs)
+               if wmn_fixed is None else wmn_fixed)
+        wmn_static = (screened_w_imag_resolvent(resolvent_data, jnp.zeros(1))[0]
+                      if wmn_static_fixed is None else wmn_static_fixed)
+    else:
+        wmn = screened_w_imag_axis(b_mn, response_fn, freqs) if wmn_fixed is None else wmn_fixed
+        wmn_static = (screened_w_imag_axis(b_mn, response_fn, jnp.zeros(1))[0]
+                      if wmn_static_fixed is None else wmn_static_fixed)
 
     qp_energy, sigma_qp, converged_mask, converged, residual, weight = _qp_loop(
         mo_energy=poles,
@@ -341,6 +397,8 @@ def g0w0_cd_restricted(
         evaluate_only=evaluate_only,
         g_orbitals=gi,
         return_weight=True,
+        wmn_static=wmn_static,
+        resolvent_data=resolvent_data,
     )
     return GWResult(
         mo_energy=qp_energy,
@@ -469,6 +527,7 @@ def g0w0_cd_unrestricted(
         orbs=orbs,
         diff_mode=diff_mode,
         qp_solver=qp_solver,
+        wmn_static=screened_w_imag_axis(b_a, response_fn, jnp.zeros(1))[0],
         e_mf=e_a,
         linearized=linearized,
         evaluate_only=evaluate_only,
@@ -488,6 +547,7 @@ def g0w0_cd_unrestricted(
         orbs=orbs,
         diff_mode=diff_mode,
         qp_solver=qp_solver,
+        wmn_static=screened_w_imag_axis(b_b, response_fn, jnp.zeros(1))[0],
         e_mf=e_b,
         linearized=linearized,
         evaluate_only=evaluate_only,
