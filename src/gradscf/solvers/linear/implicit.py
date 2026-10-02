@@ -1,6 +1,7 @@
 """Checked implicit linear solves, including their transpose and higher response."""
 import jax
 import jax.numpy as jnp
+from jax.scipy.linalg import solve_triangular
 
 from ..diagnostics import linear_residual
 from ..operators import as_operator, validate_real_square
@@ -10,7 +11,8 @@ from .gmres import gmres_solve
 
 
 def checked_linear_solve(matvec, rhs, *, config, converged=True,
-                         preconditioner=None, transpose_preconditioner=None):
+                         preconditioner=None, transpose_preconditioner=None,
+                         cholesky=None):
     """Internal vector/block kernel; validity is checked inside the opaque solve.
 
     Placing a nonlinear residual predicate in a linear tangent map would break
@@ -18,6 +20,25 @@ def checked_linear_solve(matvec, rhs, *, config, converged=True,
     """
     if rhs.size == 0:
         return rhs, (jnp.asarray(0., dtype=rhs.real.dtype), jnp.asarray(converged))
+
+    if cholesky is not None:
+        if config.method != "direct" or rhs.shape[0] > config.max_dense:
+            raise ValueError("A Cholesky factor requires a bounded direct solve")
+        factor = jax.lax.stop_gradient(jnp.asarray(cholesky))
+        if factor.shape != (rhs.shape[0], rhs.shape[0]):
+            raise ValueError("Cholesky factor must match the operator shape")
+        action = matvec if rhs.ndim == 1 else lambda x: jax.vmap(
+            matvec, in_axes=1, out_axes=1)(x)
+
+        def solve(operator, value):
+            candidate = solve_triangular(factor.T,
+                solve_triangular(factor, value, lower=True), lower=False)
+            norm, valid = linear_residual(operator, candidate, value,
+                rtol=config.rtol, atol=config.atol, converged=converged)
+            return jnp.where(valid, candidate, jnp.nan), (norm, valid)
+
+        return jax.lax.custom_linear_solve(action, rhs, solve=solve,
+            transpose_solve=solve, has_aux=True)
 
     if rhs.ndim == 2 and config.method == "direct":
         if rhs.shape[0] > config.max_dense:
@@ -72,11 +93,13 @@ def checked_linear_solve(matvec, rhs, *, config, converged=True,
 
 
 def solve_linear(matrix_or_operator, rhs, *, config=None, preconditioner=None,
-                 transpose_preconditioner=None):
+                 transpose_preconditioner=None, cholesky=None):
     """Solve a real square system for a vector or (n,nrhs) block.
 
     maxiter counts GMRES restart cycles. True residuals certify convergence;
     the upstream GMRES info flag is never treated as a convergence certificate.
+    An optional lower Cholesky factor reuses a real SPD matrix factorization;
+    implicit response and both primal/transpose residual checks are retained.
     """
     config = LinearSolverConfig() if config is None else config
     op = as_operator(matrix_or_operator)
@@ -89,7 +112,8 @@ def solve_linear(matrix_or_operator, rhs, *, config=None, preconditioner=None,
         raise ValueError("rhs must have real floating-point dtype")
     rhs = rhs.astype(jnp.result_type(rhs.dtype, op.dtype))
     solution, (norm, valid) = checked_linear_solve(op.apply, rhs, config=config,
-        preconditioner=preconditioner, transpose_preconditioner=transpose_preconditioner)
+        preconditioner=preconditioner, transpose_preconditioner=transpose_preconditioner,
+        cholesky=cholesky)
     return LinearResult(solution, norm, valid, jnp.where(valid, 0, 1))
 
 
