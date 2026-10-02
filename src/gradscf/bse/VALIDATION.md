@@ -573,3 +573,109 @@ in-place edits to a facade's assigned window list. A direct preflight check
 confirmed a directory containing only stale SCREENED_COULOMB is rejected
 before any reference execution. No SCF, integral or shared solver sources
 were changed in this feature increment.
+
+
+## Expanded molecular MolGW comparison (2026-09-30)
+
+The additional executable reference results are recorded separately in
+`tests/bse/data/molgw_expanded.json`. The pinned MolGW/libcint revisions,
+CPU float64 environment and numerical tolerances are unchanged. Eight cases
+all passed, each with TDA singlet, full-BSE singlet and full-BSE triplet:
+H2/6-31G, water/6-31G, NH3/STO-3G, CH4/STO-3G, N2/STO-3G,
+ethylene/STO-3G, and water/STO-3G evGW0 and evGW. The remaining cases use G0W0.
+The summed per-case elapsed time was 101.68 s (macOS arm64, Python 3.12.2,
+JAX 0.8.1 CPU). This is an implementation comparison in small bases.
+
+| Observable | Maximum absolute error | Tolerance |
+| --- | ---: | ---: |
+| RHF energy / Ha | 4.71e-10 | 1e-7 |
+| QP energy / Ha | 1.94e-8 | 2e-6 |
+| QP weight Z | 4.45e-5 | 5e-5 |
+| BSE energy / Ha | 2.88e-8 | 3e-6 |
+| Oscillator strength | 3.05e-7 | 2e-5 |
+| Static polarizability / a0^3 | 1.37e-7 | 3e-4 |
+| Sampled cross section / a0^2 | 6.57e-6 | 2e-4 |
+
+The extension exposed four distinct issues:
+
+- Molecular evGW evaluated self-energies exactly at their Green-function
+  poles. A strict residue mask omitted the boundary contribution, producing
+  water QP errors of 0.226/0.229 Ha (evGW0/evGW). Analytic static-W subtraction
+  now includes the half-residue limit. Both water errors fell below 4e-9 Ha.
+  Independent single-RPA-pole tests check occupied/virtual values, frequency
+  slopes, explicit empty/full-channel occupation signs and joint parameter
+  JVP/VJP. Periodic q0 paths are unchanged. The subsequent matrix qsGW
+  update also applies static-W subtraction; the diagonal comparison above
+  does not independently certify that matrix path.
+- Dense BSE inherited Davidson's default 40-vector subspace limit. The dense
+  path now ignores that irrelevant limit, while retaining `max_dense`.
+  Ethylene's 48-state reference and separate dense/Davidson cap tests pass.
+- N2's hcore guess converged to a higher RHF stationary branch. Its negative
+  BSE modes were physical instability diagnostics, not solver failures.
+  The catalog explicitly uses `multistart(amplitudes=(.15,), seed=20260923)`;
+  the selected energy is -107.49650051179786 Ha and its internal RHF curvature
+  is positive. No SCF defaults or stability rejection rules were changed.
+- Water/6-31G requires a finer MolGW graphical self-energy grid for Z:
+  400001 points at 5e-6 Ha spacing, retaining the same +/-1 Ha interval.
+  The Z discrepancy decreased from 4.02e-4 to 4.45e-5. This refines the
+  independent finite-difference reference; the tolerance was not relaxed.
+
+Run the executable suite in a fresh directory:
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+python tests/comparisons/compare_molgw_gw_bse.py /path/to/molgw \
+  --source /path/to/molgw-source --suite extended --keep-going \
+  --workdir /tmp/fresh-molgw-expanded --output /tmp/molgw-expanded.json
+```
+
+The combined offline fixtures (original seven plus eight new cases) passed
+15 tests in 119.40 s. The final combined regression below passed **78 tests
+in 210.82 s**, with 16 existing complex-to-real AD warnings and no skips.
+The separate restricted PySCF GW comparison passed 2 tests in 35.87 s.
+These focused checks do not certify the complete repository or GPU behavior.
+
+```sh
+PYTHONPATH=src:tests/gw:tests/bse JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 \
+python -m pytest -q --import-mode=importlib \
+  tests/gw/test_contour_pole_limit.py tests/gw/test_gw_evgw.py \
+  tests/gw/test_gw_differentiability.py tests/gw/test_gw_qp.py \
+  tests/gw/test_molecular_controls.py tests/gw/test_qp_methods.py \
+  tests/bse/test_molgw_fixture.py tests/bse/test_dense_capacity.py \
+  tests/gw/test_gw_cd_ugw.py \
+  tests/gw/pbc/test_kpoint_invariants.py::test_gamma_matches_single_k_with_complex_orbitals \
+  tests/gw/pbc/test_kpoint_invariants.py::test_gamma_unrestricted_preserves_independent_spin_phases
+```
+
+
+## Diffuse-basis roundoff and methane spectra (2026-09-30)
+
+The functional BSE entry point now canonicalizes admissible roundoff in real
+MO factors once, before constructing screening and both kernel operators.
+The factor antisymmetry is checked first using a contraction-dimension-scaled
+machine-precision bound. Larger errors remain invalid. Standalone screening
+validation and all shared eigensolver structure/stability thresholds are
+unchanged. This replaces the provisional screening-only threshold adjustment.
+
+A 61-MO synthetic regression failed before the repair and passes afterward;
+it verifies forward roots, JIT reverse gradients, JVP, finite differences,
+symmetric factor gradients and rejection of a 1e-5 asymmetric perturbation.
+The focused full-BSE/roundoff tests passed **12 tests in 25.30 s**. The disjoint
+API/optical/matrix-free/MolGW-fixture suite passed **34 tests in 183.67 s**, with
+two existing complex-to-real AD warnings: **46 tests total**, no skips.
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python -m pytest -q \
+  tests/bse/test_screening_roundoff.py tests/bse/test_full.py
+PYTHONPATH=src JAX_PLATFORMS=cpu OMP_NUM_THREADS=1 python -m pytest -q \
+  tests/bse/test_api.py tests/bse/test_optical_spectrum.py \
+  tests/bse/test_matrix_free.py tests/bse/test_molgw_fixture.py
+```
+
+Native methane/Cartesian aug-cc-pVDZ/Weigend-RI G0W0, evGW0 and evGW spectra
+were executed with all G/W states but an explicitly restricted QP/optical
+window. All 145 selected full singlet BSE roots converged for all three
+methods; the largest physical residual was 1.802e-13 Ha. See the
+[archived results and convergence limitations](../../../reproducibility/gw_bse/methane_aug_cc_pvdz/README.md).
+These results do not certify full-space evGW, optical-window/basis convergence,
+experimental agreement, or evGW outer-fixed-point derivatives.

@@ -121,3 +121,9 @@ python -m pytest -q --import-mode=importlib \
   tests/gw/pbc/test_kpoint_invariants.py::test_gamma_matches_single_k_with_complex_orbitals \
   tests/gw/pbc/test_kpoint_invariants.py::test_kpoint_driver_is_invariant_to_independent_band_phases
 ```
+
+
+The timing table above was recorded at `ae24d0e`, before the subsequent
+molecular static-W contour subtraction. It remains a historical measurement,
+not a timing claim for later self-energy evaluation graphs. Re-run the same
+benchmark to measure the current revision; the default root method is unchanged.

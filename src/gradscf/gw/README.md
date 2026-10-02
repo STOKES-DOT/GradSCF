@@ -14,8 +14,8 @@ response = bse.BSE(mygw, nroots=1, tda=False).run()
 The restricted facade supports `g0w0`, `evgw` and `evgw0`. The latter two
 reuse the existing eigenvalue fixed-point loop. `evgw0` fixes the original
 mean-field spectrum in W while updating G; `evgw` updates both. Orbitals and
-mean-field exchange subtraction stay fixed. W0 is currently recomputed from
-its fixed inputs, rather than stored between iterations. `max_cycle`,
+mean-field exchange subtraction stay fixed. W0 is built once per evGW0 call
+and reused across its outer iterations. `max_cycle`,
 `conv_tol` and `damp` configure only the outer eigenvalue loop. Outer-loop
 AD/JIT is not implemented; an inner implicit QP derivative is not its substitute.
 
@@ -81,3 +81,88 @@ slopes for the inner G0W0 root calculation. `UGW` accepts the same choice.
 The default remains secant; the measured small CPU cases do not show a speedup.
 Forward method selection does not change the implicit backward. See
 [algorithms, safeguards and measured costs](QP_SOLVERS.md).
+
+
+## Molecular contour-boundary treatment
+
+Molecular diagonal G0W0/evGW/evGW0 self-energies now subtract Wc(0) from the
+imaginary-axis quadrature and residue, then add the analytic static term.
+This is essential when evGW evaluates omega exactly at a G pole: a strict
+residue mask alone drops its half-residue contribution. Explicit per-spin
+occupation signs also cover empty/full molecular spin channels. The formula
+and independent single-pole/parameter-response checks are described in the
+[expanded MolGW validation](../bse/VALIDATION.md).
+
+The imaginary Green denominator uses eta->0; `eta` still broadens real-frequency
+W. At finite eta this differs from the previous Green-broadened quadrature,
+and is not a proof of exact boundary continuity or arbitrary higher AD.
+Periodic q0 head/wing paths retain their previous convention. Molecular matrix
+qsGW uses the corresponding static subtraction, with an independent analytic
+two-orbital pole test; this does not establish full qsGW parity with MolGW.
+
+
+For one contracted intermediate state, let delta = omega - epsilon_m,
+s = -1 (occupied) or +1 (virtual), and W0 = Wc(0). The regularized expression is
+
+```
+Sigma_m = -1/pi * integral_0^infinity
+              delta/(delta**2 + nu**2) * [Wc(i*nu) - W0] dnu
+          + s/2 * W0
+          + (sign(delta)+s)/2 * [Wc(abs(delta)) - W0].
+```
+
+At zero real-axis broadening, Wc(i*nu)-W0 is O(nu^2). The subtracted
+imaginary-axis integral and its first frequency derivative are regular at
+delta=0. The residue coefficient is s/2 on that boundary. At finite eta,
+the existing real-frequency response convention does not give exactly the
+same Wc(0) as the imaginary-axis evaluation, so this identity is exact in
+the eta->0 limit. Quadrature convergence remains necessary, including the
+subtracted large-frequency tail.
+
+## Molecular evGW resolvent acceleration
+
+The molecular evGW/evGW0 loop uses a direct-RPA transition-space resolvent.
+For occupied-virtual factors V and positive gaps Delta, define
+
+```
+T = V sqrt(Delta)
+M = diag(Delta**2) + 4 T.T T
+G = T.T B_mn
+Wc(z)[mn] = -4 G_mn.T (M - z**2 I)^-1 G_mn
+```
+
+The MO-pair contractions above are the diagonal of the pair-space quadratic
+form. On the imaginary axis use z=i*nu and real gaps. To retain the existing
+real-axis response, 1/(omega-Delta+2i*eta)+1/(-omega-Delta), construct a second
+model with Delta replaced by Delta-i*eta and evaluate it at z=omega+i*eta.
+Using the real matrix at z=omega+i*eta alone would change the finite-eta
+response, particularly near a screening pole. The reference pole helpers use
+that simpler convention only for checks; production preserves the CD response.
+
+The shared `solvers.linear.factor_shifted` / `solve_shifted` implementation
+reuses the real symmetric imaginary-axis factorization and a complex symmetric
+real-axis factorization for many shifts. A defective or poorly conditioned
+complex eigenbasis falls back to a dense solve. Spectral factors are stopped
+primal data, while `custom_linear_solve` differentiates
+
+```
+(M-shift*I) dx = db - (dM-dshift*I) x.
+```
+
+Thus physical matrix, coupling, frequency and eta derivatives are retained;
+no division by an eigenvalue gap is needed at degeneracy. Singular shifted
+systems remain outside this derivative contract; no denominator clipping is
+introduced. This combines the speed of a spectral solve with a basis-invariant
+matrix-equation derivative, rather than treating spectral speed and correct
+AD as mutually exclusive choices.
+
+Residue evaluation requests only the external/intermediate MO pairs it needs,
+including nonconsecutive G windows. evGW0 reuses both the factorization and the
+imaginary-axis/static W values within one invocation. There is no global cache.
+G0W0 still defaults to CD; evGW's outer fixed point remains eager-only.
+
+A serial C3H6/STO-3G/Weigend-RI comparison with 64 quadrature points tested
+reused factorization against a per-frequency dense reference. Both sides of
+the benchmark now retain the same finite-eta CD response. First-call results,
+repeat samples, settings and timing boundaries are recorded in
+[the benchmark report](../../../reproducibility/gw_bse/cycloalkane_scaling/resolvent_reuse.md).
