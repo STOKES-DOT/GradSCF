@@ -16,8 +16,11 @@ reuse the existing eigenvalue fixed-point loop. `evgw0` fixes the original
 mean-field spectrum in W while updating G; `evgw` updates both. Orbitals and
 mean-field exchange subtraction stay fixed. W0 is built once per evGW0 call
 and reused across its outer iterations. `max_cycle`,
-`conv_tol` and `damp` configure only the outer eigenvalue loop. Outer-loop
-AD/JIT is not implemented; an inner implicit QP derivative is not its substitute.
+`conv_tol` and `damp` configure only the outer eigenvalue loop. Functional
+molecular drivers accept `differentiation=SCFDifferentiationConfig()` for
+[outer implicit JVP/VJP](OUTER_RESPONSE.md); an inner implicit QP derivative
+is not its substitute. `UGW` offers the same three forward method choices
+for HF references; its W0 arrays are currently recomputed with fixed spectra.
 
 ## Three independent windows
 
@@ -59,7 +62,7 @@ are invalidated by source/settings changes; failed GW reruns clear their result.
 
 The QP implicit VJP and fixed-input G0W0/BSE derivatives retain their existing
 contracts. See [BSE properties](../bse/README.md), [scGW](SCGW.md), and
-[executed MolGW comparisons](../bse/VALIDATION.md). COHSEX, open-shell BSE,
+[executed MolGW comparisons](../bse/VALIDATION.md). COHSEX, spin-flip BSE,
 periodic BSE, analytic continuation of scGW, and distributed execution remain
 outside this increment.
 
@@ -121,7 +124,7 @@ subtracted large-frequency tail.
 
 ## Molecular evGW resolvent acceleration
 
-The molecular evGW/evGW0 loop uses a direct-RPA transition-space resolvent.
+The restricted molecular evGW/evGW0 loop uses a direct-RPA transition-space resolvent.
 For occupied-virtual factors V and positive gaps Delta, define
 
 ```
@@ -159,10 +162,30 @@ AD as mutually exclusive choices.
 Residue evaluation requests only the external/intermediate MO pairs it needs,
 including nonconsecutive G windows. evGW0 reuses both the factorization and the
 imaginary-axis/static W values within one invocation. There is no global cache.
-G0W0 still defaults to CD; evGW's outer fixed point remains eager-only.
+G0W0 still defaults to CD. Molecular evGW/evGW0 and restricted qsGW offer
+opt-in [outer implicit response](OUTER_RESPONSE.md); eager forward remains default.
 
 A serial C3H6/STO-3G/Weigend-RI comparison with 64 quadrature points tested
 reused factorization against a per-frequency dense reference. Both sides of
 the benchmark now retain the same finite-eta CD response. First-call results,
 repeat samples, settings and timing boundaries are recorded in
 [the benchmark report](../../../reproducibility/gw_bse/cycloalkane_scaling/resolvent_reuse.md).
+
+
+## Fixed-phonon matrix scGW
+
+`scgw_matsubara_restricted(..., phonons=PhononModel(...))` adds an external
+harmonic Fan/Debye-Waller model inside each electronic iteration. The model
+uses the fixed initial orthonormal MO frame; its frequencies and vertices
+remain differentiable external parameters. The shared implicit root includes
+the dynamic self-energy, total tail moment, static DW potential and particle
+number. See [ep_coupling](ep_coupling/README.md) for conventions and boundaries.
+
+With a phonon model, `total_energy` is None; `electronic_energy` is explicitly
+only the electronic contribution, excluding nuclear repulsion and EP/phonon
+energies. Fixed phonons do not imply a self-consistent phonon Dyson equation.
+Complex periodic Fan kernels now include the Matsubara reference correction
+and high-frequency moment; they are numerical maps, not a periodic scGW driver.
+Direct fixed-reference retarded Fan, on-shell linewidths and matrix spectral
+functions are also available; these do not analytically continue scGW output. An executable native H2 demonstration is in
+[fixed_phonon_scgw.py](../../../examples/gw/fixed_phonon_scgw.py).

@@ -143,6 +143,8 @@ module documentation for reference restrictions, inputs, and validated paths.
 | Configuration interaction | Restricted singlet/triplet CIS, singlet CIS(D), spin-conserving UCIS; CISD/CISDT/CISDTQ and general rank truncation | [CI guide](src/gradscf/ci/README.md); real molecular determinant spaces from RHF/UHF/ROHF |
 | Coupled cluster | Restricted CCS/CCD/CCSD/CC2/LCCD/LCCSD, CCSD(T), CCSD+T(CCSD), Lambda and unrelaxed 1-RDM; UCCSD/UCCD | [CC guide](src/gradscf/cc/README.md); [open-shell scope](src/gradscf/cc/OPEN_SHELL.md); in-core molecular implementation |
 | GW | Molecular G0W0 with contour deformation, evGW, restricted qsGW and finite-temperature matrix scGW; Gamma/k-point GW | [GW modules](src/gradscf/gw), [Matsubara scGW](src/gradscf/gw/SCGW.md), [periodic GW](src/gradscf/gw/pbc) |
+| BSE | Static TDA/full molecular BSE, restricted singlet/triplet and unrestricted spin-conserving response | [BSE guide](src/gradscf/bse/README.md); real collinear references, isolated-root first-order optical response |
+| Electron–phonon coupling | Fixed-phonon Fan/Debye–Waller self-energies, molecular scGW coupling and real-axis spectra; periodic q-weighted kernels | [EP guide](src/gradscf/gw/ep_coupling/README.md); externally supplied phonons/vertices, no self-consistent phonon feedback |
 | Integrals and density fitting | Native CPU and JAX reference integrals, packed ERIs, direct J/K, auxiliary-basis RI and full-ERI spectral factorization | [Integral API](src/gradscf/integrals), [compact/direct/DF paths](src/gradscf/integrals/COMPRESSED.md) |
 
 ROHF-based UCCSD uses unrestricted cluster amplitudes on common spatial
@@ -160,8 +162,8 @@ derivative rules. Supported inputs and derivative orders depend on the path:
 | TDA and CI | Eigenvalues; eigenvectors for coefficient-dependent objectives | Shared isolated-root response; CI coefficient AD requires `gradient_mode="implicit_eigenvector"` |
 | Spectral subspaces | Projector actions and sums of selected eigenvalues | [First-order JVP/VJP](src/gradscf/solvers/DEGENERACY.md) permits internal degeneracy; the boundary with excluded states must be resolved |
 | Ground-state CC | Energies and amplitudes versus MO integrals | Implicit response at converged roots; fixed topology and orbital ordering; first-order validated contract |
-| GW | Quasiparticle roots and selected matrix-scGW responses | Path-specific rules; evGW/qsGW outer self-consistency loops currently have no AD rule |
-| Native integrals | Geometry or density response on supported operators/layouts | Read the operator-specific contract; geometry, exponent, and coefficient derivatives are not interchangeable |
+| GW | Quasiparticle roots and selected matrix-scGW responses | Opt-in molecular evGW/evGW0 and restricted qsGW outer implicit response; [contracts and limitations](src/gradscf/gw/OUTER_RESPONSE.md) |
+| Native integrals | First/second geometry derivatives of full integrals; density response on supported layouts | [Operator-specific contracts](src/gradscf/integrals/_native/README.md); geometry, exponent, and coefficient derivatives are not interchangeable |
 | Basis and neural models | Contractions and neural parameters through supported SCF/response paths | Requires derivative support along the complete calculation; fixed-primitive NNAO contraction training is a distinct path |
 
 [gradscf.solvers](src/gradscf/solvers/README.md) owns shared diagonalization,

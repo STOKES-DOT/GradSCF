@@ -28,4 +28,3 @@ def phonon_propagator_tau(energies, tau, beta):
     _validate_beta(beta)
     omega, tau = jnp.asarray(energies), jnp.asarray(tau)[:, None]
     return -(jnp.exp(-tau * omega) + jnp.exp(-(beta - tau) * omega)) / (-jnp.expm1(-beta * omega))
-

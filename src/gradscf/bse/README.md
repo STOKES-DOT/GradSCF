@@ -1,7 +1,7 @@
 # Static molecular GW-BSE
 
 `gradscf.bse` implements static GW-BSE for finite molecules, real closed-shell
-orbitals and integer occupations. Both TDA and full BSE have matrix-free
+orbitals or real collinear unrestricted references, with integer occupations. Both TDA and full BSE have matrix-free
 Davidson paths and bounded dense reference paths. Singlet
 and triplet energies, transition moments and length-gauge oscillator strengths
 are supported. First-order response of isolated roots includes QP energies,
@@ -12,7 +12,7 @@ This implements P0/P1 and real full-BSE forward/amplitude response from
 [the development plan](../gw/BSE_PLAN.md). The dense reference is described in
 [FULL_BSE_PLAN.md](FULL_BSE_PLAN.md); the matrix-free metric-response extension
 is described in [MATRIX_FREE_BSE.md](MATRIX_FREE_BSE.md).
-Open-shell/complex/periodic references, dynamic kernels and degenerate-cluster
+Spin-flip, complex/periodic references, dynamic kernels and degenerate-cluster
 properties are not exposed as implemented methods.
 
 ## Public workflow
@@ -49,13 +49,15 @@ silently introduced. QP energies of every selected level must be covered by
 both `qp_computed_mask` and `converged_mask`; the legacy GW result marks
 unrequested MF-filled levels converged, so that flag alone is insufficient.
 `GWResult.screening_energy` records the actual pole spectrum used in W by the
-restricted/unrestricted CD drivers. A restricted result can be converted with
+restricted/unrestricted CD drivers. A restricted or unrestricted result can be converted with
 `BSEReference.from_gw_result(result, mo_factors=..., nocc=..., dipole_mo=...)`.
 This preserves QP coverage/convergence masks and the recorded screening spectrum;
 missing metadata is rejected. For converged evGW, that spectrum equals the final
 QP spectrum, including any frozen unrequested MF levels. Factors and dipoles
 must be in the returned orbital frame. The GW facade now accepts `method="g0w0"`, `"evgw"`, or `"evgw0"`. This supports fixed-frame evGW output as
-BSE input; it does not differentiate the evGW outer fixed point. qsGW/scGW
+BSE input. The low-level evGW drivers also offer opt-in
+[outer implicit response](../gw/OUTER_RESPONSE.md); their resulting arrays can
+be passed directly to `run_bse` without stopping this dependence. qsGW/scGW
 results without this provenance still require a separately justified explicit
 reference and are not automatically adapted.
 
@@ -151,10 +153,11 @@ invalidates derivatives for the **whole requested root set**, consistently for
 JVP and VJP. A smaller isolated prefix can still be differentiated. Forward
 values for stable degenerate roots remain available.
 
-The verified contract is first-order fixed-MO response and a G0W0+BSE composition
-on a valid QP branch. It is not a full nuclear/basis derivative, a full evGW/qsGW
-fixed-point derivative, a Matsubara-to-real-axis continuation, or a root-tracking
-rule across GW residue/pole crossings.
+The numerical contract is first-order response in the supplied MO data and
+GW+BSE composition on valid locally isolated branches. Eager facades use host
+validation; use the functional drivers inside JAX transformations. Nuclear/basis
+response also requires differentiable upstream inputs. This does not provide a
+Matsubara-to-real-axis continuation or root tracking across GW pole crossings.
 
 ## Storage and solver boundaries
 
@@ -257,3 +260,47 @@ See [the native spectrum example](../../../examples/bse/molecular_spectrum.py),
 [GW controls](../gw/README.md), and the MolGW numerical comparison in
 [VALIDATION.md](VALIDATION.md). MolGW uses the same resonant/antiresonant optical
 construction in [m_spectra.f90](https://github.com/molgw/molgw/blob/b831818d7a845c36f295d036dc8ceef59daf9991/src/m_spectra.f90).
+
+## Unrestricted spin-conserving response
+
+`BSE(ugw).run()` selects spin-conserving response (`singlet=None`) automatically.
+Explicit `singlet=True/False` is reserved for restricted spin adaptation.
+The same facade accepts `BSEReference(..., nocc=(nalpha, nbeta))`, with energies
+shaped `(2,nmo)`, MO factors `(2,naux,nmo,nmo)` and dipoles `(2,3,nmo,nmo)`.
+Both channels must use the **same AO auxiliary metric**; separately factorized
+spin ERIs do not define the cross-spin Coulomb vertices.
+
+The functional entry point remains `run_bse`; construct its static space with
+`make_bse_space(nmo, (nalpha, nbeta))` and use `BSEConfig(singlet=None, ...)`.
+Occupied/virtual windows are paired tuples, e.g. `occupied=((4,), (3,))`.
+Amplitudes are `(X_alpha, X_beta)` and `(Y_alpha, Y_beta)`, each block shaped
+`(nroots, nocc_window_spin, nvir_window_spin)`. Empty transition channels are
+supported for explicit references, although UGW currently requires occupied
+and virtual orbitals in each spin.
+
+The common static dielectric is
+
+```text
+epsilon_PQ = delta_PQ + 2 sum_(sigma,ia) L^sigma_Pia L^sigma_Qia / gap^sigma_ia
+A_ia(s),jb(t) = delta_st delta_ij delta_ab gap^QP_ia(s)
+               + (ia_s|jb_t) - delta_st W(ij_s,ab_s)
+B_ia(s),jb(t) = (ia_s|jb_t) - delta_st W(ib_s,aj_s)
+```
+
+Same-spin direct actions reuse the restricted factorized kernels. One joint
+low-rank charge action supplies the intra- and inter-spin exchange terms.
+The screening state is shared; neither full spin-orbital factors nor dense A/B
+are built for Davidson. Dense/GMRES screening and dense/Davidson eigen-solves
+retain their existing residual and first-order response contracts.
+
+Transition moments sum the two spin amplitudes **without** an extra sqrt(2).
+In the closed-shell limit, symmetric/antisymmetric spin combinations reproduce
+the restricted singlet/triplet spectra and strengths. Unrestricted roots
+conserve M_S and are not automatically eigenstates of S^2; this interface does
+not claim spin-pure multiplicities or supply an excited-state S^2 diagnostic.
+
+See [the OH example](../../../examples/bse/oh_unrestricted.py) and
+`tests/bse/test_unrestricted.py` for the independent scalar-loop oracle,
+closed-shell reduction, optical JVP/VJP, windows and QP provenance checks.
+The spin-resolved static kernel follows Monino and Loos, JCTC **17**,
+2852–2867 (2021), DOI: [10.1021/acs.jctc.1c00074](https://doi.org/10.1021/acs.jctc.1c00074).
