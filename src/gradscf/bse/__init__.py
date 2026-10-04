@@ -1,6 +1,6 @@
 """Static real molecular Bethe-Salpeter response in a fixed MO frame."""
 
-from .space import BSESpace, make_bse_space
+from .space import BSESpace, SpinBSESpace, make_bse_space
 from .types import BSEConfig, BSEResult
 from .kernel import build_tda_operator, build_bse_operators
 from .response import run_bse
@@ -12,6 +12,7 @@ from .api import BSE
 
 __all__ = [
     'BSESpace',
+    'SpinBSESpace',
     'make_bse_space',
     'BSEConfig',
     'BSEResult',

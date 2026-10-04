@@ -10,8 +10,9 @@ The drivers re-evaluate the G0W0 machinery
 (:func:`gradscf.gw.g0w0_cd_restricted` / ``_unrestricted`` /
 :func:`gradscf.gw.pbc.krgw.g0w0_cd_gamma`) with the current QP spectrum
 in G and W, retaining the original mean-field base in the Dyson equation.
-The outer convergence loop is eager-only; ``diff_mode`` does not provide
-implicit differentiation of this self-consistent fixed point.
+The default outer loop is eager. ``differentiation`` opts into a compiled
+primal and implicit outer root response; ``diff_mode`` alone controls only
+the inner QP machinery and does not enable outer response.
 Convergence certifies the on-shell residual of the chosen discrete CD
 grid. Molecular static-W subtraction supplies the contour's own-pole limit;
 frequency-grid accuracy still requires independent convergence checks.
@@ -31,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
@@ -40,6 +42,9 @@ from .g0w0 import (
     g0w0_cd_unrestricted,
 )
 from .types import GWResult
+from ..scf.autodiff import SCFDifferentiationConfig
+from ..solvers.nonlinear import attach_root
+from .outer_response import linear_config, require_valid, require_real
 
 
 def _evgw_loop(
@@ -49,6 +54,7 @@ def _evgw_loop(
     max_iter: int = 20,
     tol: float = 1e-6,
     damping: float = 0.0,
+    differentiation: SCFDifferentiationConfig | None = None,
     **kwargs,
 ) -> GWResult:
     """Shared fixed-point iteration around a G0W0 driver.
@@ -66,6 +72,35 @@ def _evgw_loop(
     if max_iter < 1 or tol <= 0.0:
         raise ValueError("max_iter and tol must be positive.")
     e_old = jnp.asarray(mo_energy_mf, dtype=jnp.float64)
+    if differentiation is not None:
+        config = linear_config(differentiation)
+        selected = kwargs.get("orbs")
+        selected = (jnp.arange(e_old.shape[-1]) if selected is None
+                    else jnp.asarray(tuple(selected), dtype=jnp.int32))
+        computed = jnp.zeros_like(e_old, dtype=bool).at[..., selected].set(True)
+
+        def residual(energy):
+            result = driver(mo_energy_poles=energy, evaluate_only=True, **kwargs)
+            # Unrequested levels follow the original MF spectrum. Their
+            # equations must not be zero rows in the outer response Jacobian.
+            return jnp.where(computed, result.qp_residual, energy - mo_energy_mf)
+
+        def body(state):
+            energy, iteration, _, _ = state
+            error = residual(energy)
+            norm = jnp.max(jnp.abs(error))
+            done = jnp.isfinite(norm) & (norm < tol)
+            energy = energy - jnp.where(done, 0., 1. - damping) * error
+            return energy, iteration + 1, norm, done
+
+        seed, _, norm, done = jax.lax.while_loop(
+            lambda state: (state[1] < max_iter) & ~state[3], body,
+            (e_old, jnp.array(0), jnp.array(jnp.inf), jnp.array(False)))
+        require_valid(done, norm, "evGW")
+        energy = attach_root(residual, jax.lax.stop_gradient(seed), config=config, converged=done)
+        result = driver(mo_energy_poles=energy, evaluate_only=True, **kwargs)
+        return replace(result, converged=done, converged_mask=jnp.abs(result.qp_residual) < tol,
+                       qp_computed_mask=computed)
     for _ in range(int(max_iter)):
         result = driver(mo_energy_poles=e_old, evaluate_only=True, **kwargs)
         residual = result.qp_residual
@@ -102,6 +137,7 @@ def evgw_cd_restricted(
     tol: float = 1e-6,
     damping: float = 0.0,
     update_w: bool = True,
+    differentiation: SCFDifferentiationConfig | None = None,
     g_orbitals: Sequence[int] | None = None,
     screening_occupied: Sequence[int] | None = None,
     screening_virtual: Sequence[int] | None = None,
@@ -115,7 +151,13 @@ def evgw_cd_restricted(
     evGW0 with the original spectrum in W throughout the iterations. W is
     built once per evGW0 call and reused across the outer iterations.
     Correlation windows are passed through unchanged to the shared CD driver.
+    ``differentiation=SCFDifferentiationConfig(mode="implicit")`` enables
+    JIT/JVP/VJP of the outer Dyson root, including G/W response. Cached W0
+    retains its derivative with respect to the original inputs. The default
+    eager path is unchanged. Unconverged roots raise; unresolved implicit
+    linear solves return NaNs under the shared solver policy.
     """
+    require_real(mo_energy, mo_coeff, df_factors, fock_matrix, hcore_matrix, density_matrix)
     if type(update_w) is not bool:
         raise TypeError("update_w must be boolean")
     fixed_w = None
@@ -143,6 +185,7 @@ def evgw_cd_restricted(
         max_iter=int(max_iter),
         tol=float(tol),
         damping=float(damping),
+        differentiation=differentiation,
         screening_energy=None if update_w else mo_energy,
         wmn_fixed=None if fixed_w is None else fixed_w["wmn"],
         wmn_static_fixed=None if fixed_w is None else fixed_w["wmn_static"],
@@ -172,14 +215,24 @@ def evgw_cd_unrestricted(
     max_iter: int = 20,
     tol: float = 1e-6,
     damping: float = 0.0,
+    differentiation: SCFDifferentiationConfig | None = None,
+    update_w: bool = True,
 ) -> GWResult:
-    """Spin-unrestricted evGW with contour deformation."""
+    """Spin-unrestricted evGW; ``update_w=False`` keeps the initial W spectra.
+
+    ``differentiation`` enables coupled alpha/beta outer implicit response,
+    including the initial-spectrum dependence of W0. The unrestricted W0
+    arrays are currently reevaluated per step, with the same fixed spectra.
+    """
+    require_real(mo_energy, mo_coeff, df_factors, fock_matrix, hcore_matrix, density_matrix)
+    if type(update_w) is not bool:
+        raise TypeError('update_w must be boolean')
     e0 = jnp.stack([jnp.asarray(mo_energy[0]), jnp.asarray(mo_energy[1])])
 
     def driver(mo_energy_poles, **kw):
         return g0w0_cd_unrestricted(mo_energy_poles=(mo_energy_poles[0], mo_energy_poles[1]), **kw)
 
-    return _evgw_loop(
+    result = _evgw_loop(
         driver,
         e0,
         mo_energy=mo_energy,
@@ -196,7 +249,11 @@ def evgw_cd_unrestricted(
         max_iter=int(max_iter),
         tol=float(tol),
         damping=float(damping),
+        differentiation=differentiation,
+        screening_energy=None if update_w else mo_energy,
     )
+
+    return replace(result, method="evgw" if update_w else "evgw0")
 
 
 __all__ = ["evgw_cd_restricted", "evgw_cd_unrestricted"]

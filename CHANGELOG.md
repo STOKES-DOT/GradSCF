@@ -2,6 +2,32 @@
 
 ## Unreleased — GradSCF
 
+### GW/BSE response and electron–phonon coupling
+
+- Add real collinear unrestricted spin-conserving molecular BSE in TDA and
+  full form, sharing screening and isolated-root optical response machinery.
+- Add opt-in outer implicit response for molecular restricted/unrestricted
+  evGW and evGW0, and restricted nondegenerate qsGW; retain explicit validity
+  and convergence boundaries.
+- Add fixed-phonon molecular Fan and Debye–Waller self-energies to the shared
+  Matsubara scGW step, plus causal real-axis spectra, linewidths and periodic
+  q-weighted kernels. Phonon feedback and a periodic Dyson loop are not included.
+- Validate real-axis kernels against pinned ElectronPhonon.jl functions.
+  Keep literature-derived Cu(111)/adamantane illustrations separate from the
+  new native GradSCF adamantane calculation and its experimental comparison.
+
+### Native coordinate Hessians and molecular vibrations
+
+- Add analytic second native geometry JVP/VJP contractions for overlap,
+  kinetic, nuclear attraction, dipole and full ERI, in Cartesian/spherical
+  bases, including independent nuclear/center/origin mixed derivatives.
+- Compose the integral Hessian with shared implicit RHF response for molecular
+  Hessian-vector products and maximum-overlap transported Fock derivatives.
+  Avoid differentiating arbitrary canonical orbitals in degenerate subspaces.
+- Add verified s/p signed-permutation symmetry reduction and a checkpointed
+  adamantane RHF/STO-3G → G0W0 → Fan/DW spectrum example. Record its minimal-basis,
+  frozen-GW, harmonic and numerical-resolution limits explicitly.
+
 ### Restricted Hartree-Fock entry point
 
 - Add `scf.RHF(mol).run()` with fixed HF settings, sharing the existing RKS

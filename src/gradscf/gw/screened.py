@@ -68,7 +68,11 @@ def build_static_screening(
     mo_energy, mo_factors, *, occupied, virtual, gap_tol=1e-10, max_aux=1024,
     config=None
 ):
-    """Closed-shell static RPA epsilon=I-Pi(0) for metric-whitened real factors.
+    """Static RPA epsilon=I-Pi(0) for metric-whitened real factors.
+
+    Restricted energies/factors have shape (nmo,)/(naux,nmo,nmo). Spin inputs
+    have a leading axis of length two and paired occupied/virtual windows;
+    both spin responses contribute to one charge dielectric.
 
     Screening indices are independent of the optical excitation window. Empty
     screening transitions give epsilon=I (bare interaction). Real symmetric
@@ -78,58 +82,62 @@ def build_static_screening(
     the dense dielectric. Direct screening is the default bounded reference.
     """
     e, l = jnp.asarray(mo_energy), jnp.asarray(mo_factors)
-    if e.ndim != 1 or l.ndim != 3 or l.shape[1:] != (e.size, e.size):
-        raise ValueError("Screening requires energy (nmo,) and factors (naux,nmo,nmo)")
+    unrestricted = e.ndim == 2
+    if unrestricted:
+        if e.shape[0] != 2 or l.ndim != 4 or l.shape[0] != 2:
+            raise ValueError("Spin screening requires two energy/factor channels")
+        if len(occupied) != 2 or len(virtual) != 2:
+            raise ValueError("Spin screening requires alpha/beta windows")
+        energies, factors = e, l
+        occs, virs = occupied, virtual
+    else:
+        energies, factors = (e,), (l,)
+        occs, virs = (occupied,), (virtual,)
     if jnp.iscomplexobj(e) or jnp.iscomplexobj(l):
         raise NotImplementedError("Static molecular screening requires real inputs")
-    if (
-        not isfinite(gap_tol)
-        or gap_tol <= 0
-        or not isinstance(max_aux, Integral)
-        or max_aux < 1
-    ):
+    if (not isfinite(gap_tol) or gap_tol <= 0
+            or not isinstance(max_aux, Integral) or max_aux < 1):
         raise ValueError("Invalid static screening tolerance or auxiliary limit")
     if config is not None and not isinstance(config, LinearSolverConfig):
         raise TypeError("screening config must be a LinearSolverConfig")
     cfg = config or LinearSolverConfig(method="direct", rtol=1e-11, atol=1e-13,
                                        max_dense=max_aux)
-    if l.shape[0] > max_aux:
-        raise ValueError("Static screening exceeds max_aux")
-    if cfg.method == "direct" and l.shape[0] > cfg.max_dense:
-        raise ValueError("Static screening direct solve exceeds max_dense")
-    occ, vir = tuple(occupied), tuple(virtual)
-    if any(
-        not isinstance(p, Integral) or not 0 <= p < e.size for p in occ + vir
-    ) or len(set(occ + vir)) != len(occ) + len(vir):
-        raise ValueError("Screening indices must be distinct, disjoint and in range")
     dtype = jnp.result_type(e, l, 1.0)
-    e, l = e.astype(dtype), l.astype(dtype)
-    oi, va = jnp.asarray(occ, dtype=jnp.int32), jnp.asarray(vir, dtype=jnp.int32)
-    gaps = e[va][None, :] - e[oi][:, None]
-    minimum = jnp.min(gaps, initial=jnp.inf)
-    scale = jnp.maximum(1.0, jnp.max(jnp.abs(l), initial=0.0))
-    valid = (
-        jnp.all(jnp.isfinite(l))
-        & jnp.all(jnp.isfinite(gaps))
-        & (minimum > gap_tol)
-        & (
-            jnp.max(jnp.abs(l - l.swapaxes(1, 2)), initial=0.0)
-            <= 64 * jnp.finfo(dtype).eps * scale
-        )
-    )
-    lov = l[:, oi[:, None], va[None, :]]
-    safe_gaps = jnp.where(gaps > gap_tol, gaps, 1.0)
+    valid, minimum = jnp.asarray(True), jnp.asarray(jnp.inf, dtype)
+    vertices, weights = [], []
+    for energy, factor, occupied, virtual in zip(energies, factors, occs, virs):
+        if energy.ndim != 1 or factor.ndim != 3 or factor.shape[1:] != (energy.size,) * 2:
+            raise ValueError("Screening requires energy (nmo,) and factors (naux,nmo,nmo)")
+        naux = factor.shape[0]
+        if naux > max_aux:
+            raise ValueError("Static screening exceeds max_aux")
+        if cfg.method == "direct" and naux > cfg.max_dense:
+            raise ValueError("Static screening direct solve exceeds max_dense")
+        occ, vir = tuple(occupied), tuple(virtual)
+        if any(not isinstance(p, Integral) or not 0 <= p < energy.size for p in occ + vir
+               ) or len(set(occ + vir)) != len(occ) + len(vir):
+            raise ValueError("Screening indices must be distinct, disjoint and in range")
+        energy, factor = energy.astype(dtype), factor.astype(dtype)
+        oi, va = jnp.asarray(occ, dtype=jnp.int32), jnp.asarray(vir, dtype=jnp.int32)
+        gaps = energy[va][None, :] - energy[oi][:, None]
+        minimum = jnp.minimum(minimum, jnp.min(gaps, initial=jnp.inf))
+        scale = jnp.maximum(1.0, jnp.max(jnp.abs(factor), initial=0.0))
+        valid &= (jnp.all(jnp.isfinite(factor)) & jnp.all(jnp.isfinite(gaps))
+                  & jnp.all(gaps > gap_tol)
+                  & (jnp.max(jnp.abs(factor - factor.swapaxes(1, 2)), initial=0.)
+                     <= 64 * jnp.finfo(dtype).eps * scale))
+        lov = factor[:, oi[:, None], va[None, :]].reshape(naux, len(occ) * len(vir))
+        vertices.append(lov)
+        # StaticScreening uses coefficient 4: each unrestricted spin contributes 2.
+        weights.append(((0.5 if unrestricted else 1.) /
+                        jnp.where(gaps > gap_tol, gaps, 1.)).reshape(-1))
+    lov = jnp.concatenate(vertices, axis=1)
+    inverse_gaps = jnp.concatenate(weights)
     if cfg.method == "gmres":
-        return StaticScreening(None, valid, minimum,
-                               lov.reshape(l.shape[0], len(occ) * len(vir)),
-                               (1 / safe_gaps).reshape(-1), cfg)
-    dielectric = jnp.eye(l.shape[0], dtype=dtype) + 4 * jnp.einsum(
-        "Pia,Qia,ia->PQ", lov, lov, 1 / safe_gaps
-    )
-    return StaticScreening(
-        dielectric, valid, minimum, config=cfg,
-        cholesky=jnp.linalg.cholesky(dielectric),
-    )
+        return StaticScreening(None, valid, minimum, lov, inverse_gaps, cfg)
+    dielectric = jnp.eye(lov.shape[0], dtype=dtype) + 4 * (lov * inverse_gaps) @ lov.T
+    return StaticScreening(dielectric, valid, minimum, config=cfg,
+                           cholesky=jnp.linalg.cholesky(dielectric))
 
 
 def solve_static_screening(state, values):

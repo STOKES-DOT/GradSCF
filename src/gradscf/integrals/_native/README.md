@@ -12,6 +12,7 @@ Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
 - `__init__.py`, `build.py`: private library loading and offline build CLI.
 - `csrc/ffi.cc`: GradSCF C++ value FFI adapter.
 - `csrc/geometry.cc`: streaming analytic coordinate JVP/VJP drivers.
+- `csrc/geometry_hessian.cc`: analytic bilinear coordinate Hessian products and adjoints.
 - `csrc/tables.h`: shared table validation and owned libcint buffers.
 - `vendor/`: pinned, unmodified upstream C sources, licenses and checksums.
 - `include/`, `exports.*`, `CMakeLists.txt`: build configuration and ABI exports.
@@ -41,7 +42,9 @@ this initial source build. `--jobs` defaults to 2 for compilation only. Integral
 evaluation is serial and does not modify process-wide threading settings.
 
 All vendor symbols have hidden visibility and a linker export allowlist;
-Only `GradSCFIntegrals`, `GradSCFGeometryJVP` and `GradSCFGeometryVJP` are exported. There is no dynamically
+The derivative exports include `GradSCFGeometryJVP`, `GradSCFGeometryVJP`,
+`GradSCFGeometryHessianJVP` and `GradSCFGeometryHessianVJP`; the export lists
+also contain the value, ECP, packed-ERI and J/K entry points. There is no dynamically
 linked libcint, PySCF, BLAS, OpenMP, or Python library. Loading uses `RTLD_LOCAL`.
 
 ## Contract
@@ -81,7 +84,7 @@ libcint's zero-on-overflow sentinel is returned to JAX as an error before fillin
 
 ## Coordinate derivatives
 
-`integrals.make_plan(..., backend="native").evaluate(...)` supports first-order
+`integrals.make_plan(..., backend="native").evaluate(...)` supports first- and second-order
 `jax.jvp`, `jax.vjp`, `jax.grad`, `jax.jacfwd` and `jax.jacrev` for nuclear
 coordinates and basis centers, including JIT/batching. Dipole origins also
 participate in AD; a default charge-center origin follows nuclear motion.
@@ -89,12 +92,46 @@ C++ evaluates analytic derivative shell blocks and immediately contracts them
 with the tangent or cotangent. No full coordinate Jacobian or Python callback
 is used. Nuclear-attraction operator motion and AO-center motion are separate.
 
+For an integral tensor `I(R)`, the second-order kernels evaluate
+`H[u,v] = sum_ab (d²I/dR_a dR_b) u_a v_b` and its coordinate adjoint
+`sum_bI (d²I/dR_a dR_b) u_b cot_I`. Both contract analytic libcint shell
+blocks directly. Nested JVPs, forward-over-reverse HVPs, reverse-over-reverse
+Hessians and derivatives with respect to the contraction vectors share these
+two kernels. Independent nuclear/basis coordinates and dipole origins include
+all mixed terms. No finite differences are used by the implementation.
+
+```python
+from dataclasses import replace
+import jax
+import jax.numpy as jnp
+from gradscf import integrals
+
+jax.config.update("jax_enable_x64", True)
+topology, parameters = integrals.prepare_basis("H 0 0 0; H 0 0 .74", basis="3-21g")
+plan = integrals.make_plan(topology, backend="native")
+
+def overlap_sum(centers):
+    return plan.evaluate("overlap", replace(parameters, centers=centers)).sum()
+
+centers = parameters.centers  # Bohr; move the basis centers independently here.
+direction = jnp.zeros_like(centers).at[0, 2].set(1.)
+hvp = jax.jit(lambda r, v: jax.jvp(jax.grad(overlap_sum), (r,), (v,))[1])
+product = hvp(centers, direction)
+hessian = jax.jit(jax.hessian(overlap_sum))(centers)
+```
+
+An SCF energy Hessian additionally needs the converged orbital/density response
+and nuclear repulsion derivatives. Integral Hessians alone, or differentiating
+a frozen-density force expression, do not supply that response.
+
 The low-level raw-ENV `backends.native.evaluate` remains value-only: an arbitrary
 ENV vector mixes geometry, exponents and coefficients. Use integral plans for
-geometry AD. Native exponent/coefficient and higher derivatives remain
+geometry AD. Native exponent/coefficient and third-or-higher coordinate derivatives remain
 unsupported and fail explicitly. The JAX reference backend remains available
-for those basis-parameter derivatives. GPU FFI, ECPs, periodic integrals,
-spinors, range separation, packed ERIs and fused J/K are not exposed.
+for those basis-parameter derivatives. Geometry AD is limited to the five full
+operators listed above: ECP, RI, packed ERIs and fused J/K do not acquire
+geometry derivatives through this change. GPU FFI, periodic integrals, spinors
+and range separation are outside this interface.
 Full integral values still require O(nao^4) memory.
 
 ## Why these upstream files
@@ -109,6 +146,7 @@ such operator is exposed. Large optional polynomial-fit tables, F12 code,
 other generated operators, and upstream build/test machinery are excluded.
 The pinned `autocode/grad1.c` and `autocode/grad2.c` provide the one-/two-electron
 first-derivative kernels; their blob and SHA256 hashes are in the manifest.
+The pinned `autocode/hess.c` supplies the second-derivative kernels.
 All vendored files remain byte-identical to their pinned upstream blobs.
 
 The numerical tests compare identical tables with PySCF at absolute tolerance
@@ -116,3 +154,14 @@ The numerical tests compare identical tables with PySCF at absolute tolerance
 spherical forms, eager/JIT values, and dynamic coordinate changes. A separate
 process blocks all PySCF imports and checks a primitive overlap analytically.
 Tests also verify unsupported AD and malformed-input rejection.
+
+Second-coordinate tests compare analytic products with fourth-order finite
+differences of first derivatives (CPU float64, step `2e-4` Bohr), including
+independent nuclei, floating centers, origin motion and d shells. They also
+check nonsymmetric cotangents, Hessian symmetry, JIT/batching and PySCF-free
+execution. For H2/3-21G at 0.74 Angstrom, differentiating the converged implicit
+SCF energy twice gives `0.400305894977` Hartree/Bohr² for the second H atom's
+z-coordinate curvature, versus `0.400305897150` from PySCF's analytic RHF
+Hessian (absolute difference `2.18e-9` Hartree/Bohr²). The focused SCF test
+independently checks this curvature against finite differences of the
+self-consistent energy gradient.

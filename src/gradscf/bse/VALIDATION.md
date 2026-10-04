@@ -679,3 +679,87 @@ methods; the largest physical residual was 1.802e-13 Ha. See the
 [archived results and convergence limitations](../../../reproducibility/gw_bse/methane_aug_cc_pvdz/README.md).
 These results do not certify full-space evGW, optical-window/basis convergence,
 experimental agreement, or evGW outer-fixed-point derivatives.
+
+
+## Unrestricted BSE and molecular GW outer response (2026-10-04)
+
+Environment: Apple M4 Pro, macOS arm64, Python 3.12.2, JAX 0.8.1,
+CPU float64. Native GradSCF CPU integrals were built locally with
+`PYTHONPATH=src python -m gradscf.integrals._native.build`.
+No GPU or complete repository test suite was run. Times below are pytest
+wall times with other local validation work, not performance benchmarks.
+
+Final affected regression:
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu python -m pytest -q \
+  tests/gw/test_gw_outer_response.py tests/gw/test_gw_evgw.py \
+  tests/gw/test_gw_qsgw.py tests/gw/test_gw_cd_ugw.py \
+  tests/gw/test_gw_scgw_response.py tests/bse/test_unrestricted.py \
+  tests/bse/test_tda.py tests/bse/test_full.py tests/bse/test_gw_reference.py \
+  tests/bse/test_screening_roundoff.py
+```
+
+**94 passed**, 27 real/complex cotangent projection warnings, 401.19 s.
+Complex molecular evGW physical inputs are separately tested to raise before
+any real cast; these warnings arise in differentiation of complex self-energies
+with real external parameters. The tested derivatives agree with reconverged
+finite differences.
+
+An earlier focused run of `tests/bse/test_unrestricted.py`,
+`tests/bse/test_api.py`, and `tests/bse/test_screening_memory.py`, with
+`-k 'not large_auxiliary'`, completed **36 passed, 1 deselected**, 533.23 s.
+The excluded case is the existing 384-auxiliary-function physical-residual
+stress test. Counts overlap and must not be added. Later input/provenance
+repairs passed a focused 8-case regression and are covered by the final run.
+
+New numerical evidence includes:
+
+- Independent NumPy scalar-loop unrestricted A/B and dielectric matrices,
+  with direct and GMRES screening, checked to 2e-12 Ha/matrix units.
+- Restricted singlet/triplet limits of unrestricted TDA and full BSE, including
+  oscillator strengths and their spin normalization.
+- Open-shell optical JVP/VJP including the beta screening response; empty
+  explicit-reference spin blocks, paired windows and coverage/status guards.
+- Restricted/unrestricted evGW and evGW0 outer JIT response, compared with
+  separately reconverged central finite differences (step 1e-4).
+- Restricted qsGW orbital/density and energy response, AO factor perturbations,
+  non-Euclidean initial frames and pure frame rotations; explicit degeneracy
+  rejection and nonconverged/singular response behavior.
+- Unrestricted G0W0/evGW/evGW0 -> BSE excitation-plus-strength gradients, with
+  distinct alpha/beta frames and nocc=(2,1), compared with reconverged finite
+  differences (absolute tolerance 3e-8, relative tolerance 3e-5).
+
+Executed native examples (no PySCF SCF or command-line parser):
+
+```sh
+PYTHONPATH=src JAX_PLATFORMS=cpu python examples/bse/oh_unrestricted.py
+PYTHONPATH=src JAX_PLATFORMS=cpu python examples/gw/implicit_response.py
+```
+
+OH, 0.9697 Angstrom, STO-3G, UHF, evGW0, nw=48, QP tolerance 1e-8 Ha:
+QP levels 3/4/5 are computed; optical occupied windows ((4,),(3,)) and virtual
+windows ((5,),(4,5)) use full reference screening. TDA roots are
+0.28222595 and 11.44647563 eV; strengths are 0.00000000 and 0.00022168.
+The maximum QP residual is 6.4076e-9 Ha; BSE residuals are below 1.2e-16 Ha.
+
+H2, 0.74 Angstrom, STO-3G, nw=48: derivative of HOMO energy with respect to
+an AO Coulomb-factor scale at fixed starting HF arrays (Ha per unit scale):
+
+| Method | Implicit AD | Reconverged central difference |
+| --- | ---: | ---: |
+| evGW | 1.2977251783 | 1.2977251714 |
+| evGW0 | 1.2935202972 | 1.2935202908 |
+| qsGW | 1.2977251783 | 1.2977251714 |
+
+These are implementation/derivative checks, not experimental accuracy or a
+nuclear-gradient validation. Actual outputs are also comments at the ends of
+the example files. The first unconfigured example launch selected the local
+experimental Metal plugin and failed during device initialization; the CPU
+commands above completed successfully.
+
+Scope: real collinear spin-conserving BSE, isolated optical roots; no spin-flip,
+SOC or excited-state S^2 diagnostic. qsGW outer response currently requires all
+orbital levels isolated; UGW requires occupied and virtual orbitals in both
+spins. Unrestricted fixed-W0 arrays are recomputed per outer step. Periodic
+outer response and Matsubara analytic continuation were not extended.
