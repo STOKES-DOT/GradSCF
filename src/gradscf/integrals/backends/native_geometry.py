@@ -1,9 +1,9 @@
 """Geometry AD using native shell contractions and JAX FFI.
 
 Primal basis data are separate from differentiable coordinates so unsupported
-basis derivatives cannot silently become zero. First geometry derivatives are
-differentiable in their direction/cotangent, enabling mixed model/geometry AD
-without requiring second geometry derivatives. Neither path imports PySCF.
+basis derivatives cannot silently become zero. Coordinate Hessians use native
+shell contractions for bilinear JVPs and their adjoints, without constructing
+an integral-coordinate Jacobian. Third coordinate derivatives are rejected.
 """
 from functools import lru_cache, partial
 
@@ -50,9 +50,29 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart):
     mlir.register_lowering(linear, mlir.lower_fun(product, multiple_results=False), platform="cpu")
     mlir.register_lowering(adjoint, mlir.lower_fun(adjoint_product, multiple_results=False), platform="cpu")
 
+    second = core.Primitive(f"gradscf_geometry_hessian_jvp_{operator}")
+    second_adjoint = core.Primitive(f"gradscf_geometry_hessian_vjp_{operator}")
+
+    def second_product(target, env, left, right, output_shape):
+        call = jax.ffi.ffi_call(target, jax.ShapeDtypeStruct(output_shape, jnp.float64),
+                                vmap_method="sequential")
+        return call(jnp.asarray(atoms), jnp.asarray(basis), env, left, right,
+                    operator=np.int32(_OPERATORS[operator]), cart=np.int32(cart))
+
+    hessian_product = lambda env, u, v: second_product(
+        "gradscf_geometry_hessian_jvp_cpu_v1", env, u, v, shape)
+    hessian_adjoint = lambda env, u, cot: second_product(
+        "gradscf_geometry_hessian_vjp_cpu_v1", env, u, cot, env.shape)
+    second.def_impl(hessian_product)
+    second_adjoint.def_impl(hessian_adjoint)
+    second.def_abstract_eval(lambda env, u, v: jax.core.ShapedArray(shape, jnp.float64))
+    second_adjoint.def_abstract_eval(lambda env, u, cot: jax.core.ShapedArray(env.shape, jnp.float64))
+    mlir.register_lowering(second, mlir.lower_fun(hessian_product, multiple_results=False), platform="cpu")
+    mlir.register_lowering(second_adjoint, mlir.lower_fun(hessian_adjoint, multiple_results=False), platform="cpu")
+
     def transpose(other, cotangent, env, vector):
         if ad.is_undefined_primal(env):
-            raise NotImplementedError("Native second geometry derivatives are not supported")
+            raise NotImplementedError("Geometry transposition requires a fixed environment")
         if not ad.is_undefined_primal(vector):
             return None, None
         if isinstance(cotangent, ad.Zero):
@@ -62,14 +82,45 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart):
     def derivative(primitive, primals, tangents):
         env, vector = primals
         denv, dvector = tangents
-        # Only symbolic inactivity proves env is fixed. An active numerical
-        # zero must still raise: no coordinate Hessian has been implemented.
-        if not isinstance(denv, ad.Zero):
-            raise NotImplementedError("Native second geometry derivatives are not supported")
         primal = primitive.bind(env, vector)
-        tangent = (ad.Zero.from_primal_value(primal) if isinstance(dvector, ad.Zero)
-                   else primitive.bind(env, dvector))
+        terms = []
+        if not isinstance(denv, ad.Zero):
+            hessian = second if primitive is linear else second_adjoint
+            terms.append(hessian.bind(env, denv, vector))
+        if not isinstance(dvector, ad.Zero):
+            terms.append(primitive.bind(env, dvector))
+        tangent = sum(terms) if terms else ad.Zero.from_primal_value(primal)
         return primal, tangent
+
+    def second_derivative(primitive, primals, tangents):
+        env, left, right = primals
+        denv, dleft, dright = tangents
+        if not isinstance(denv, ad.Zero):
+            raise NotImplementedError("Native third geometry derivatives are not supported")
+        primal = primitive.bind(*primals)
+        terms = []
+        if not isinstance(dleft, ad.Zero):
+            terms.append(primitive.bind(env, dleft, right))
+        if not isinstance(dright, ad.Zero):
+            terms.append(primitive.bind(env, left, dright))
+        return primal, sum(terms) if terms else ad.Zero.from_primal_value(primal)
+
+    def second_transpose(primitive, cotangent, env, left, right):
+        if ad.is_undefined_primal(env):
+            raise NotImplementedError("Native third geometry derivatives are not supported")
+        unknown_left, unknown_right = map(ad.is_undefined_primal, (left, right))
+        if unknown_left and unknown_right:
+            raise NotImplementedError("A bilinear Hessian transpose requires one fixed argument")
+        if isinstance(cotangent, ad.Zero):
+            return (None, ad.Zero(left.aval) if unknown_left else None,
+                    ad.Zero(right.aval) if unknown_right else None)
+        if primitive is second:
+            return (None, second_adjoint.bind(env, right, cotangent) if unknown_left else None,
+                    second_adjoint.bind(env, left, cotangent) if unknown_right else None)
+        # Hessian symmetry exchanges its coordinate slots. The integral
+        # cotangent slot instead transposes back to the bilinear JVP.
+        return (None, second_adjoint.bind(env, cotangent, right) if unknown_left else None,
+                second.bind(env, left, cotangent) if unknown_right else None)
 
     def batch(primitive, args, axes):
         size = next(a.shape[axis] for a, axis in zip(args, axes) if axis is not None)
@@ -79,6 +130,10 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart):
     for primitive, other in ((linear, adjoint), (adjoint, linear)):
         ad.primitive_transposes[primitive] = partial(transpose, other)
         ad.primitive_jvps[primitive] = partial(derivative, primitive)
+        batching.primitive_batchers[primitive] = partial(batch, primitive)
+    for primitive in (second, second_adjoint):
+        ad.primitive_transposes[primitive] = partial(second_transpose, primitive)
+        ad.primitive_jvps[primitive] = partial(second_derivative, primitive)
         batching.primitive_batchers[primitive] = partial(batch, primitive)
 
     @jax.custom_jvp

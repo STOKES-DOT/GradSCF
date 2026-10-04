@@ -108,6 +108,8 @@ for op in ["overlap","kinetic","nuclear","dipole","eri"]:
     g=jax.jit(jax.grad(f))(p.centers)
     _,v=jax.jit(lambda r,d:jax.jvp(f,(r,),(d,)))(p.centers,jnp.ones_like(p.centers))
     assert bool(jnp.all(jnp.isfinite(g))) and bool(jnp.isfinite(v))
+    h=jax.jit(jax.hessian(f))(p.centers)
+    assert bool(jnp.all(jnp.isfinite(h)))
 assert not any(m=="pyscf" or m.startswith("pyscf.") for m in sys.modules)
 '''
     env = dict(os.environ, JAX_PLATFORMS="cpu", JAX_ENABLE_X64="1",
