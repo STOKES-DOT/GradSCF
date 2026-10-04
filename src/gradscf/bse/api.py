@@ -3,7 +3,7 @@
 from dataclasses import fields
 import numpy as np
 from .types import BSEConfig
-from .space import make_bse_space
+from .space import make_bse_space, SpinBSESpace
 from .reference import reference_from_source, source_signature
 from .response import run_bse
 from .properties import transition_dipoles, oscillator_strengths, polarizability, absorption_cross_section
@@ -20,6 +20,9 @@ class BSE:
         screening_virtual=None,
         **kwargs,
     ):
+        from ..gw.ugw import UGW
+        if isinstance(source, UGW) or isinstance(getattr(source, "nocc", None), tuple):
+            kwargs.setdefault("singlet", None)
         cfg = BSEConfig(**kwargs)
         self.source = source
         self.occupied = None if occupied is None else tuple(occupied)
@@ -61,7 +64,7 @@ class BSE:
             max_factor_elements=cfg.max_factor_elements,
         )
         self.reference = ref
-        nmo = np.shape(ref.qp_energy)[0]
+        nmo = np.shape(ref.qp_energy)[-1]
         self.space = space = make_bse_space(
             nmo, ref.nocc, occupied=self.occupied, virtual=self.virtual
         )
@@ -71,16 +74,18 @@ class BSE:
             occupied=ref.screening_occupied if self.screening_occupied is None else self.screening_occupied,
             virtual=ref.screening_virtual if self.screening_virtual is None else self.screening_virtual,
         )
-        selected = list(space.occupied + space.virtual)
+        channels = space.channels if isinstance(space, SpinBSESpace) else (space,)
         for mask in (ref.qp_computed_mask, ref.qp_converged_mask):
-            if mask is not None and (
-                np.shape(mask) != (nmo,)
-                or np.asarray(mask).dtype != np.bool_
-                or not np.all(np.asarray(mask)[selected])
-            ):
-                raise ValueError(
-                    "Every selected BSE level requires an actually computed, converged QP energy"
-                )
+            if mask is not None:
+                valid = np.shape(mask) == np.shape(ref.qp_energy) and np.asarray(mask).dtype == np.bool_
+                if valid:
+                    masks = mask if isinstance(space, SpinBSESpace) else (mask,)
+                    valid = all(np.all(np.asarray(m)[list(c.occupied + c.virtual)])
+                                for c, m in zip(channels, masks))
+                if not valid:
+                    raise ValueError(
+                        "Every selected BSE level requires an actually computed, converged QP energy"
+                    )
         self.result = run_bse(
             ref.qp_energy,
             ref.screening_energy,

@@ -38,6 +38,9 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from ..scf.autodiff import SCFDifferentiationConfig
+from ..solvers.nonlinear import attach_root
+from .outer_response import linear_config, require_valid
 from ..df import build_j_from_df
 from .freq import scaled_legendre_grid
 from .g0w0 import _exchange_mo, _mo_factors
@@ -96,6 +99,7 @@ def qsgw_cd_restricted(
     tol: float = 1e-6,
     tol_density: float = 1e-5,
     damping: float = 0.0,
+    differentiation: SCFDifferentiationConfig | None = None,
 ) -> GWResult:
     """Spin-restricted qsGW with contour deformation.
 
@@ -123,15 +127,20 @@ def qsgw_cd_restricted(
     Notes
     -----
     The Hartree term is rebuilt from the qsGW density each iteration; the
-    starting point only enters through the initial orbitals.  AD through
-    the outer loop is not wired yet (use finite differences on the eager
-    driver); JAX transformations of the outer driver are rejected explicitly.
-    The inner static-mapping kernel remains differentiable. Convergence on
-    a chosen discrete CD grid is separate from basis/grid accuracy.
+    starting spectrum is only an iteration guess. By default the driver is
+    eager. ``differentiation=SCFDifferentiationConfig(mode="implicit")``
+    enables JIT/JVP/VJP through the converged symmetric effective Fock root,
+    including orbital, density, and screening response. The input coefficients
+    define an S-orthonormal frame and its spanned subspace; its matrix elements
+    retain their input dependence. All orbital eigenvalues must be isolated
+    by more than ``1e-8 * (1 + max(abs(energy)))`` Ha in this response path.
+    Degenerate spectra are rejected; no eigenvector-gap regularization is used.
+    Failed response solves return NaNs under the shared linear-solver policy.
+    Convergence on a chosen discrete CD grid is separate from basis/grid accuracy.
     """
     inputs = (mo_energy, mo_coeff, df_factors, hcore_matrix)
-    if any(isinstance(x, jax.core.Tracer) for x in jax.tree_util.tree_leaves(inputs)):
-        raise NotImplementedError("qsGW currently supports eager outer iterations only; AD/JIT is not implemented.")
+    if differentiation is None and any(isinstance(x, jax.core.Tracer) for x in jax.tree_util.tree_leaves(inputs)):
+        raise NotImplementedError("qsGW default evaluation is eager; supply differentiation for implicit AD/JIT.")
     if any(jnp.iscomplexobj(x) for x in inputs):
         raise NotImplementedError("qsGW currently supports real molecular inputs only.")
     if max_iter < 1 or tol <= 0.0 or tol_density <= 0.0:
@@ -143,6 +152,12 @@ def qsgw_cd_restricted(
     nocc = int(nocc)
     if not 0.0 <= damping < 1.0:
         raise ValueError("damping must be in [0, 1).")
+
+    if differentiation is not None:
+        return _implicit_qsgw(mo_energy=mo_energy, coeff=coeff, nocc=nocc,
+            df_factors=df_factors, hcore=hcore, nw=int(nw), eta=float(eta),
+            max_iter=int(max_iter), tol=float(tol), tol_density=float(tol_density),
+            damping=float(damping), config=differentiation)
 
     freqs, wts = scaled_legendre_grid(nw)
     energy = mo_energy
@@ -191,6 +206,69 @@ def qsgw_cd_restricted(
         f"max|F_MO-diag(e)|={last_delta[2]:.3e} Ha). "
         "Increase max_iter or damping; no fallback result is returned."
     )
+
+
+def _implicit_qsgw(*, mo_energy, coeff, nocc, df_factors, hcore, nw, eta,
+                   max_iter, tol, tol_density, damping, config):
+    """Gauge-free symmetric Fock root in the starting orthonormal MO frame.
+
+    The input C0 defines the fixed metric/subspace (C0.T S C0 = I). All
+    matrix elements and the output AO density retain C0's parameter response.
+    Eigenvectors are differentiated only at isolated orbital eigenvalues;
+    degenerate orbital manifolds require a separate spectral-block response.
+    """
+    response_config = linear_config(config)
+    nmo = mo_energy.size
+    if not 0 < nocc < nmo:
+        raise ValueError('Restricted qsGW requires occupied and virtual orbitals.')
+    rows, cols = jnp.triu_indices(nmo)
+    b_frame = _mo_factors(df_factors, coeff)
+    h_frame = coeff.T @ hcore @ coeff
+    freqs, wts = scaled_legendre_grid(nw)
+
+    def unpack(state):
+        matrix = jnp.zeros((nmo, nmo), dtype=state.dtype).at[rows, cols].set(state)
+        return matrix.at[cols, rows].set(state)
+
+    def mapping(state):
+        fock = unpack(state)
+        energy, rotation = jnp.linalg.eigh(fock)
+        b_mn = _mo_factors(b_frame, rotation)
+        density = 2 * rotation[:, :nocc] @ rotation[:, :nocc].T
+        static = _static_self_energy(
+            b_mn=b_mn, b_ov=b_mn[:, :nocc, nocc:], mo_energy=energy, nocc=nocc,
+            ef=.5 * (energy[nocc - 1] + energy[nocc]), freqs=freqs, wts=wts, eta=eta)
+        new_fock = h_frame + build_j_from_df(b_frame, density)
+        new_fock = new_fock + rotation @ (_exchange_mo(b_mn, nocc) + static) @ rotation.T
+        return .5 * (new_fock + new_fock.T), energy, rotation, density
+
+    def residual(state):
+        return state - mapping(state)[0][rows, cols]
+
+    def body(loop):
+        state, iteration, _, _ = loop
+        new_fock, energy, rotation, density = mapping(state)
+        new_energy, new_rotation = jnp.linalg.eigh(new_fock)
+        new_density = 2 * new_rotation[:, :nocc] @ new_rotation[:, :nocc].T
+        fock_error = jnp.max(jnp.abs(rotation.T @ new_fock @ rotation - jnp.diag(energy)))
+        energy_error = jnp.max(jnp.abs(new_energy - energy))
+        density_error = jnp.max(jnp.abs(coeff @ (new_density - density) @ coeff.T))
+        done = (fock_error < tol) & (energy_error < tol) & (density_error < tol_density)
+        mixed = new_rotation @ jnp.diag((1 - damping) * new_energy + damping * energy) @ new_rotation.T
+        return jnp.where(done, state, mixed[rows, cols]), iteration + 1, fock_error, done
+
+    initial = jnp.diag(mo_energy)[rows, cols]
+    seed, _, error, done = jax.lax.while_loop(
+        lambda loop: (loop[1] < max_iter) & ~loop[3], body,
+        (initial, jnp.array(0), jnp.array(jnp.inf), jnp.array(False)))
+    seed = jax.lax.stop_gradient(seed)
+    energies = jnp.linalg.eigvalsh(unpack(seed))
+    gap_ok = jnp.all(jnp.diff(energies) > 1e-8 * (1 + jnp.max(jnp.abs(energies))))
+    require_valid(done & gap_ok, error, 'qsGW (isolated orbital spectrum required)')
+    state = attach_root(residual, seed, config=response_config, converged=done & gap_ok)
+    energy, rotation = jnp.linalg.eigh(unpack(state))
+    return GWResult(mo_energy=energy, mo_coeff=coeff @ rotation, converged=done,
+                    sigma_qp=None, nw=nw)
 
 
 __all__ = ["qsgw_cd_restricted"]

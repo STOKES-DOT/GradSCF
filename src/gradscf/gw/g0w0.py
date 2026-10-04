@@ -435,6 +435,7 @@ def g0w0_cd_unrestricted(
     mo_energy_poles: tuple[Array, Array] | None = None,
     linearized: bool = False,
     evaluate_only: bool = False,
+    screening_energy: tuple[Array, Array] | None = None,
 ) -> GWResult:
     """Spin-unrestricted G0W0 with contour deformation.
 
@@ -451,7 +452,10 @@ def g0w0_cd_unrestricted(
 
     Parameters mirror :func:`g0w0_cd_restricted` with spin tuples
     ``(alpha, beta)``.  Returns :class:`GWResult` with stacked arrays of
-    shape ``(2, nmo)`` / ``(2, nao, nmo)``.
+    shape ``(2, nmo)`` / ``(2, nao, nmo)``. ``screening_energy`` optionally
+    supplies independent alpha/beta spectra for W (evGW0); G still uses
+    ``mo_energy_poles``. Both spin channels currently require occupied and
+    virtual orbitals for the spin-resolved contour Fermi estimates.
     """
     e_a, e_b = (jnp.asarray(e, dtype=jnp.float64) for e in mo_energy)
     p_a, p_b = (
@@ -459,9 +463,15 @@ def g0w0_cd_unrestricted(
         if mo_energy_poles is None
         else (jnp.asarray(p, dtype=jnp.float64) for p in mo_energy_poles)
     )
+    s_a, s_b = ((p_a, p_b) if screening_energy is None else
+                tuple(jnp.asarray(e, dtype=jnp.float64) for e in screening_energy))
+    if any(e.shape != e_a.shape for e in (e_b, p_a, p_b, s_a, s_b)):
+        raise ValueError('Unrestricted G/W spectra must have the same (nmo,) shape.')
     c_a, c_b = (jnp.asarray(c, dtype=jnp.float64) for c in mo_coeff)
     nocc_a, nocc_b = int(nocc[0]), int(nocc[1])
     nmo = e_a.shape[0]
+    if not (0 < nocc_a < nmo and 0 < nocc_b < nmo):
+        raise ValueError('Unrestricted GW currently requires occupied and virtual orbitals in each spin.')
     orbs = _requested_orbitals(orbs,nmo)
 
     b_a = _mo_factors(df_factors, c_a)
@@ -504,14 +514,14 @@ def g0w0_cd_unrestricted(
     freqs, wts = scaled_legendre_grid(nw)
 
     def response_fn(omega):
-        return rho_response_iw(omega, p_a, b_ov_a, spin_factor=2.0) + rho_response_iw(
-            omega, p_b, b_ov_b, spin_factor=2.0
+        return rho_response_iw(omega, s_a, b_ov_a, spin_factor=2.0) + rho_response_iw(
+            omega, s_b, b_ov_b, spin_factor=2.0
         )
 
     # W is spin-independent; build it with the alpha-channel factors (the
     # spectral factors B are orbital-basis independent up to numerical noise).
     wmn = screened_w_imag_axis(b_a, response_fn, freqs)
-    channels = ((p_a, b_ov_a, 1.0), (p_b, b_ov_b, 1.0))
+    channels = ((s_a, b_ov_a, 1.0), (s_b, b_ov_b, 1.0))
 
     qp_a, sig_a, mask_a, conv_a, residual_a = _qp_loop(
         mo_energy=p_a,
@@ -561,7 +571,7 @@ def g0w0_cd_unrestricted(
         nw=int(nw),
         qp_residual=jnp.stack([residual_a, residual_b]),
         qp_computed_mask=jnp.zeros((2,nmo),dtype=bool).at[:,jnp.asarray(orbs)].set(not evaluate_only),
-        screening_energy=jnp.stack([p_a, p_b]),
+        screening_energy=jnp.stack([s_a, s_b]),
     )
 
 

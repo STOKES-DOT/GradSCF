@@ -10,7 +10,7 @@ from ..solvers import LinearSolverConfig
 @dataclass(frozen=True)
 class BSEConfig:
     nroots: int = 3
-    singlet: bool = True
+    singlet: bool | None = True
     tda: bool = True
     solver: str = "davidson"
     conv_tol: float = 1e-9
@@ -32,8 +32,8 @@ class BSEConfig:
             self.screening_config, LinearSolverConfig
         ):
             raise TypeError("screening_config must be a LinearSolverConfig")
-        if type(self.singlet) is not bool or type(self.tda) is not bool:
-            raise ValueError("singlet and tda must be booleans")
+        if (self.singlet is not None and type(self.singlet) is not bool) or type(self.tda) is not bool:
+            raise ValueError("singlet must be boolean or None; tda must be boolean")
         if self.solver not in {"dense", "davidson"} or self.gradient_mode not in {
             "eigenvalue_only",
             "implicit_eigenvector",
@@ -73,7 +73,7 @@ class BSEResult:
     response_valid: object
     screening_valid: object
     min_screening_gap: object
-    singlet: bool
+    singlet: bool | None
     amplitude_response: bool
     stability_margins: object = None
     stability_certified: object = False

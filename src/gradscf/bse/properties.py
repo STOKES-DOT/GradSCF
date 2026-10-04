@@ -3,21 +3,30 @@
 import jax
 import jax.numpy as jnp
 from ..solvers.diagnostics import require_converged_derivative
+from .space import SpinBSESpace
 
 
 def transition_dipoles(result, dipole_mo, space):
     d = jnp.asarray(dipole_mo)
-    if d.shape != (3, space.nmo, space.nmo):
-        raise ValueError("dipole_mo must have shape (3,nmo,nmo)")
+    spin = isinstance(space, SpinBSESpace)
+    shape = (2, 3, space.nmo, space.nmo) if spin else (3, space.nmo, space.nmo)
+    if d.shape != shape:
+        raise ValueError(f"dipole_mo must have shape {shape}")
     if jnp.iscomplexobj(d):
         raise NotImplementedError(
             "Molecular BSE transition moments currently require real inputs"
         )
-    d = d[:, jnp.asarray(space.occupied)[:, None], jnp.asarray(space.virtual)[None, :]]
-    mu = jnp.sqrt(2.0) * jnp.einsum(
-        "xia,sia->sx", d, result.x_amplitudes + result.y_amplitudes
-    )
-    if not result.singlet:
+    channels = space.channels if spin else (space,)
+    dipoles = d if spin else (d,)
+    xs = result.x_amplitudes if spin else (result.x_amplitudes,)
+    ys = result.y_amplitudes if spin else (result.y_amplitudes,)
+    mu = jnp.zeros((result.excitation_energies.size, 3), dtype=d.dtype)
+    for channel, dipole, x, y in zip(channels, dipoles, xs, ys):
+        block = dipole[:, jnp.asarray(channel.occupied, dtype=int)[:, None],
+                       jnp.asarray(channel.virtual, dtype=int)[None, :]]
+        mu += jnp.einsum("xia,sia->sx", block, x + y)
+    mu *= 1. if spin else jnp.sqrt(2.)
+    if result.singlet is False:
         mu = jnp.zeros_like(mu)
     valid = result.converged & result.stable
     response = result.response_valid & result.amplitude_response
