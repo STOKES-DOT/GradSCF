@@ -10,12 +10,17 @@ from .phonon import bose_occupation, phonon_propagator_tau
 
 def debye_waller(model, beta):
     """Static DW = (1/2) sum_l Lambda_ll coth(beta Omega_l/2)."""
+    return _quadratic_average(model,bose_occupation(model.energies,beta))
+
+
+def _quadratic_average(model, occupation):
+    """Common harmonic average in the caller's occupation compute precision."""
     if model.quadratic is None:
-        # Validate beta even when the quadratic coupling is absent.
-        bose_occupation(model.energies, beta)
         return jnp.zeros_like(jnp.asarray(model.couplings)[0])
-    thermal = 1 + 2 * bose_occupation(model.energies, beta)
-    return 0.5 * jnp.einsum("llij,l->ij", model.quadratic, thermal)
+    thermal = 1 + 2 * occupation
+    quadratic = jnp.asarray(model.quadratic)
+    diagonal = quadratic if quadratic.ndim == 3 else jnp.einsum('llij->lij',quadratic)
+    return 0.5 * jnp.einsum("lij,l->ij", diagonal, thermal)
 
 
 def _fan_reference(fock, mu, model, grid):

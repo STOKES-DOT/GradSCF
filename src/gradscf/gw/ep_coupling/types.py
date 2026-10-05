@@ -16,9 +16,10 @@ class PhononModel:
 
     energies: (nmode,), strictly positive phonon energies in Ha.
     couplings: (nmode, norb, norb), Hermitian linear vertices in Ha.
-    quadratic: optional (nmode, nmode, norb, norb) in Ha, symmetric in
-        mode indices and Hermitian in orbital indices. Its diagonal gives
-        the fixed-D0 Debye--Waller term; it is not inferred from g.
+    quadratic: optional (nmode, norb, norb) diagonal-mode vertices or
+        (nmode, nmode, norb, norb) in Ha. Full mode-pair tensors must be
+        symmetric in mode indices; both layouts are Hermitian in orbital
+        indices. The diagonal gives fixed-D0 DW; it is not inferred from g.
     reference: provenance only; no implicit double-counting correction.
 
     Call validate_model before using numerical kernels. Construction does
@@ -70,15 +71,17 @@ def validate_model(model, *, norb=None, real=True):
              "phonon couplings must be Hermitian")
     if model.quadratic is not None:
         quadratic = jnp.asarray(model.quadratic)
-        if quadratic.shape != (omega.shape[0], omega.shape[0], g.shape[1], g.shape[1]):
-            raise ValueError("quadratic must have shape (nmode, nmode, norb, norb)")
+        diagonal_shape = (omega.shape[0],g.shape[1],g.shape[1])
+        if quadratic.shape not in (diagonal_shape,(omega.shape[0],)+diagonal_shape):
+            raise ValueError("quadratic must have shape (nmode,norb,norb) or (nmode,nmode,norb,norb)")
         if real and jnp.iscomplexobj(quadratic):
             raise ValueError("molecular scGW requires real quadratic vertices")
         _require(jnp.all(jnp.isfinite(quadratic)), "quadratic vertices must be finite")
         _require(jnp.allclose(quadratic, quadratic.swapaxes(-1, -2).conj(), rtol=1e-10, atol=1e-12),
                  "quadratic vertices must be Hermitian in orbital indices")
-        _require(jnp.allclose(quadratic, quadratic.swapaxes(0, 1), rtol=1e-10, atol=1e-12),
-                 "quadratic vertices must be symmetric in mode indices")
+        if quadratic.ndim == 4:
+            _require(jnp.allclose(quadratic, quadratic.swapaxes(0, 1), rtol=1e-10, atol=1e-12),
+                     "quadratic vertices must be symmetric in mode indices")
 
 
 @pytree_dataclass(static_fields=("reference",))
