@@ -17,6 +17,7 @@ historical solver forwarding modules have been removed.
 | Bounded complex dense RPA and metric energy derivatives | `eigen/rpa.py` | Small non-Gamma periodic response |
 | Regularized full-spectrum and inverse-square-root derivatives | `eigen/spectral.py` | SCF orbital diagonalization and overlap response |
 | Checked GMRES/direct solves and transpose response | `linear/` | Eigenvector response, SCF/GW implicit derivatives |
+| Complex-to-real linear adapter | `linear/complex.py` | Exciton–vibration retarded response |
 | Scalar-bordered Schur solve | `linear/schur.py` | scGW charge-constrained response |
 | Fixed-point/root implicit differentiation | `nonlinear/` | SCF and scGW |
 | DIIS and callback-based orbital minimization | `nonlinear/` | SCF families |
@@ -83,8 +84,16 @@ Construct `LinearOperator` inside a transformed function, or close over it;
 the callable container itself is not a dynamic JIT argument. Captured numerical
 parameters remain differentiable. With `method="direct"`, `solve_linear` accepts
 RHS shape `(n,nrhs)` and solves all columns together with a shared bounded dense
-matrix and checked implicit transpose response. Iterative solves retain vector
-RHS; multiple iterative RHS can use caller-side `vmap`.
+matrix and checked implicit transpose response. GMRES also accepts block RHS;
+its column loop stays inside the opaque implicit solve for transpose response.
+
+`solve_complex(A,b,config=...)` accepts complex square matrices/operators and
+vector or block RHS. It represents the problem by a real operator of size
+`2*n`, and delegates forward/backward to the same checked `solve_linear`.
+GMRES keeps this representation matrix-free; the direct `max_dense` bound
+applies to `2*n`. The true residual norm, NaN/status failure policy, JVP/VJP
+and higher response are retained. This does not change the real input contract
+of `solve_linear`. No separate complex numerical algorithm is implemented.
 
 The new `solve_hermitian` and `solve_linear` APIs accept real floating-point
 data. Dense symmetric inputs are checked rather than silently repaired;

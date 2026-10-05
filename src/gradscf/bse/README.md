@@ -12,8 +12,13 @@ This implements P0/P1 and real full-BSE forward/amplitude response from
 [the development plan](../gw/BSE_PLAN.md). The dense reference is described in
 [FULL_BSE_PLAN.md](FULL_BSE_PLAN.md); the matrix-free metric-response extension
 is described in [MATRIX_FREE_BSE.md](MATRIX_FREE_BSE.md).
-Spin-flip, complex/periodic references, dynamic kernels and degenerate-cluster
-properties are not exposed as implemented methods.
+Spin-flip, complex/periodic static references, general dynamical BSE kernels
+and degenerate-cluster properties are not exposed by the static solver.
+[Exciton–vibration response](ep_coupling/README.md) is a separate fixed-bath
+effective-Hamiltonian layer: restricted TDA projection, neutral Fan/DW,
+spectral matrices and dynamic absorption. Its full-matrix resolvent can be
+differentiated at internal degeneracy without individual eigenvector AD;
+the BSE-result adapter retains the static solver's amplitude-response guards.
 
 ## Public workflow
 

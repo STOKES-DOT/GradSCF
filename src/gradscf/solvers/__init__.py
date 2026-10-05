@@ -9,7 +9,7 @@ from .types import (
     LinearResult,
 )
 from .eigen import solve_hermitian
-from .linear import solve_linear, solve_tensor_sum
+from .linear import solve_linear, solve_complex, solve_tensor_sum
 from .types import TensorSumResult, RPAResult
 from .eigen.stable_rpa import solve_stable_rpa
 from .eigen.structured_rpa import solve_rpa
@@ -26,6 +26,7 @@ __all__ = [
     "LinearResult",
     "solve_hermitian",
     "solve_linear",
+    "solve_complex",
     "solve_tensor_sum",
     "TensorSumResult",
     "solve_stable_rpa",

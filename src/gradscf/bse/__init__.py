@@ -9,6 +9,7 @@ from .reference import (
     BSEReference,
 )
 from .api import BSE
+from . import ep_coupling
 
 __all__ = [
     'BSESpace',
@@ -25,4 +26,5 @@ __all__ = [
     'absorption_cross_section',
     'BSEReference',
     'BSE',
+    'ep_coupling',
 ]
