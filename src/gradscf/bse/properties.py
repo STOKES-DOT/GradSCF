@@ -75,9 +75,14 @@ def absorption_cross_section(result, dipole_mo, space, omega, *, eta=.01,
     polarization vector selects its normalized direction. Output unit is a0^2
     ('au') or megabarn ('Mb', 1e-18 cm^2). This is a finite-root spectrum.
     """
+    alpha = polarizability(result, dipole_mo, space, omega, eta=eta)
+    return _absorption_from_polarizability(alpha,omega,eta=eta,polarization=polarization,unit=unit)
+
+
+def _absorption_from_polarizability(alpha, omega, *, eta, polarization, unit):
+    """Common static/dynamic length-gauge cross-section units and polarization."""
     if unit not in {'au', 'Mb'}:
         raise ValueError("Cross-section unit must be 'au' or 'Mb'")
-    alpha = polarizability(result, dipole_mo, space, omega, eta=eta)
     omega = jnp.asarray(omega)
     valid = (omega >= 0) & jnp.isfinite(omega) & (jnp.asarray(eta) > 0)
     if polarization is None:
