@@ -2,6 +2,22 @@
 
 ## Unreleased — GradSCF
 
+### Exciton–vibration optical response
+
+- Add `bse.ep_coupling` with restricted TDA electron-minus-hole projection,
+  optional electronic-kernel derivative actions, fixed-bath bosonic Fan/DW,
+  causal matrix spectra and resonant/antiresonant optical response.
+- Support explicit excitation Hamiltonian matrices without eigenvector AD,
+  including degenerate spaces; retain static BSE amplitude-response boundaries.
+- Reuse shared checked linear solves through `solve_complex`, and add compact
+  diagonal-mode quadratic storage to the common phonon/DW data contract.
+- Add native H2/3-21G calculation and AD checks. State the low-population,
+  one-phonon, frozen-GW/kernel and strong-coupling limits; reject non-passive
+  absorption rather than repairing signs.
+- Add differentiable finite-space vibronic Hamiltonian assembly, with proper
+  quadratic cutoff boundaries, and a native three-mode water example comparing
+  Fan/DW with multiphonon spectra and an independent Franck-Condon oracle.
+
 ### GW/BSE response and electron–phonon coupling
 
 - Add real collinear unrestricted spin-conserving molecular BSE in TDA and

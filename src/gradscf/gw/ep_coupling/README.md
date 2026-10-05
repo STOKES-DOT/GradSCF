@@ -35,8 +35,10 @@ H_ep = sum_l g_l X_l + (1/2) sum_lm Lambda_lm X_l X_m
 
 - `energies`: `(nmode,)`, finite and strictly positive.
 - `couplings`: `(nmode,nmo,nmo)`, real symmetric for molecular scGW.
-- `quadratic`: optional `(nmode,nmode,nmo,nmo)`, symmetric in both mode and
-  orbital exchanges. Only diagonal mode entries enter fixed independent D0.
+- `quadratic`: optional compact `(nmode,nmo,nmo)` diagonal-mode operators or
+  full `(nmode,nmode,nmo,nmo)`. Both are Hermitian in orbital indices; full
+  arrays are also symmetric in mode indices. Only diagonal mode entries
+  enter fixed independent D0, so compact storage avoids unused mode-pair blocks.
 - `reference`: static provenance string; no automatic screening or
   double-counting subtraction is inferred from it.
 
