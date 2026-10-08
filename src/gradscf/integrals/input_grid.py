@@ -157,8 +157,31 @@ def _prepare_basis_grid_context(
     grids_level: int,
     precompute_eri_groups: bool,
     needs_ao_laplacian: bool,
+    needs_grid: bool = True,
 ) -> _BasisGridContext:
     geometry_is_traced = any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree_util.tree_leaves(spec.coords_bohr))
+    if not needs_grid:
+        # Pure HF ghost energies need the basis but no XC quadrature. Build
+        # it from this spec instead of reusing charge-insensitive grid data.
+        basis_cart = basis_from_molecule_spec(
+            spec, basis=basis, max_l=max_l,
+            precompute_eri_groups=precompute_eri_groups,
+        )
+        dtype = jnp.asarray(spec.coords_bohr).dtype
+        bundle = _GridAOInputBundle(
+            basis=basis_cart,
+            coords=jnp.zeros((0, 3), dtype=dtype),
+            grid_weights=jnp.zeros((0,), dtype=dtype),
+            ao=jnp.zeros((0, basis_cart.nao), dtype=dtype),
+            ao_deriv1=jnp.zeros((4, 0, basis_cart.nao), dtype=dtype),
+            ao_laplacian=None,
+        )
+        return _BasisGridContext(
+            basis=basis_cart, coords=bundle.coords,
+            grid_weights=bundle.grid_weights,
+            geometry_is_traced=geometry_is_traced,
+            grid_ao_bundle=bundle,
+        )
     if geometry_is_traced:
         coords, weights = build_molecular_grid_from_spec(spec, level=grids_level)
         basis_cart = basis_from_molecule_spec(
@@ -200,6 +223,9 @@ def _grid_ao_payload(
     evaluate_cartesian_ao_with_derivatives: Callable[..., Any],
     needs_ao_laplacian: bool,
 ) -> tuple[Array, Array, Array | None]:
+    if context.coords.shape[0] == 0 and context.grid_ao_bundle is not None:
+        bundle = context.grid_ao_bundle
+        return bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian
     if context.geometry_is_traced:
         deriv_order = 2 if needs_ao_laplacian else 1
         ao, ao_derivs = evaluate_cartesian_ao_with_derivatives(
@@ -214,5 +240,4 @@ def _grid_ao_payload(
     if bundle is None:
         raise ValueError("Non-traced basis/grid context is missing cached AO data.")
     return bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian
-
 
