@@ -63,8 +63,10 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         raise TypeError(f"Unsupported molecular options: {', '.join(sorted(mol_kwargs))}")
     spec = atom if isinstance(atom, MoleculeSpec) else parse_molecule_spec(atom, unit=unit, charge=charge, spin=spin)
     laplacian = xc_type(xc_spec) == "MGGA"
+    needs_grid = not (xc_type(xc_spec) == "HF" and np.any(np.asarray(spec.charges) == 0))
     context = _prepare_basis_grid_context(spec=spec, basis=basis, max_l=max_l,
-        grids_level=grids_level, precompute_eri_groups=(mode == "jax"), needs_ao_laplacian=laplacian)
+        grids_level=grids_level, precompute_eri_groups=(mode == "jax"),
+        needs_ao_laplacian=laplacian, needs_grid=needs_grid)
     if context.geometry_is_traced and geometry_grad_policy == "error":
         raise NotImplementedError("Geometry gradients are disabled by geometry_grad_policy='error'")
     if mode == "native":

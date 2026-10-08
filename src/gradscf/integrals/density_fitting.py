@@ -114,7 +114,11 @@ def project_factors(packed_primitive, transform, *, block_size=64):
         b = jax.lax.dynamic_slice_in_dim(factors, i * width, width, axis=0)
         return jax.lax.dynamic_update_slice_in_dim(out, block(b), i * width, axis=0)
 
-    out = jax.lax.fori_loop(0, rank // width, step, out)
+    # Recompute each block during reverse AD instead of saving every unpacked
+    # primitive matrix; the loop boundary already prevents cross-step CSE.
+    out = jax.lax.fori_loop(
+        0, rank // width, jax.checkpoint(step, prevent_cse=False), out
+    )
     start = rank // width * width
     if start < rank:
         out = out.at[start:].set(block(factors[start:]))
