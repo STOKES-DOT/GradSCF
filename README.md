@@ -211,6 +211,12 @@ Additional neural dispersion models are available in
 - **Public API:** [entry points and reference reuse](API.md),
   [import migration table](API_MIGRATION.csv).
 
+- **Orbital localization:** [ethylene Boys orbitals with AD gradients and HVPs](examples/ethylene_boys.py);
+  [animation of accepted optimization steps](examples/animate_ethylene_boys.py);
+  [independent PySCF comparison](tests/comparisons/compare_ethylene_boys.py).
+- **Larger localization example:** [parent BODIPY](examples/bodipy_boys.py),
+  [paged animation](examples/animate_bodipy_boys.py), and
+  [geometry and validation notes](examples/bodipy_boys.md).
 - **CI and CC:** [CI tutorial](examples/ci/restricted_ci.py),
   [restricted CC](examples/cc/restricted_ground.py),
   [open-shell CI/CC](examples/cc/open_shell_ground.py).
