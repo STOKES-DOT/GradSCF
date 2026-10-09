@@ -28,15 +28,16 @@ through JAX automatic differentiation and shared implicit-response solvers.
   and functional array APIs for `jax.jit`, `jax.grad`, and custom objectives.
 
 ```mermaid
+%%{init: {"htmlLabels": false, "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px"}, "flowchart": {"padding": 24, "nodeSpacing": 36, "rankSpacing": 48}}}%%
 flowchart LR
-    I[Geometry and basis] --> S[HF / DFT]
-    M[External models] --> S
-    S --> P[MP / CI / FCI]
-    S --> C[CC]
-    S --> R[TD response / GW / BSE]
-    C --> E[EOM-CC]
-    I --> O[Orbital-free DFT]
-    P --> V[Energies, densities and spectra]
+    I["Geometry<br/>and basis"] --> S["HF / DFT"]
+    M["External<br/>models"] --> S
+    S --> P["MP / CI / FCI"]
+    S --> C["CC"]
+    S --> R["TD response<br/>GW / BSE"]
+    C --> E["EOM-CC"]
+    I --> O["Orbital-free<br/>DFT"]
+    P --> V["Energies<br/>Densities<br/>Spectra"]
     C --> V
     R --> V
     E --> V
