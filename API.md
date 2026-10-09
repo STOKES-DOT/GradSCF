@@ -23,7 +23,7 @@ For a complete external-network example see
 
 ## Ownership and naming
 
-The root exports 19 domain namespaces. The previous 144 flat symbol exports
+The root exports domain namespaces. The previous 144 flat symbol exports
 have been removed. Use the owning module instead of adding a second name for
 the same implementation. The [migration table](API_MIGRATION.csv) lists every
 removed root export and the additional facade relocations.
@@ -39,6 +39,7 @@ removed root export and the additional facade relocations.
 | Prediction | `trainer.predict(mf)` |
 | Excited states | `tdscf.TDA(mf)`, `tdscf.TDDFT(mf)` |
 | CI / CC / FCI | `ci.CIS(mf)`, `cc.CCSD(mf)`, `fci.FCI(mf)` |
+| Moller–Plesset correlation | `mp.MP2(mf)`, `mp.MP3(mf)`; see [reference restrictions](src/gradscf/mp/README.md) |
 | Configured workflow | `workflows.ExperimentPipeline(config)` |
 
 Meaningful mathematical array APIs remain in their domains, including
