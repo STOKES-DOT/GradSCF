@@ -220,6 +220,9 @@ Additional neural dispersion models are available in
 - **CI and CC:** [CI tutorial](examples/ci/restricted_ci.py),
   [restricted CC](examples/cc/restricted_ground.py),
   [open-shell CI/CC](examples/cc/open_shell_ground.py).
+- **MP2 and MP3:** [molecular calculations](examples/mp/molecular.py),
+  [implicit HF to MP gradients](examples/mp/implicit_gradient.py), and
+  [method scope and integral storage](src/gradscf/mp/README.md).
 - **Periodic calculations:** [HF/DFT and bands](examples/periodic_h2.py).
 - **GW:** [finite-temperature scGW](examples/scgw_matsubara_h2.py),
   [implicit scGW response](examples/scgw_implicit_response_h2.py).

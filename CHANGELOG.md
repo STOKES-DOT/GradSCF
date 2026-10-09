@@ -2,6 +2,18 @@
 
 ## Unreleased — GradSCF
 
+### Molecular Moller--Plesset perturbation theory
+
+- Add canonical real RHF MP2/MP3 and collinear UHF MP2 with short eager
+  interfaces and a JIT/AD array entry, frozen cores/virtuals, spin-resolved E2
+  and explicit physical-denominator/canonical-state validity diagnostics.
+- Stream DF-MP2 occupied-index slices without full MO ERIs, optionally omit
+  stored doubles, and share selected dense/packed/DF orbital-block transforms.
+- Obtain MP3 from the existing connected CC doubles interaction action,
+  validate it against independent determinant-space perturbation coefficients,
+  and demonstrate complete implicit-HF parameter response. MP3 remains in-core;
+  noncanonical/ROHF references, UMP3 and higher orders are not yet included.
+
 ### Exciton–vibration optical response
 
 - Add `bse.ep_coupling` with restricted TDA electron-minus-hole projection,

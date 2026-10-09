@@ -46,6 +46,23 @@ def transform_integrals(
 
 
 def _transform_eri(c, d, *, eri=None, eri_pair_matrix=None, df_factors=None):
+    return transform_eri_block((c, c, d, d), eri=eri,
+                               eri_pair_matrix=eri_pair_matrix, df_factors=df_factors)
+
+
+def transform_eri_block(coefficients, *, eri=None, eri_pair_matrix=None, df_factors=None):
+    """Transform a requested (p q|r s) block, without constructing full MO ERIs.
+
+    Four real coefficient matrices may select different orbital subspaces.
+    Dense, s4 packed and DF AO representations share the same convention.
+    """
+    if len(coefficients) != 4:
+        raise ValueError("Supply four orbital coefficient matrices")
+    c, d, e, f = map(jnp.asarray, coefficients)
+    if any(x.ndim != 2 or x.shape[0] != c.shape[0] for x in (c, d, e, f)):
+        raise ValueError("Coefficient matrices must share the AO dimension")
+    if any(jnp.iscomplexobj(x) for x in (c, d, e, f)):
+        raise NotImplementedError("MO block transformation requires real coefficients")
     if sum(value is not None for value in (eri, eri_pair_matrix, df_factors)) != 1:
         raise ValueError("Supply exactly one of eri, eri_pair_matrix, df_factors")
     nao = c.shape[0]
@@ -57,9 +74,9 @@ def _transform_eri(c, d, *, eri=None, eri_pair_matrix=None, df_factors=None):
             "pqrs,pP,qQ,rR,sS->PQRS",
             eri,
             c,
-            c,
             d,
-            d,
+            e,
+            f,
             precision="highest",
             optimize="optimal",
         )
@@ -69,8 +86,8 @@ def _transform_eri(c, d, *, eri=None, eri_pair_matrix=None, df_factors=None):
         if pair.shape != (npair, npair):
             raise ValueError("eri_pair_matrix must be a square s4 AO pair matrix")
         rows, cols, _, _ = _metadata_arrays(nao, c.dtype)
-        products = _mo_pair_products(c, c, rows, cols)
-        other = _mo_pair_products(d, d, rows, cols)
+        products = _mo_pair_products(c, d, rows, cols)
+        other = _mo_pair_products(e, f, rows, cols)
         g = jnp.einsum(
             "pqP,PQ,rsQ->pqrs", products, pair, other, precision="highest"
         )
@@ -78,8 +95,8 @@ def _transform_eri(c, d, *, eri=None, eri_pair_matrix=None, df_factors=None):
         factors = jnp.asarray(df_factors)
         if factors.ndim != 3 or factors.shape[1:] != (nao, nao):
             raise ValueError("df_factors must have shape (naux, nao, nao)")
-        b = jnp.einsum("Lpq,pP,qQ->LPQ", factors, c, c, precision="highest")
-        other = jnp.einsum("Lpq,pP,qQ->LPQ", factors, d, d, precision="highest")
+        b = jnp.einsum("Lpq,pP,qQ->LPQ", factors, c, d, precision="highest")
+        other = jnp.einsum("Lpq,pP,qQ->LPQ", factors, e, f, precision="highest")
         g = jnp.einsum("Lpq,Lrs->pqrs", b, other, precision="highest")
     return g
 

@@ -15,6 +15,7 @@ _NAMESPACE_EXPORTS = {
     "bse",
     "gw",
     "cc",
+    "mp",
     "solvers",
     "ci",
     "fci",
