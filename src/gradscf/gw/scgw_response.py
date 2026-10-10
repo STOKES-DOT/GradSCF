@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ..df import build_jk_from_df
+from gradscf.integrals.molecular.jk import build_jk_from_df
 from ..solvers.linear import solve_scalar_border
 from ..solvers import LinearSolverConfig
 from ..solvers.nonlinear import attach_root

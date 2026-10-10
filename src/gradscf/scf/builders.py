@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf.integrals import precompile_eri_kernels
-from gradscf.integrals.input_types import GeometryGradPolicy
+from gradscf.scf.inputs.types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
 from ..dft.libxc_jax.jax_libxc import hybrid_coeff, parse_xc
 from gradscf.dft.hfx import _local_hfx_features_from_basis_dm
@@ -17,7 +17,7 @@ from gradscf.dft.pt2 import (
     _local_pt2_feature_from_unrestricted_orbitals,
 )
 from .core import _contains_jax_tracer, _host_float_unless_traced
-from gradscf.integrals.assembly import build_rks_integral_inputs, build_uks_integral_inputs
+from gradscf.scf.inputs.assembly import build_rks_integral_inputs, build_uks_integral_inputs
 from .molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
 from .rks import RKSConfig, run_rks_from_integrals
 from .uks import UKSConfig, run_uks_from_integrals

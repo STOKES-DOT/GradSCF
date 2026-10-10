@@ -73,14 +73,14 @@ def run_series(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config):
     phi = jnp.zeros(space.size, op.diagonal.dtype).at[0].set(1.)
     def fluctuation(c):
         return op(c)-diagonal0*c
-    def residual(y, lam):
-        c = jnp.concatenate((jnp.ones(1, y.dtype), y[:-1]))
-        w = fluctuation(c)
+    # W is linear in the state: share W Psi_j across all subsequent degrees.
+    ws = [fluctuation(phi)]
+    def residual(y, lam, w):
         return jnp.concatenate((gaps[1:]*y[:-1]-y[-1]*y[:-1]+lam*w[1:],
                                 (lam*w[0]-y[-1])[None]))
     zero = jnp.zeros(space.size, op.diagonal.dtype)
     lam0 = jnp.zeros((), zero.dtype)
-    _, jacobian = jax.linearize(lambda y: residual(y, lam0), zero)
+    _, jacobian = jax.linearize(lambda y: residual(y, lam0, ws[0]), zero)
     jacdiag = jnp.concatenate((gaps[1:], -jnp.ones(1, zero.dtype)))
     safe = jnp.where(jnp.abs(jacdiag) > config.denominator_tol, jacdiag, 1.)
     operator = LinearOperator((space.size, space.size), zero.dtype, jacobian, diagonal=jacdiag)
@@ -89,21 +89,24 @@ def run_series(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config):
     ys, waves = [], [phi]
     solved, norm = jnp.asarray(True), lam0
     for degree in range(1, k+1):
-        inputs = (tuple(ys+[zero]), tuple([jnp.ones_like(lam0)]+[lam0]*(degree-1)))
-        _, terms = _jet(residual, (zero, lam0), inputs)
+        inputs = (tuple(ys+[zero]), tuple([jnp.ones_like(lam0)]+[lam0]*(degree-1)),
+                  tuple(ws[1:]+[jnp.zeros_like(phi)]))
+        _, terms = _jet(residual, (zero, lam0, ws[0]), inputs)
         response = solve_linear(operator, -terms[-1], config=linear,
             preconditioner=lambda v: v/safe, transpose_preconditioner=lambda v: v/safe)
         ys.append(response.solution)
         waves.append(jnp.concatenate((jnp.zeros(1, zero.dtype), response.solution[:-1])))
+        ws.append(fluctuation(waves[-1]))
         solved = solved & response.converged
         norm = jnp.maximum(norm, response.residual_norm)
-    def rayleigh(c, lam):
-        hc = diagonal0*c+lam*fluctuation(c)
+    def rayleigh(c, hc):
         return jnp.vdot(c, hc)/jnp.vdot(c, c)
     # Wigner 2k+1: omitted higher state coefficients cannot affect these energies.
     coefficients = tuple(waves[1:]+[jnp.zeros_like(phi)]*max(0, config.order-k))[:config.order]
-    _, es = _jet(rayleigh, (phi, lam0),
-        (coefficients, tuple([jnp.ones_like(lam0)]+[lam0]*(config.order-1))))
+    hc0 = diagonal0*phi
+    hcs = [diagonal0*waves[j]+ws[j-1] for j in range(1, k+1)]+[ws[-1]]
+    hcs = tuple(hcs+[jnp.zeros_like(phi)]*max(0, config.order-len(hcs)))[:config.order]
+    _, es = _jet(rayleigh, (phi, hc0), (coefficients, hcs))
     corrections = jnp.stack(es[1:])
     first = waves[1]
     # Project first-order channels, then apply the same generic energy functional.
@@ -112,7 +115,8 @@ def run_series(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config):
     beta_rank = np.array([((d ^ reference_bits) >> n).bit_count()//2 for d in space.determinants])
     def channel(mask):
         c1 = jnp.where(jnp.asarray(mask), first, 0.)
-        _, terms = _jet(rayleigh, (phi, lam0), ((c1, jnp.zeros_like(phi)), (jnp.ones_like(lam0), lam0)))
+        _, terms = _jet(rayleigh, (phi, hc0),
+            ((c1, jnp.zeros_like(phi)), (diagonal0*c1+ws[0], fluctuation(c1))))
         return terms[1]
     ss = channel(((alpha_rank == 2) & (beta_rank == 0)) | ((alpha_rank == 0) & (beta_rank == 2)))
     os = channel((alpha_rank == 1) & (beta_rank == 1))

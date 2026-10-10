@@ -14,7 +14,7 @@ from jaxtyping import Array
 from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type
 from .core import _contains_jax_tracer, _host_float_unless_traced
 from .facade import _BaseKS
-from gradscf.integrals.assembly import build_uks_integral_inputs
+from gradscf.scf.inputs.assembly import build_uks_integral_inputs
 from .convergence import convergence_reached
 from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
 from .uks import UKSConfig, _point_unrestricted_xc_value_and_grad_kernel
@@ -78,14 +78,14 @@ def generalized_jk(eri: Array, density: Array) -> tuple[Array, Array]:
     n = density.shape[0]//2
     total = density[:n, :n] + density[n:, n:]
     if eri.ndim in (1,2):
-        from ..integrals.layouts import build_jk_from_packed
+        from gradscf.integrals.molecular.jk import build_jk_from_packed
         coulomb,_=build_jk_from_packed(eri,total.T)
         _,exchange=build_jk_from_packed(eri,density.reshape(2,n,2,n).transpose(0,2,1,3))
         exchange=exchange.transpose(0,2,1,3).reshape(2*n,2*n)
         return _hermitian(_spin_diagonal(coulomb)),_hermitian(exchange)
     coulomb = jnp.einsum("pqrs,sr->pq", eri, total, precision=Precision.HIGHEST)
     blocks = density.reshape(2, n, 2, n)
-    from ..integrals.contraction import exchange_matrix
+    from gradscf.integrals.molecular.jk import exchange_matrix
     exchange = exchange_matrix(eri, blocks.transpose(0,2,1,3)).transpose(0,2,1,3)
     return _hermitian(_spin_diagonal(coulomb)), _hermitian(exchange.reshape(2*n, 2*n))
 
@@ -189,7 +189,7 @@ def run_gks_from_integrals(
     _validate_mode(cfg)
     s, h, eri = map(jnp.asarray, (overlap, hcore, eri))
     n = s.shape[0]
-    from ..integrals.layouts import packed_eri_shape
+    from gradscf.integrals.molecular.eri import packed_eri_shape
     if s.shape != (n,n) or eri.shape not in {(n,n,n,n),packed_eri_shape(n,1),packed_eri_shape(n,2)}:
         raise ValueError("Generalized SCF requires spatial overlap and full/s4/s8 ERIs.")
     if jnp.iscomplexobj(s) or jnp.iscomplexobj(eri) or jnp.iscomplexobj(ao) or jnp.iscomplexobj(ao_deriv1):

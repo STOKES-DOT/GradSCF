@@ -20,7 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf import gto, scf
-from gradscf.df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from gradscf.gw import scgw_matsubara_restricted
 from gradscf.scf import SCFDifferentiationConfig
 

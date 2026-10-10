@@ -9,7 +9,7 @@ Run with PYTHONPATH=src JAX_PLATFORMS=cpu; there is no CLI or PySCF calculation.
 import jax
 import jax.numpy as jnp
 from gradscf import gto, scf, gw
-from gradscf.df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from gradscf.gw.ep_coupling import PhononModel
 from gradscf.scf.autodiff import SCFDifferentiationConfig
 

@@ -10,7 +10,7 @@ from gradscf.model.neural_xc.defaults import (
     DEFAULT_NEURAL_XC_RESPONSE_PT2_MODE,
     DEFAULT_NEURAL_XC_SEMILOCAL_XC,
 )
-from gradscf.integrals.backends.jax_reference.packed_eri import build_j_from_eri_pair_matrix
+from gradscf.integrals.molecular.jk import build_j_from_eri_pair_matrix
 
 
 def test_neural_xc_config_drives_generic_functional_constructor():

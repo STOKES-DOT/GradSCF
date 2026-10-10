@@ -28,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 
-from ..df import build_jk_from_df
+from gradscf.integrals.molecular.jk import build_jk_from_df
 from ..scf._pytree import pytree_dataclass
 from ..scf.autodiff import SCFDifferentiationConfig
 from .g0w0 import _mo_factors

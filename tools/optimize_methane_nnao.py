@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import replace
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -22,9 +23,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from gradscf import integrals, scf
-from gradscf.integrals.contraction import primitive_basis, contraction_matrix
-from gradscf.integrals.backends.native_compact import NativeDirectBasis,ProjectedNativeDirectBasis
-from gradscf.df import build_jk_from_df
+from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix
+from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
+from gradscf.integrals.molecular.jk import build_jk_from_df
 from gradscf.solvers.nonlinear import ImplicitFixedPointConfig, implicit_fixed_point_solution
 from gradscf.scf.core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
 from gradscf.scf.rks import RKSConfig,run_rks_from_integrals_traceable
@@ -70,12 +71,60 @@ def map_npz_numeric(path,name):
                      order='F' if fortran else 'C')
 
 
+class NonfiniteGradientError(RuntimeError):
+    """Keep the failed backward arrays alongside its already validated primal."""
+    def __init__(self,outputs,gradient,energy,info):
+        super().__init__('Nonfinite energy or gradient')
+        self.failure_arrays=dict(basis_outputs=np.array(outputs),coefficient_gradient=np.array(gradient))
+        self.failure_details=dict(energy_hartree=float(energy),scf=info)
+
+
+@lru_cache(maxsize=32)
+def _df_rhf_solver(nelectron,implicit_tolerance,rescue_level_shift):
+    """Cache SCF/response by algorithm configuration; integrals are operands."""
+    cfg=RKSConfig(xc_spec='hf',jk_backend='df',max_cycle=150,
+                  conv_tol=1e-12,conv_tol_density=1e-10,conv_tol_grad=1e-9)
+
+    def value(inputs,nuclear_energy):
+        s,h,factors=inputs;n=s.shape[0]
+        mo_occ=jnp.zeros(n,dtype=s.dtype).at[:nelectron//2].set(2.)
+        kwargs=dict(overlap=s,hcore=h,eri=None,df_factors=factors,
+            nelectron=nelectron,nuclear_repulsion=nuclear_energy,
+            ao=jnp.zeros((0,n)),ao_deriv1=jnp.zeros((4,0,n)),grid_weights=jnp.zeros(0))
+        result,rescued,cycles=_run_scf_with_rescue(run_rks_from_integrals_traceable,
+            kwargs,cfg,rescue_level_shift=rescue_level_shift)
+
+        def fixed_point(density,physical):
+            overlap,core,df=physical
+            j,k=build_jk_from_df(df,density)
+            _,coeff=_diagonalize_fock(core+j-.5*k,
+                                     _orthogonalizer(overlap,cfg.orthogonalization_eps))
+            return _build_density_from_occ(coeff,mo_occ)
+
+        density=implicit_fixed_point_solution(inputs,solution=result.density_matrix,
+            fixed_point=fixed_point,
+            config=ImplicitFixedPointConfig(tolerance=implicit_tolerance,max_iter=100,restart=40),
+            converged=result.converged,require_converged=True)
+        j,k=build_jk_from_df(factors,density);fock=h+j-.5*k
+        energy=jnp.sum(density*h)+.5*jnp.sum(density*j)-.25*jnp.sum(density*k)+nuclear_energy
+        _,coeff=_diagonalize_fock(fock,_orthogonalizer(s,cfg.orthogonalization_eps))
+        info=dict(converged=result.converged,scf_cycles=result.cycles,
+            rescue_used=rescued,total_scf_cycles=cycles,
+            fixed_point_residual=jnp.linalg.norm(_build_density_from_occ(coeff,mo_occ)-density),
+            orbital_residual=jnp.linalg.norm(fock@density@s-s@density@fock),
+            min_overlap_eigenvalue=jnp.linalg.eigvalsh(s)[0],
+            reconstruction_error=jnp.abs(energy-result.total_energy))
+        return energy,info
+
+    return jax.jit(value),jax.jit(jax.value_and_grad(value,argnums=0,has_aux=True))
+
+
 class MethaneRHF:
     """RHF experiment, defaulting to methane; geometry may specify another molecule."""
     def __init__(self,bond=1.09,basis_family="szp442_direct",core_primitives=None,
                  geometry=None,jk_backend='direct',auxbasis='def2-universal-jkfit',
                  integral_cache=None,implicit_tolerance=1e-9,cache_storage='device',
-                 scf_rescue_level_shift=0.0):
+                 scf_rescue_level_shift=0.0,*,log_exponent_scales=None,df_metric_factor=None):
         if not np.isfinite(implicit_tolerance) or implicit_tolerance<=0:
             raise ValueError('implicit_tolerance must be finite and positive.')
         self.implicit_tolerance=float(implicit_tolerance)
@@ -113,6 +162,10 @@ class MethaneRHF:
         elif basis_family=='szp3':
             self.layout=prepare_basis(list(zip(self.symbols,self.coords)),unit='Angstrom')
         else:raise ValueError('Unknown basis family')
+        if log_exponent_scales is not None:
+            if not hasattr(self.layout,'with_log_exponent_scales'):
+                raise ValueError('Log exponent scales require a direct-contraction NNAO basis.')
+            self.layout=self.layout.with_log_exponent_scales(log_exponent_scales)
         self.basis_family=basis_family
         self.nelectron=sum(self.layout.topology.nuclear_charges)
         if self.nelectron%2:raise ValueError('RHF requires an even electron count.')
@@ -140,14 +193,22 @@ class MethaneRHF:
             self.ph=plan.evaluate('kinetic',pp)+plan.evaluate('nuclear',pp)
             if basis_family=='qvszps':self.ph=self.ph+plan.evaluate('ecp',pp,ecps=self.layout.ecps)
             if jk_backend=='df':
-                from gradscf.integrals.density_fitting import make_auxiliary_plan
+                from gradscf.integrals.molecular.density_fitting import make_auxiliary_plan
                 at,ap=integrals.prepare_basis(list(zip(self.symbols,self.coords)),auxbasis,cart=self.layout.topology.cart)
-                self.rep=make_auxiliary_plan(pt,at).factors(pp,ap)
+                kwargs={} if df_metric_factor is None else {'metric_factor':df_metric_factor}
+                self.rep=make_auxiliary_plan(pt,at).factors(pp,ap,**kwargs)
         for array in (self.ps,self.ph,self.rep):
             if hasattr(array,'block_until_ready'):array.block_until_ready()
         self.enuc=scf.nuclear_repulsion_energy(pp.nuclear_coords,jnp.asarray(pt.nuclear_charges))
-        self._value=jax.jit(self._implicit_value)
-        self._value_grad=jax.jit(jax.value_and_grad(self._implicit_value,argnums=0,has_aux=True))
+        if self.jk_backend=='df':
+            self._projection=jax.jit(self._df_inputs)
+            self._df_value,self._df_value_grad=_df_rhf_solver(
+                self.nelectron,self.implicit_tolerance,self.scf_rescue_level_shift)
+            self._value=self._staged_df_value
+            self._value_grad=self._staged_df_value_grad
+        else:
+            self._value=jax.jit(self._implicit_value)
+            self._value_grad=jax.jit(jax.value_and_grad(self._implicit_value,argnums=0,has_aux=True))
 
     def _build_integral_signature(self,primitive_parameters):
         payload=dict(symbols=self.symbols,coords=self.coords.tolist(),basis=self.basis_family,
@@ -173,8 +234,20 @@ class MethaneRHF:
 
     @staticmethod
     def _project_df_factors(t,rep):
-        from gradscf.integrals.density_fitting import project_factors
+        from gradscf.integrals.molecular.density_fitting import project_factors
         return project_factors(rep,t)
+
+    def _df_inputs(self,outputs,ps,ph,rep):
+        t,s,h=self._contracted_one_electron(outputs,ps,ph)
+        return s,h,self._project_df_factors(t,rep)
+
+    def _staged_df_value(self,outputs,ps,ph,rep):
+        return self._df_value(self._projection(outputs,ps,ph,rep),self.enuc)
+
+    def _staged_df_value_grad(self,outputs,ps,ph,rep):
+        physical,pullback=jax.vjp(lambda c:self._projection(c,ps,ph,rep),outputs)
+        value,cotangent=self._df_value_grad(physical,self.enuc)
+        return value,pullback(cotangent)[0]
 
     def _jk(self,t,density,rep,df_factors):
         if self.jk_backend=='df':
@@ -182,6 +255,8 @@ class MethaneRHF:
         return ProjectedNativeDirectBasis(self.primitive_direct,t).get_jk(density)
 
     def _implicit_value(self,outputs,ps,ph,rep):
+        if self.jk_backend=='df':
+            return self._df_value(self._df_inputs(outputs,ps,ph,rep),self.enuc)
         t,s,h=self._contracted_one_electron(outputs,ps,ph)
         df_factors=self._project_df_factors(t,rep) if self.jk_backend=='df' else None
         direct_basis=(ProjectedNativeDirectBasis(self.primitive_direct,t)
@@ -253,7 +328,7 @@ class MethaneRHF:
         (energy,info),gradient=self._value_grad(jnp.asarray(outputs),self.ps,self.ph,self.rep)
         row=self._checked_info(energy,info)
         if not np.isfinite(gradient).all():
-            raise RuntimeError('Nonfinite energy or gradient')
+            raise NonfiniteGradientError(outputs,gradient,energy,row)
         return float(energy),gradient,row
 
 

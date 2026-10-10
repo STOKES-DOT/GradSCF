@@ -63,6 +63,25 @@ def test_checked_scf_rejects_non_aufbau_stationary_density():
         module['MethaneRHF']._checked_info(-1.,info)
 
 
+def test_nonfinite_coefficient_gradient_retains_outputs_and_valid_forward_diagnostics():
+    module=runpy.run_path('tools/optimize_methane_nnao.py')
+    experiment=object.__new__(module['MethaneRHF'])
+    experiment.ps=experiment.ph=experiment.rep=None
+    outputs=np.array([[[.2,.3]]])
+    gradient=np.array([[[np.nan,np.inf]]])
+    info=dict(converged=True,scf_cycles=3,orbital_residual=1e-12,
+              min_overlap_eigenvalue=.1,reconstruction_error=0.,fixed_point_residual=0.)
+    experiment._value_grad=lambda *args:((-1.,info),gradient)
+    with pytest.raises(RuntimeError) as caught:
+        experiment.evaluate(outputs)
+    error=caught.value
+    assert str(error)=='Nonfinite energy or gradient'  # Existing per-molecule Adam contract.
+    assert hasattr(error,'failure_arrays'), 'The actual failed coefficient backward was discarded.'
+    np.testing.assert_array_equal(error.failure_arrays['basis_outputs'],outputs)
+    np.testing.assert_array_equal(error.failure_arrays['coefficient_gradient'],gradient)
+    assert error.failure_details==dict(energy_hartree=-1.,scf=info)
+
+
 @pytest.mark.parametrize('bad_info,energy',[
     ({'converged':False},-1.),({'orbital_residual':1e-2},-1.),
     ({'min_overlap_eigenvalue':1e-12},-1.),({'reconstruction_error':1e-5},-1.),

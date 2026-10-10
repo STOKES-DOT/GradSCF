@@ -7,7 +7,8 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
 
-from gradscf.integrals.layouts import _metadata_arrays, _mo_pair_products
+from gradscf.integrals.molecular.eri import _metadata_arrays
+from gradscf.integrals.molecular.ao2mo import _mo_pair_products
 from ._utils import _restricted_channel
 from .types import TDDFTResult, TDAResult
 

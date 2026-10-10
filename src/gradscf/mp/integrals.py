@@ -4,8 +4,7 @@ from typing import NamedTuple
 import numpy as np
 import jax.numpy as jnp
 
-from ..integrals.mo import (validate_integrals, validate_unrestricted_integrals,
-                            frozen_indices, unrestricted_frozen_indices, transform_eri_block)
+from gradscf.integrals.molecular.ao2mo import validate_integrals, validate_unrestricted_integrals, frozen_indices, unrestricted_frozen_indices, transform_eri_block
 
 
 class MPIntegrals(NamedTuple):
@@ -90,7 +89,7 @@ def from_scf(source, *, frozen=None):
     """
     from ..scf.facade import RKS, UKS
     from ..scf.rks import _build_jk
-    from ..df import build_jk_from_df
+    from gradscf.integrals.molecular.jk import build_jk_from_df
     if not isinstance(source, (RKS, UKS)) or str(source.xc).lower() != "hf":
         raise NotImplementedError("Canonical MP requires RHF/UHF; ROHF and DFT are not supported")
     source._check_reference_source()

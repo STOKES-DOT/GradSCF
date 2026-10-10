@@ -95,7 +95,7 @@ of supplied integrals and the reference is the caller's responsibility.
 
 For explicit inputs to a facade use
 `CIReference(h1_mo, eri_mo, nocc, nuclear_repulsion=..., mo_energy=...)`.
-For AO inputs, `integrals.mo.transform_integrals` supports full ERIs, an s4
+For AO inputs, `integrals.molecular.ao2mo.transform_integrals` supports full ERIs, an s4
 AO-pair matrix, or density-fitting factors with shape `(naux, nao, nao)`.
 The SCF facade adapter is eager and accepts converged GradSCF `scf.RHF` (or `RKS(xc="hf")`),
 `UHF` and `ROHF`; the latter two use `UnrestrictedReference` and `make_uci_space`.

@@ -96,7 +96,7 @@ def test_build_rks_integral_inputs_accepts_strict_jax_default_grid_level():
     _pyscf_or_skip()
     from pyscf import dft, gto
 
-    from gradscf.integrals.assembly import build_rks_integral_inputs
+    from gradscf.scf.inputs.assembly import build_rks_integral_inputs
 
     atom = """
     H 0.0 0.0 -0.35

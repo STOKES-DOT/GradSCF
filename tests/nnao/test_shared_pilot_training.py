@@ -134,6 +134,48 @@ def test_failed_update_keeps_last_valid_checkpoint_and_records_structure(tmp_pat
     assert checkpoint['epoch'] == 1 and checkpoint['optimizer']['count'] == 1
 
 
+@pytest.mark.parametrize('fail_at', [1, 3])
+def test_failed_candidate_snapshot_survives_batch_wrapper_without_accepting_update(tmp_path, fail_at):
+    api = module(); initial = np.zeros(2); calls = []; before = {}
+    outputs = np.array([[[.2, .3]]]); coefficient_gradient = np.array([[[np.nan, np.inf]]])
+    def evaluate(vector):
+        calls.append(np.array(vector))
+        if len(calls) == fail_at:
+            for name in ('last.npz', 'best.npz', 'best_validation.npz'):
+                path = tmp_path / name
+                if path.exists(): before[name] = path.read_bytes()
+            error = RuntimeError('Nonfinite energy or gradient')
+            error.failure_arrays = dict(basis_outputs=outputs, coefficient_gradient=coefficient_gradient)
+            error.failure_details = dict(energy_hartree=-1., scf=info())
+            raise error
+        delta = vector - 1.
+        return float(np.dot(delta, delta)), 2 * delta, info()
+    batch = lambda vector: api['evaluate_batch'](vector, [('ADIM6/AD6', evaluate)])
+    heldout = lambda vector: (1., [dict(structure_id='held', energy_hartree=1., **info())])
+    result = api['run_training'](initial, batch, Adam(), tmp_path, identity={'dataset': 'same'},
+                                 epochs=8, heldout=heldout)
+    assert result['status'] == 'failed' and result['accepted_epoch'] == (None if fail_at == 1 else 1)
+    assert 'failure_snapshot' in result, 'The failed trial parameters and raw backward were not saved.'
+    with np.load(tmp_path / result['failure_snapshot'], allow_pickle=False) as saved:
+        np.testing.assert_array_equal(saved['parameters'], calls[-1])
+        np.testing.assert_array_equal(saved['basis_outputs'], outputs)
+        np.testing.assert_array_equal(saved['coefficient_gradient'], coefficient_gradient)
+        metadata = json.loads(str(saved['metadata'].item()))
+    assert metadata['structure_id'] == 'ADIM6/AD6'
+    assert metadata['details'] == dict(energy_hartree=-1., scf=info())
+    assert metadata['attempted_epoch'] == (0 if fail_at == 1 else 2)
+    assert metadata['accepted_epoch'] == result['accepted_epoch']
+    assert metadata['identity'] == {'dataset': 'same'}
+    if fail_at == 1:
+        assert not (tmp_path / 'last.npz').exists()
+    else:
+        for name, data in before.items(): assert (tmp_path / name).read_bytes() == data
+        accepted = api['load_checkpoint'](tmp_path / 'last.npz', {'dataset': 'same'}, Adam(), initial)
+        assert accepted['epoch'] == 1 and accepted['optimizer']['count'] == 1
+        assert not np.array_equal(accepted['parameters'], calls[-1])
+    assert not list(tmp_path.glob('*.tmp'))
+
+
 def test_training_gate_requires_every_selected_record_and_same_tolerance(tmp_path):
     verify = module()['verify_validation']; source = tmp_path / 'structures.jsonl'
     source.write_text('{"structure_id": "a"}\n')

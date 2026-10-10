@@ -46,7 +46,7 @@ def test_atom_and_shell_mapping_and_jit():
 
 def test_native_contraction_and_gradient_match_independent_paths():
     m=api(); b=m.prepare_basis('H 0 0 0; H 0 0 .74')
-    from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals
+    from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
     x=jnp.zeros((2,2,2)); p=b.bind(x)
     pt,pp=primitive_basis(b.topology,p)
     primitive=integrals.make_plan(pt,backend='native')

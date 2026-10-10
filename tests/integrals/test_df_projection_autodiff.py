@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.integrals.density_fitting import project_factors
+from gradscf.integrals.molecular.density_fitting import project_factors
 
 
 def inputs():

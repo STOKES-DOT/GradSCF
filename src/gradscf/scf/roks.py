@@ -13,7 +13,7 @@ from ..dft.libxc_jax.jax_libxc import hybrid_coeff, xc_type
 from .core import _build_density_from_occ, _contains_jax_tracer, _host_float_unless_traced
 from .core import _diagonalize_fock, _orthogonalizer, _validate_density_matrix
 from .facade import _BaseKS
-from gradscf.integrals.assembly import build_uks_integral_inputs
+from gradscf.scf.inputs.assembly import build_uks_integral_inputs
 from .convergence import convergence_reached
 from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
 from .rks import _apply_level_shift, _orthonormal_diis_error

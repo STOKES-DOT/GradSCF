@@ -43,13 +43,13 @@ def test_native_dipole_origin_gradient():
     np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 
-@pytest.mark.parametrize("field", ["exponents", "coefficients"])
-def test_native_unimplemented_basis_derivatives_raise(field):
+@pytest.mark.parametrize("operator,field", [("eri", "exponents"), ("eri", "coefficients")])
+def test_native_unimplemented_basis_derivatives_raise(operator, field):
     top, p = integrals.prepare_basis("H 0 0 0; H 0 0 .74", basis="3-21g")
     plan = integrals.make_plan(top, backend="native")
     values = getattr(p, field)
     def f(v):
-        return plan.evaluate("kinetic", replace(p, **{field:(v, *values[1:])})).sum()
+        return plan.evaluate(operator, replace(p, **{field:(v, *values[1:])})).sum()
     with pytest.raises(NotImplementedError, match="(?i)(exponent|coefficient|basis)"):
         jax.grad(f)(values[0])
 

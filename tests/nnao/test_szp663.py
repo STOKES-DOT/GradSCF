@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from gradscf.model.nnao import prepare_direct_basis
 from gradscf import integrals
-from gradscf.integrals.contraction import primitive_basis,contraction_matrix
+from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix
 
 
 def test_expanded_pool_embeds_previous_basis_with_same_ao_count():

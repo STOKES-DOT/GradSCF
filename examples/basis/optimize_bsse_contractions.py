@@ -21,7 +21,7 @@ import numpy as np
 from scipy.optimize import minimize
 from gradscf import gto, integrals, scf
 from gradscf.data.molecule import parse_molecule_spec
-from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals
+from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
 
 KCAL = 627.5094740631
 ENERGY_BUDGET = 1e-4  # Ha: maximum increase in each own-basis fragment energy.

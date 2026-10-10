@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 
 from gradscf import bse
 from gradscf.bse import ep_coupling
-from gradscf.df import eri_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_to_df_factors
 from gradscf.gw import g0w0_cd_restricted
 from gradscf.gw.ep_coupling import PhononModel
 from gradscf_tools.molecular_ep import NativeRHF

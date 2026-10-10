@@ -114,7 +114,7 @@ def test_pyscf_runtime_imports_are_limited_to_integral_modules():
     }
     allowed_prefixes = (
         Path("src/gradscf/integrals"),
-        Path("src/gradscf/integrals/basis_data/pyscf_basis_snapshot"),
+        Path("src/gradscf/integrals/basis/data/pyscf_basis_snapshot"),
     )
     pattern = re.compile(r"^\s*(from\s+pyscf\b|import\s+pyscf\b)", re.MULTILINE)
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from numbers import Integral
 import numpy as np
 import jax.numpy as jnp
-from ..integrals.mo import validate_integrals, transform_integrals
+from gradscf.integrals.molecular.ao2mo import validate_integrals, transform_integrals
 from ..scf.reference import _array_signature, reference_state_signature
 from .cistring import unpack_nelec
 
@@ -117,13 +117,13 @@ def active_reference(source, core, active):
         cc = coefficients[:,jnp.asarray(core,dtype=jnp.int32)]
         density = 2*cc@cc.T
         if 'df_factors' in representation:
-            from ..df import build_jk_from_df
+            from gradscf.integrals.molecular.jk import build_jk_from_df
             coulomb,exchange = build_jk_from_df(representation['df_factors'],density)
         elif 'eri_pair_matrix' in representation:
-            from ..integrals.layouts import build_jk_from_packed
+            from gradscf.integrals.molecular.jk import build_jk_from_packed
             coulomb,exchange = build_jk_from_packed(representation['eri_pair_matrix'],density)
         else:
-            from ..integrals.contraction import exchange_matrix
+            from gradscf.integrals.molecular.jk import exchange_matrix
             eri = representation['eri']
             coulomb = jnp.einsum('pqrs,rs->pq',eri,density,precision='highest')
             exchange = exchange_matrix(eri,density)

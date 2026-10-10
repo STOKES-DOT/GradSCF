@@ -2,7 +2,7 @@
 
 from typing import NamedTuple
 import jax.numpy as jnp
-from ..integrals.mo import validate_integrals, frozen_indices
+from gradscf.integrals.molecular.ao2mo import validate_integrals, frozen_indices
 
 
 class CCIntegrals(NamedTuple):

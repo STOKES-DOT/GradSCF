@@ -23,7 +23,7 @@ import jax
 import numpy as np
 
 from gradscf import gto, scf
-from gradscf.df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from gradscf.gw import scgw_matsubara_restricted
 from gradscf.gw.g0w0 import _mo_factors
 from gradscf.gw.matsubara import gw_matsubara_step

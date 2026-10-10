@@ -1,7 +1,7 @@
 # Private native integral backend
 
-This directory builds a private, serial CPU library with a JAX typed FFI entry
-point. Runtime evaluation does not import or load PySCF. The source subset is
+This directory builds a private, serial CPU library with JAX typed FFI entry
+points. Runtime evaluation does not import or load PySCF. The source subset is
 pinned to PySCF v2.13.0 and libcint v6.1.3; full commit IDs, original relative
 paths, Git blob IDs and SHA256 checksums are in `vendor/manifest.json`.
 Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
@@ -13,6 +13,8 @@ Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
 - `csrc/ffi.cc`: GradSCF C++ value FFI adapter.
 - `csrc/geometry.cc`: streaming analytic coordinate JVP/VJP drivers.
 - `csrc/geometry_hessian.cc`: analytic bilinear coordinate Hessian products and adjoints.
+- `csrc/coefficients.cc`: shell-local coefficient JVP/VJP and coefficient Hessian products.
+- `csrc/exponents.cc`: analytic Gaussian-exponent JVP/VJP through Cartesian angular raising.
 - `csrc/tables.h`: shared table validation and owned libcint buffers.
 - `vendor/`: pinned, unmodified upstream C sources, licenses and checksums.
 - `include/`, `exports.*`, `CMakeLists.txt`: build configuration and ABI exports.
@@ -43,9 +45,13 @@ evaluation is serial and does not modify process-wide threading settings.
 
 All vendor symbols have hidden visibility and a linker export allowlist;
 The derivative exports include `GradSCFGeometryJVP`, `GradSCFGeometryVJP`,
-`GradSCFGeometryHessianJVP` and `GradSCFGeometryHessianVJP`; the export lists
+`GradSCFGeometryHessianJVP` and `GradSCFGeometryHessianVJP`, plus
+`GradSCFCoefficientJVP`, `GradSCFCoefficientVJP`,
+`GradSCFCoefficientHessianJVP` and `GradSCFCoefficientHessianVJP`, and
+`GradSCFExponentJVP`/`GradSCFExponentVJP`; the export lists
 also contain the value, ECP, packed-ERI and J/K entry points. There is no dynamically
-linked libcint, PySCF, BLAS, OpenMP, or Python library. Loading uses `RTLD_LOCAL`.
+linked libcint, PySCF, OpenMP, or Python library. The build links an existing
+platform BLAS provider (Accelerate on macOS). Loading uses `RTLD_LOCAL`.
 
 ## Contract
 
@@ -96,7 +102,7 @@ For an integral tensor `I(R)`, the second-order kernels evaluate
 `H[u,v] = sum_ab (d²I/dR_a dR_b) u_a v_b` and its coordinate adjoint
 `sum_bI (d²I/dR_a dR_b) u_b cot_I`. Both contract analytic libcint shell
 blocks directly. Nested JVPs, forward-over-reverse HVPs, reverse-over-reverse
-Hessians and derivatives with respect to the contraction vectors share these
+Hessians and derivatives with respect to tangent/cotangent vectors share these
 two kernels. Independent nuclear/basis coordinates and dipole origins include
 all mixed terms. No finite differences are used by the implementation.
 
@@ -126,13 +132,115 @@ a frozen-density force expression, do not supply that response.
 
 The low-level raw-ENV `backends.native.evaluate` remains value-only: an arbitrary
 ENV vector mixes geometry, exponents and coefficients. Use integral plans for
-geometry AD. Native exponent/coefficient and third-or-higher coordinate derivatives remain
-unsupported and fail explicitly. The JAX reference backend remains available
-for those basis-parameter derivatives. Geometry AD is limited to the five full
+geometry and basis-parameter AD. Third-or-higher coordinate derivatives remain
+unsupported and fail explicitly. Geometry AD is limited to the five full
 operators listed above: ECP, RI, packed ERIs and fused J/K do not acquire
 geometry derivatives through this change. GPU FFI, periodic integrals, spinors
 and range separation are outside this interface.
 Full integral values still require O(nao^4) memory.
+
+## Contraction-coefficient derivatives
+
+For `overlap`, `kinetic`, `nuclear` and `dipole`, integral plans accept raw
+coefficient JVP/VJP, forward/reverse Hessians, HVP and batching. JAX retains the
+primitive and contraction normalization in `normalization.py`. The native
+drivers differentiate the normalized coefficients stored in libcint ENV;
+normalization is not duplicated in C++.
+
+Each orbital leg uses an independent shadow shell, including when both legs
+refer to the same original shell. JVP replaces one leg with its coefficient
+direction. VJP locally uncontracts only the differentiated leg and immediately
+reduces the integral block against the cotangent. Zero and negative individual
+coefficients are supported; no primal nonzero-coefficient optimizer mask is
+reused. No complete coefficient Jacobian or primitive-pair integral cache is
+created. ENV coefficient slots must be disjoint from other coefficients,
+exponents and coordinates. Cartesian workspace checks apply to spherical
+output as well, including the larger identity contraction used by VJP.
+
+At fixed geometry/exponents these integral kernels are quadratic in the
+normalized orbital coefficients. Native second products therefore do not
+depend on those coefficients; their coefficient third derivative is exactly
+zero. Raw coefficient derivatives of higher order remain nonzero through the
+JAX normalization chain. Coefficient/geometry mixed second derivatives are
+currently rejected. Dense simultaneous coefficient/coordinate/origin
+**first-order** chain rules are supported.
+
+```python
+from dataclasses import replace
+import jax
+from gradscf import integrals
+
+top, params = integrals.prepare_basis("H 0 0 0; H 0 0 .74", "3-21g", cart=False)
+plan = integrals.make_plan(top)
+kinetic = lambda coefficients: plan.evaluate(
+    "kinetic", replace(params, coefficients=coefficients))
+gradient = jax.jit(jax.grad(lambda c: kinetic(c).sum()))(params.coefficients)
+```
+
+Packed RI three-center orbital-coefficient AD requires a **precomputed fixed
+auxiliary metric**. Cache signature and `lindep` checks stay active. Whitening
+uses JAX triangular solves or a fixed eigenmode whitening matrix, so the
+coefficient cotangent returns through the native three-center VJP.
+
+```python
+aux_top, aux_params = integrals.prepare_basis(
+    "H 0 0 0; H 0 0 .74", "def2-universal-jkfit", cart=False)
+ri = integrals.make_auxiliary_plan(top, aux_top)
+metric = ri.metric_factor(params, aux_params)  # outside JIT/AD
+factors = lambda c: ri.factors(
+    replace(params, coefficients=c), aux_params, metric_factor=metric)
+gradient = jax.jit(jax.grad(lambda c: (factors(c)**2).sum()))(params.coefficients)
+```
+
+The cached RI path supports orbital coefficient JVP/VJP/HVP at fixed auxiliary
+basis and geometry. Auxiliary-parameter and RI geometry AD remain
+explicitly unsupported; a cached host metric cannot stand in for their
+derivatives. Packed four-center ERIs, ECP and shell-direct J/K do not acquire
+coefficient AD through this change. Native FFI remains CPU/float64; GPU SCF
+requires an explicit transfer of contracted physical inputs/cotangents.
+
+The coefficient tests compare native products with fourth-order finite
+differences and an independent JAX primitive contraction, using s/p/d general
+contractions in Cartesian/spherical representations. End-to-end H2 checks
+compose contracted native S/H/RI directly with implicit SCF and compare its
+energy, coefficient gradient and HVP with the fixed-primitive reference. These
+checks store no complete four-center ERI and do not establish a molecular force
+Hessian or force-loss support for the new coefficient/geometry combination.
+
+## Gaussian-exponent derivatives
+
+Plans support first-order orbital exponent JVP/VJP for overlap, kinetic,
+nuclear attraction and dipole integrals, and for packed three-center RI with
+a fixed auxiliary metric. Exponents are shared across all contraction columns
+of a shell. JAX differentiates primitive/contraction normalization; C++ supplies
+the derivative of the bare Gaussian, `d g / d alpha = -r^2 g`. Both terms are
+required, including for a normalized single primitive.
+
+The native driver raises the differentiated Cartesian leg by two powers along
+each axis, sums the three terms, and then transforms the **original** angular
+shell to spherical AOs. The ratio of libcint's s/p common factors compensates
+for the changed shell convention. Each primitive uses an independent shadow
+shell and each VJP block is reduced immediately, without a full exponent
+Jacobian, primitive ERI cache or four-center ERI tensor. Exponent AD requires
+orbital `l <= 10` because the raised shell must fit the compiled `l <= 12` limit.
+
+```python
+def kinetic_from_log_scales(beta):
+    alpha = tuple(a * jax.numpy.exp(b) for a, b in zip(params.exponents, beta))
+    return plan.evaluate("kinetic", replace(params, exponents=alpha)).sum()
+
+beta = tuple(jax.numpy.zeros_like(a) for a in params.exponents)
+gradient = jax.jit(jax.grad(kinetic_from_log_scales))(beta)
+```
+
+Joint first-order exponent/coefficient differentiation is supported. Exponent
+Hessians and mixed exponent/coefficient/geometry derivatives fail explicitly;
+pure coefficient HVP support is unchanged. ECP, four-center and direct J/K
+exponent AD, auxiliary-basis AD and GPU FFI remain unsupported. Tests compare
+Cartesian/spherical s-through-g products against finite differences and verify
+the complete log-exponent/coefficient gradient through reconverged implicit
+DF-RHF. A small H2 joint Adam test establishes variational descent, not shared
+MACE training or basis-set accuracy across molecules.
 
 ## Why these upstream files
 

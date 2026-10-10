@@ -24,9 +24,15 @@ def register_integrals():
                "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP",
                "gradscf_geometry_hessian_jvp_cpu_v1": "GradSCFGeometryHessianJVP",
                "gradscf_geometry_hessian_vjp_cpu_v1": "GradSCFGeometryHessianVJP",
+               "gradscf_coefficient_jvp_cpu_v1": "GradSCFCoefficientJVP",
+               "gradscf_coefficient_vjp_cpu_v1": "GradSCFCoefficientVJP",
+               "gradscf_coefficient_hessian_jvp_cpu_v1": "GradSCFCoefficientHessianJVP",
+               "gradscf_coefficient_hessian_vjp_cpu_v1": "GradSCFCoefficientHessianVJP",
                "gradscf_compact_cpu_v1": "GradSCFCompact",
                "gradscf_direct_jk_cpu_v1": "GradSCFDirectJK",
                "gradscf_packed_jk_cpu_v1": "GradSCFPackedJK"}
+    targets.update({"gradscf_exponent_jvp_cpu_v1": "GradSCFExponentJVP",
+                    "gradscf_exponent_vjp_cpu_v1": "GradSCFExponentVJP"})
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
             raise RuntimeError("Native integral library is stale; rebuild with "
