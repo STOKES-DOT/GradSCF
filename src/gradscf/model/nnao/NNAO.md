@@ -140,9 +140,16 @@ Element order, atom order, and cutoff must agree with the model/layout.
 `contraction_matrix`, and `contract_integrals`. With fixed exponents and
 coordinates, compute native primitive tensors once, then differentiate JAX
 contraction/normalization with respect to network outputs or model weights.
-Direct coefficient AD through native `plan.evaluate` is still unsupported.
-A full primitive ERI cache costs O(N_primitive^4); use it only for bounded
-validation, not as the eventual large-system training architecture.
+Native `plan.evaluate` supports coefficient JVP/VJP and second products for
+overlap, kinetic, nuclear-attraction and dipole integrals. Fixed-auxiliary
+three-center RI supports coefficient products when a metric is prepared before
+AD; these paths also support first-order orbital exponent derivatives.
+`tools/train_nnao_joint_ad.py` uses contracted native integrals and strict
+implicit SCF to optimize MACE coefficients and shared log-exponent scales.
+Four-center ERI, ECP and direct-J/K basis derivatives, exponent Hessians and
+basis/geometry mixed second derivatives are not provided by this path.
+A full primitive ERI cache costs O(N_primitive^4) and is confined to bounded
+reference checks; the joint native trainer creates no such cache.
 
 Tests cover all template layouts, per-atom/per-shell mapping, native versus
 PySCF integrals for HF/HCl/HBr/HI, Cartesian/spherical representations, JIT,
