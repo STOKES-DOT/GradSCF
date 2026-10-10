@@ -39,7 +39,7 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
 
-from ..df import build_j_from_df, build_jk_from_df
+from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df
 from .freq import scaled_legendre_grid
 from .polarizability import rho_response_iw
 from .qp import _df_dw_batch, sigma_cd_batch, solve_qp_batch
@@ -291,7 +291,7 @@ def g0w0_cd_restricted(
         Number of doubly occupied orbitals.
     df_factors:
         Low-rank ERI factors ``(naux, nao, nao)`` (spectral factorization,
-        see :mod:`gradscf.df`).
+        see :mod:`gradscf.integrals.molecular.factorization`).
     fock_matrix, hcore_matrix, density_matrix:
         Converged mean-field quantities (AO basis).  The mean-field
         potential is reconstructed as ``v^mf = F - h - J[D]`` which equals

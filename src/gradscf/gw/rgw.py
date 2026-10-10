@@ -22,7 +22,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from ..df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from .g0w0 import g0w0_cd_restricted, _mo_factors
 from .evgw import evgw_cd_restricted
 from ..scf.reference import reference_state_signature, _array_signature

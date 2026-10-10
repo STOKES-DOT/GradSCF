@@ -18,7 +18,7 @@ from ..scf import (
     run_uks_from_integrals,
 )
 from gradscf.integrals import build_j_from_eri_pair_matrix, build_jk_from_eri_pair_matrix
-from ..df import build_j_from_df, build_jk_from_df
+from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df
 from ..scf.rks import _vxc_matrix_from_grid_potential
 from ..tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
 from ..tddft.response_options import (

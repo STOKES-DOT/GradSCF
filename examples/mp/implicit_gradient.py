@@ -14,8 +14,8 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 
 from gradscf import gto, integrals, scf, mp
-from gradscf.integrals.contraction import primitive_basis, contraction_matrix, contract_integrals
-from gradscf.integrals.mo import transform_integrals
+from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
+from gradscf.integrals.molecular.ao2mo import transform_integrals
 
 mol = gto.M(atom="H 0 0 0; H 0 0 .9", basis="sto-3g")
 mf = scf.RHF(mol, conv_tol=1e-13, conv_tol_grad=1e-11).run()

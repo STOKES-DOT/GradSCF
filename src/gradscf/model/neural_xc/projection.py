@@ -10,7 +10,8 @@ from jax.lax import Precision
 from jaxtyping import Array, PyTree
 
 from gradscf.integrals import eri_pair_matrix_to_mo_eri_slices
-from gradscf.integrals.layouts import _metadata_arrays, _mo_pair_products
+from gradscf.integrals.molecular.eri import _metadata_arrays
+from gradscf.integrals.molecular.ao2mo import _mo_pair_products
 from ...tools.features import (
     grid_features_for_molecule,
     requires_unrestricted_spin_treatment,
@@ -755,13 +756,13 @@ class NeuralXCProjectionMixin:
 
         def spin_exchange(dm_spin):
             if factors is not None and jnp.asarray(factors).size:
-                from ...df import build_jk_from_df
+                from gradscf.integrals.molecular.jk import build_jk_from_df
                 exchange_matrix=build_jk_from_df(factors,dm_spin)[1]
             elif rep_tensor.ndim in (1,2):
-                from ...integrals.layouts import build_jk_from_packed
+                from gradscf.integrals.molecular.jk import build_jk_from_packed
                 exchange_matrix=build_jk_from_packed(rep_tensor,dm_spin)[1]
             else:
-                from ...integrals.contraction import exchange_matrix as contract_exchange
+                from gradscf.integrals.molecular.jk import exchange_matrix as contract_exchange
                 exchange_matrix=contract_exchange(rep_tensor,dm_spin)
             return -0.5 * jnp.einsum(
                 "pq,pq->",
@@ -1001,10 +1002,10 @@ class NeuralXCProjectionMixin:
         e_one = jnp.einsum("pq,pq->", density_matrix, h1e, precision=Precision.HIGHEST)
         factors=getattr(molecule,'df_factors',None)
         if factors is not None and jnp.asarray(factors).size:
-            from ...df import build_j_from_df
+            from gradscf.integrals.molecular.jk import build_j_from_df
             j_matrix=build_j_from_df(factors,density_matrix)
         elif rep_tensor.ndim in (1,2):
-            from ...integrals.layouts import build_jk_from_packed
+            from gradscf.integrals.molecular.jk import build_jk_from_packed
             j_matrix=build_jk_from_packed(rep_tensor,density_matrix)[0]
         else:
             j_matrix=jnp.einsum('pqrs,rs->pq',rep_tensor,density_matrix,precision=Precision.HIGHEST)

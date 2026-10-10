@@ -113,7 +113,7 @@ def test_qsgw_damping_cannot_hide_a_large_energy_residual():
 
 
 def test_qsgw_cannot_converge_on_isospectral_virtual_rotation():
-    from gradscf.df import build_j_from_df
+    from gradscf.integrals.molecular.jk import build_j_from_df
     from gradscf.gw.g0w0 import _exchange_mo
 
     kw = _small_static_inputs()
@@ -159,7 +159,7 @@ def test_qsgw_water_sto3g_converges_and_is_sane():
     mol = gto.M(atom=_ATOM, basis="sto-3g", cart=True)
     mf = dft.RKS(mol, xc="hf").run()
     res = mf.scf_result
-    from gradscf.df import eri_pair_matrix_to_df_factors
+    from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 
     df = eri_pair_matrix_to_df_factors(
         mf._scf_inputs.eri_pair_matrix, nao=res.mo_coeff.shape[0], tol=1e-12
@@ -192,7 +192,7 @@ def test_qsgw_water_sto3g_converges_and_is_sane():
     np.testing.assert_allclose(c.T @ s @ c, np.eye(c.shape[1]), atol=1e-10)
     # Rebuild the effective Fock at the returned state. This checks the
     # self-consistent equation rather than only changes between iterates.
-    from gradscf.df import build_j_from_df
+    from gradscf.integrals.molecular.jk import build_j_from_df
     from gradscf.gw.g0w0 import _exchange_mo, _mo_factors
 
     coeff = out.mo_coeff

@@ -6,8 +6,9 @@ import jax
 import jax.numpy as jnp
 from jax.lax import Precision
 from gradscf.integrals import eri_pair_matrix_to_mo_eri_slices
-from gradscf.integrals.layouts import _metadata_arrays, _mo_pair_products
-from ..df import df_factors_to_mo_eri_slices
+from gradscf.integrals.molecular.eri import _metadata_arrays
+from gradscf.integrals.molecular.ao2mo import _mo_pair_products
+from gradscf.integrals.molecular.ao2mo import df_factors_to_mo_eri_slices
 
 def _local_pt2_feature_from_restricted_orbitals(
     ao: Any,

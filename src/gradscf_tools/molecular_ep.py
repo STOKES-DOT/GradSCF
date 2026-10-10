@@ -14,7 +14,7 @@ import numpy as np
 
 from gradscf import integrals
 from gradscf.integrals.basis import BasisParameters, BasisTopology
-from gradscf.integrals.contraction import exchange_matrix
+from gradscf.integrals.molecular.jk import exchange_matrix
 from gradscf.scf.energy import XCContribution, restricted_energy
 from gradscf.scf.rhf import nuclear_repulsion_energy
 from gradscf.scf.rks import RKSConfig, run_rks_from_integrals_traceable

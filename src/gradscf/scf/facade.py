@@ -18,7 +18,7 @@ from .builders import (
     _build_unrestricted_reference,
 )
 from .core import _contains_jax_tracer, _build_density_from_occ
-from gradscf.integrals.assembly import build_rks_integral_inputs
+from gradscf.scf.inputs.assembly import build_rks_integral_inputs
 from .rks import RKSConfig, run_rks_from_integrals
 from .uks import UKSConfig
 

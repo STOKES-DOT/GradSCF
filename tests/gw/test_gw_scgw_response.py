@@ -165,7 +165,7 @@ def test_implicit_gradient_is_independent_of_mixing_trajectory():
 
 def test_h2_df_response_matches_reconverged_finite_difference():
     from gradscf import dft, gto
-    from gradscf.df import eri_pair_matrix_to_df_factors
+    from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
     mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", cart=True)
     mf = dft.RKS(mol, xc="hf").run()
     assert mf.converged

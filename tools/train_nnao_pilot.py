@@ -88,7 +88,9 @@ def evaluate_batch(vector, evaluators, *, progress=None):
             if not valid:
                 raise RuntimeError(f'Invalid SCF/gradient diagnostics: {details}')
         except Exception as error:
-            raise RuntimeError(f'{identifier}: {error}') from error
+            failure = RuntimeError(f'{identifier}: {error}')
+            failure.structure_id = identifier
+            raise failure from error
         energies.append(float(value)); gradient_sum += gradient
         records.append(dict(structure_id=identifier, energy_hartree=float(value),
                             parameter_gradient_norm=float(np.linalg.norm(gradient)), **details))
@@ -108,7 +110,9 @@ def evaluate_values(vector, evaluators, *, progress=None):
             if not np.isfinite(value) or not valid_scf(details):
                 raise RuntimeError(f'Invalid held-out SCF diagnostics: {details}')
         except Exception as error:
-            raise RuntimeError(f'{identifier}: {error}') from error
+            failure = RuntimeError(f'{identifier}: {error}')
+            failure.structure_id = identifier
+            raise failure from error
         records.append(dict(structure_id=identifier, energy_hartree=float(value), **details))
         if progress is not None:
             progress(records)
@@ -143,6 +147,24 @@ def load_checkpoint(path, identity, optimizer, initial):
     return checkpoint
 
 
+def save_failure_snapshot(path, vector, error, summary):
+    """Save the unaccepted trial, following explicit diagnostics through wrappers."""
+    arrays = dict(parameters=np.asarray(vector)); metadata = dict(summary)
+    cause = error
+    while cause is not None:
+        if hasattr(cause, 'structure_id'):
+            metadata.setdefault('structure_id', cause.structure_id)
+        if hasattr(cause, 'failure_arrays'):
+            arrays.update(cause.failure_arrays)
+            metadata['details'] = cause.failure_details
+        cause = cause.__cause__
+    path = Path(path); temporary = path.with_name(path.name + '.tmp')
+    with temporary.open('wb') as stream:
+        np.savez(stream, **arrays,
+                 metadata=np.asarray(json.dumps(metadata, sort_keys=True, allow_nan=False)))
+    os.replace(temporary, path)
+
+
 def run_training(initial, evaluate, optimizer, output_dir, identity, *, epochs, resume=False,
                  heldout=None, validation_interval=20):
     """One complete batch and one Adam update per epoch, with accepted checkpoints."""
@@ -155,12 +177,14 @@ def run_training(initial, evaluate, optimizer, output_dir, identity, *, epochs, 
         raise ValueError('Output already contains a checkpoint; use --resume or a new output directory.')
     if resume and not last.exists():
         raise ValueError('Resume requires an existing last.npz checkpoint.')
-    checkpoint = None; started = time.perf_counter(); attempted_epoch = 0
+    checkpoint = None; vector = None; started = time.perf_counter(); attempted_epoch = 0
     try:
         if resume:
             checkpoint = load_checkpoint(last, identity, optimizer, initial)
+            vector = checkpoint['parameters']
         else:
-            loss, gradient, records = evaluate(initial)
+            vector = initial
+            loss, gradient, records = evaluate(vector)
             candidate = dict(identity=identity, parameters=np.asarray(initial),
                 optimizer=optimizer.init(initial), gradient=np.asarray(gradient), epoch=0,
                 loss_hartree=loss, molecules=records, history=[], validation_history=[])
@@ -233,6 +257,13 @@ def run_training(initial, evaluate, optimizer, output_dir, identity, *, epochs, 
             attempted_epoch=attempted_epoch, target_epochs=epochs, error=str(error),
             traceback=traceback.format_exc(), elapsed_seconds=time.perf_counter() - started,
             identity=identity)
+        if vector is not None:
+            snapshot = directory / f'failed-candidate-epoch-{attempted_epoch:06d}.npz'
+            try:
+                save_failure_snapshot(snapshot, vector, error, summary)
+                summary['failure_snapshot'] = snapshot.name
+            except Exception as snapshot_error:
+                summary['failure_snapshot_error'] = str(snapshot_error)
     _pilot.atomic_json(directory / 'summary.json', summary)
     _pilot.atomic_json(directory / 'progress.json', summary)
     return summary

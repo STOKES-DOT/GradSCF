@@ -185,18 +185,33 @@ update imports rather than relying on compatibility aliases:
 | `gradscf.data.integrals.libcint.mol` | Removed; use native integral plans |
 | `gradscf.data.integrals.libcint.autodiff` | Removed; native plans provide geometry AD |
 | `gradscf.data.basis` | `gradscf.integrals.basis` |
-| `gradscf.data.pyscf_basis_loader` | `gradscf.integrals.basis_data` |
+| `gradscf.data.pyscf_basis_loader` | `gradscf.integrals.basis.data` |
 | `gradscf.data.grid` / `data.grid_ao` | `gradscf.integrals.grids` / `integrals.grids.ao` |
-| `gradscf.data.ris_auxbasis` | `gradscf.integrals.auxbasis` |
-| `gradscf.scf.inputs` | `gradscf.integrals.assembly` |
+| `gradscf.data.ris_auxbasis` | `gradscf.integrals.basis.auxiliary` |
+| `gradscf.integrals.assembly` / `integrals.input_*` | `gradscf.scf.inputs` |
+| `gradscf.df` J/K functions | `gradscf.integrals.molecular.jk` |
+| `gradscf.df` spectral ERI factorization | `gradscf.integrals.molecular.factorization` |
+| `gradscf.integrals.mo` | `gradscf.integrals.molecular.ao2mo` |
+| `gradscf.integrals.density_fitting` | `gradscf.integrals.molecular.density_fitting` |
+| `gradscf.integrals.contraction` basis transforms | `gradscf.integrals.basis.contraction` |
+| `gradscf.integrals.contraction.exchange_matrix` | `gradscf.integrals.molecular.jk.exchange_matrix` |
 | `gradscf._native` | `gradscf.integrals._native` |
 
 Basis/grid functions previously exported from `gradscf.data` are exported from
 `gradscf.integrals`. Public `gradscf.gto` facades remain available. All 321
 original basis snapshot files and the supplementary JSON basis bundle are
-retained; resource lookup now uses `gradscf.integrals.basis_data`. Angular
+retained; resource lookup now uses `gradscf.integrals.basis.data`. Angular
 momenta, general contractions and kappa labels are preserved by the loader.
 Loading data does not imply native ECP/spinor/operator support.
+
+Native Python bindings now live under `integrals.backends.native`: `ffi` owns
+raw FFI, `packing` owns ATM/BAS/ENV, `autodiff` owns geometry/coefficient/exponent
+rules, and `eri`, `density_fitting`, `jk` separate execution roles. The old
+`native_geometry`, `native_coefficients` and `native_compact` files are removed.
+Current public `prepare_basis`, `make_plan`, `make_auxiliary_plan` and
+`backend_capabilities` imports remain unchanged. See the
+[integral ownership guide](src/gradscf/integrals/README.md) for remaining
+reference-kernel and dense-ERI migration dependencies.
 
 ## External chemistry dependency removal
 

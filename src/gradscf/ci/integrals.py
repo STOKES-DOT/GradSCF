@@ -1,5 +1,5 @@
-"""CI input adaptation; shared MO transformation lives in gradscf.integrals.mo."""
-from ..integrals.mo import validate_integrals
+"""CI input adaptation; shared MO transformation lives in gradscf.integrals.molecular.ao2mo."""
+from gradscf.integrals.molecular.ao2mo import validate_integrals
 from ..scf.reference import reference_from_source as prepare_reference
 from .types import CIReference
 

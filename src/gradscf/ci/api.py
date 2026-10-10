@@ -5,14 +5,14 @@ from .integrals import reference_from_source
 from .space import make_ci_space, make_uci_space, _selected_ranks
 from .spin import spin_square
 from .solver import solve_ci, solve_cis, solve_ucis
-from ..integrals.mo import spin_orbital_integrals
+from gradscf.integrals.molecular.ao2mo import spin_orbital_integrals
 from .solver import restricted_fock
 from .corrections import cis_d_correction
 from .types import CIConfig
 from .properties import make_rdm1, make_rdm2, make_rdm12
 from ..scf.reference import unrestricted_reference_from_source, is_unrestricted_source
 from ..scf.reference import reference_state_signature, UnrestrictedReference
-from ..integrals.mo import frozen_indices, unrestricted_frozen_indices
+from gradscf.integrals.molecular.ao2mo import frozen_indices, unrestricted_frozen_indices
 
 
 class CI:

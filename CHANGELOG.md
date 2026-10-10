@@ -2,6 +2,23 @@
 
 ## Unreleased — GradSCF
 
+### Native differentiable basis integrals
+
+- Add CPU native contraction-coefficient JVP/VJP and Hessian products, and
+  first-order Gaussian-exponent JVP/VJP for one-electron and fixed-auxiliary
+  three-center integrals. Keep normalization and fixed-metric whitening in JAX.
+- Organize basis definitions/resources, molecular contractions, native FFI/AD
+  and SCF input assembly by ownership; preserve basis data and vendor bytes.
+- Share the physical-input implicit DF-RHF solver across basis updates and add
+  joint MACE-coefficient/exponent Adam training with immutable-parameter masks,
+  parent-energy/gradient checks and accepted-state checkpoints.
+- Preserve failed-candidate diagnostics without applying invalid gradients or
+  Adam moments; add numerical GMRES solve margin while retaining true-residual
+  acceptance thresholds.
+- Validate CPU integral/SCF/training boundaries and wheel resource ownership.
+  Exponent Hessians, mixed basis/geometry rules and GPU integral FFI remain
+  outside the new native basis-derivative coverage.
+
 ### Shared MP Taylor graphs
 
 - Reuse each linear Hamiltonian coefficient across residual lifting and the

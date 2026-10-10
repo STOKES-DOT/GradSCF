@@ -27,7 +27,7 @@ def _inputs(atom=_ATOM, nocc=5):
 
 
 def _df(kwargs):
-    from gradscf.df import eri_pair_matrix_to_df_factors
+    from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 
     return eri_pair_matrix_to_df_factors(kwargs["df_factors"], nao=kwargs["mo_coeff"].shape[0], tol=1e-12)
 
@@ -69,7 +69,7 @@ def test_evgw_shift_vs_g0w0_is_bounded():
 
 @pytest.mark.parametrize("damping", [0.0, 0.5])
 def test_evgw_h2_fixed_point_satisfies_dyson_equation(damping):
-    from gradscf.df import build_j_from_df
+    from gradscf.integrals.molecular.jk import build_j_from_df
     from gradscf.gw.freq import scaled_legendre_grid
     from gradscf.gw.g0w0 import _exchange_mo, _mo_factors
     from gradscf.gw.polarizability import rho_response_iw

@@ -1,5 +1,6 @@
 """Per-atom shell templates and differentiable contraction assembly."""
 from dataclasses import dataclass, replace
+from collections.abc import Mapping
 from functools import lru_cache
 from importlib.resources import files
 import json
@@ -113,6 +114,44 @@ class DirectBasis:
     @property
     def nelectron(self):return sum(self.topology.nuclear_charges)-self.charge
 
+    @property
+    def exponent_scale_keys(self):
+        """Element/angular-momentum keys for the nonfixed contractions present."""
+        keys={(self.symbols[atom],l) for atom,l,slot in zip(
+            self.shell_atoms,self.topology.angular_momenta,self.slots) if slot>=0}
+        return tuple(sorted(keys,key=lambda item:(atomic_number(item[0]),item[1])))
+
+    def with_log_exponent_scales(self,scales):
+        """Return a new layout with alpha = current_alpha * exp(element/l scale).
+
+        Core and other fixed shells are unchanged. Missing keys mean zero;
+        invalid traced values produce NaNs instead of silently using a basis.
+        """
+        if not isinstance(scales,Mapping):raise ValueError('Exponent scales must be a mapping of (element,l) keys.')
+        unknown=set(scales)-set(self.exponent_scale_keys)
+        if unknown:raise ValueError(f'Unknown exponent scale keys for this layout: {unknown}')
+        values={}
+        for key,value in scales.items():
+            value=jnp.asarray(value)
+            if value.ndim!=0 or value.dtype.kind not in 'biuf':
+                raise ValueError('Log exponent scales must be real scalars.')
+            if not isinstance(value,jax.core.Tracer) and not np.isfinite(np.asarray(value)):
+                raise ValueError('Log exponent scales must be finite.')
+            values[key]=value
+        exponents=[]
+        for atom,l,slot,a in zip(self.shell_atoms,self.topology.angular_momenta,
+                                self.slots,self.parameters.exponents):
+            if slot<0:
+                exponents.append(a)
+                continue
+            scale=jnp.asarray(values.get((self.symbols[atom],l),0.),dtype=a.dtype)
+            scaled=a*jnp.exp(scale)
+            valid=jnp.isfinite(scale)&jnp.all(jnp.isfinite(scaled))&jnp.all(scaled>0.)
+            if not isinstance(valid,jax.core.Tracer) and not bool(valid):
+                raise ValueError('Scaled Gaussian exponents must be finite and positive.')
+            exponents.append(jnp.where(valid,scaled,jnp.nan))
+        return replace(self,parameters=replace(self.parameters,exponents=tuple(exponents)))
+
     def reference_outputs(self):
         out=jnp.zeros((len(self.symbols),self.num_channels,self.max_primitives),dtype=self.parameters.centers.dtype)
         for atom,l,c in zip(self.shell_atoms,self.slots,self.parameters.coefficients):
@@ -206,7 +245,7 @@ def prepare_direct_basis(atom,*,unit='Angstrom',charge=0,spin=0,cart=False,
         if symbol not in data:raise ValueError(f'NNAO has no direct template for {symbol}.')
         core_by_l={};core_index={}
         if core_primitives==6 and any(s['role']=='core' for s in data[symbol]['shells']):
-            from gradscf.integrals.basis_data import load_basis_from_snapshot
+            from gradscf.integrals.basis.data import load_basis_from_snapshot
             if atomic_number(symbol)>20:
                 raise ValueError(f'No validated six-primitive core for {symbol}; select core_primitives=3 explicitly.')
             for block in load_basis_from_snapshot('6-31g',symbol):

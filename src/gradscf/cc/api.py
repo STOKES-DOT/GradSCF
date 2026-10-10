@@ -3,7 +3,7 @@
 from dataclasses import fields
 from ..scf.reference import (reference_from_source, UnrestrictedReference,
                              unrestricted_reference_from_source, is_unrestricted_source)
-from ..integrals.mo import frozen_indices, unrestricted_frozen_indices
+from gradscf.integrals.molecular.ao2mo import frozen_indices, unrestricted_frozen_indices
 from ..scf.reference import reference_state_signature
 from .types import CCConfig
 from .ground import run_cc

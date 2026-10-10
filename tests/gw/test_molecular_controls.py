@@ -111,7 +111,7 @@ def test_mutable_window_input_does_not_mutate_bse_snapshot(mf):
 
 
 def test_noncontiguous_windows_and_independent_screening_response():
-    from gradscf.df import build_jk_from_df
+    from gradscf.integrals.molecular.jk import build_jk_from_df
     from gradscf.gw.g0w0 import g0w0_cd_restricted
     rng=np.random.default_rng(19)
     factors=jnp.asarray(rng.normal(size=(4,5,5))*.03)

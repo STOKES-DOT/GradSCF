@@ -31,7 +31,7 @@ from scipy.optimize import minimize
 from gradscf_tools.molecular_ep import NativeRHF
 from gradscf_tools.molecular_symmetry import signed_permutation_symmetry, coordinate_orbits
 from gradscf.scf.rks import RKSConfig
-from gradscf.df import eri_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_to_df_factors
 from gradscf.gw import g0w0_cd_restricted
 from gradscf.gw.ep_coupling import PhononModel, fan_retarded, spectral_function
 from gradscf.tools.spectra import HARTREE_TO_EV

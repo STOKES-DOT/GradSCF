@@ -9,7 +9,7 @@ Run with JAX_PLATFORMS=cpu for the float64 CPU reference calculation.
 import jax
 import jax.numpy as jnp
 from gradscf import gto, scf, gw
-from gradscf.df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from gradscf.scf.autodiff import SCFDifferentiationConfig
 
 jax.config.update("jax_enable_x64", True)

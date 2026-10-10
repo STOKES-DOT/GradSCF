@@ -13,7 +13,7 @@ from collections.abc import Sequence
 import numpy as np
 import jax.numpy as jnp
 
-from ..df import eri_pair_matrix_to_df_factors
+from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
 from ..scf.reference import as_reference, reference_state_signature, _array_signature
 from .g0w0 import g0w0_cd_unrestricted, _mo_factors
 

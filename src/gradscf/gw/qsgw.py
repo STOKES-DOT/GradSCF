@@ -41,7 +41,7 @@ from jaxtyping import Array
 from ..scf.autodiff import SCFDifferentiationConfig
 from ..solvers.nonlinear import attach_root
 from .outer_response import linear_config, require_valid
-from ..df import build_j_from_df
+from gradscf.integrals.molecular.jk import build_j_from_df
 from .freq import scaled_legendre_grid
 from .g0w0 import _exchange_mo, _mo_factors
 from .polarizability import rho_response_iw

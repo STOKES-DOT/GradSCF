@@ -4,17 +4,14 @@ import pytest
 
 from gradscf.integrals import basis_from_pyscf_spec, evaluate_cartesian_ao
 from gradscf.integrals import build_hcore, eri_pair_matrix_packed, eri_tensor, overlap_matrix
-from gradscf.df import (
-    build_j_from_df,
-    build_jk_from_df,
-    build_jk_from_df_orbitals,
-    eri_to_df_factors,
-)
+from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df, build_jk_from_df_orbitals
+from gradscf.integrals.molecular.factorization import eri_to_df_factors
 from gradscf.scf import RKSConfig, run_rks_from_integrals
 from gradscf.scf.builders import _build_restricted_reference
 from reference_scf_features import _restricted_response_eri_slices_from_mo_tensor
 from gradscf.integrals.backends.jax_reference.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
-from gradscf.integrals.backends.jax_reference.packed_eri import build_jk_from_eri_pair_matrix, eri_pair_matrix_to_mo_eri_slices
+from gradscf.integrals.molecular.jk import build_jk_from_eri_pair_matrix
+from gradscf.integrals.molecular.ao2mo import eri_pair_matrix_to_mo_eri_slices
 from gradscf.tddft import RestrictedCasidaTDDFT
 from gradscf.tddft._semilocal_response import SemilocalResponseFunctional
 

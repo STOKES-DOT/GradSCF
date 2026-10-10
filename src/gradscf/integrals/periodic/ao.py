@@ -2,8 +2,8 @@
 import numpy as np
 import jax.numpy as jnp
 from ..basis import cartesian_angular_tuples
-from ..normalization import normalized_shell_coefficients, radial_primitive_norm
-from ..backends.jax_reference._common import primitive_cartesian_norm
+from gradscf.integrals.basis.normalization import normalized_shell_coefficients, radial_primitive_norm
+from gradscf.integrals.basis.normalization import primitive_cartesian_norm
 
 
 def reciprocal_grid(lattice,mesh):

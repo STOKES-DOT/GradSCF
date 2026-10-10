@@ -13,7 +13,7 @@ from ..tools.features import (
     infer_response_feature_kind,
     normalize_response_feature_kind,
 )
-from gradscf.integrals.layouts import _metadata_arrays
+from gradscf.integrals.molecular.eri import _metadata_arrays
 from ._utils import (
     _density_on_grid,
     _resolve_xc_functional,

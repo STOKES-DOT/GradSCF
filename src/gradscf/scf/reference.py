@@ -4,9 +4,7 @@ from dataclasses import dataclass
 import hashlib
 import numpy as np
 import jax.numpy as jnp
-from ..integrals.mo import (transform_integrals, validate_integrals,
-                            validate_unrestricted_integrals, unrestricted_frozen_indices,
-                            transform_unrestricted_integrals)
+from gradscf.integrals.molecular.ao2mo import transform_integrals, validate_integrals, validate_unrestricted_integrals, unrestricted_frozen_indices, transform_unrestricted_integrals
 
 
 @dataclass(frozen=True)

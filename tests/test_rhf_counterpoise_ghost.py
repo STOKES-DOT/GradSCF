@@ -21,7 +21,7 @@ H  1.680398 -0.373741  0.758561
 
 
 def test_rhf_ghost_does_not_build_xc_quadrature(monkeypatch):
-    from gradscf.integrals import assembly
+    from gradscf.scf.inputs import assembly
 
     def unused_grid(*args, **kwargs):
         raise AssertionError("Pure HF must not build XC quadrature.")

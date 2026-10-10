@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from gradscf.model.nnao import prepare_direct_basis
-from gradscf.integrals.basis_data import load_basis_from_snapshot
+from gradscf.integrals.basis.data import load_basis_from_snapshot
 
 
 @pytest.mark.parametrize('symbol','Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca'.split())

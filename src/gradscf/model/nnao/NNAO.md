@@ -136,7 +136,7 @@ Element order, atom order, and cutoff must agree with the model/layout.
 
 ## Coefficient derivatives and validation
 
-`gradscf.integrals.contraction` exposes `primitive_basis`,
+`gradscf.integrals.basis.contraction` exposes `primitive_basis`,
 `contraction_matrix`, and `contract_integrals`. With fixed exponents and
 coordinates, compute native primitive tensors once, then differentiate JAX
 contraction/normalization with respect to network outputs or model weights.

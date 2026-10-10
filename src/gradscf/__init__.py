@@ -31,7 +31,6 @@ _NAMESPACE_EXPORTS = {
     "tools",
     "workflows",
     "data",
-    "df",
 }
 
 __all__ = sorted(_NAMESPACE_EXPORTS)
