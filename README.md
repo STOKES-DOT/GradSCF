@@ -99,7 +99,7 @@ print("HF:", float(mf.e_tot), "MP2:", float(pt.e_tot))
 ```
 
 Use `scf.UHF` or `scf.ROHF` for their respective open-shell references.
-MP2 accepts canonical RHF/UHF; MP3 currently accepts canonical RHF.
+MP2/MP3 and generic MPn accept real canonical RHF/UHF.
 CI and CC have additional ROHF-based paths.
 
 ### DFT and excitation energies
@@ -196,7 +196,7 @@ Forward availability, derivative coverage, and physical accuracy are separate.
 | --- | --- | --- |
 | Molecular HF/DFT | RHF/UHF/ROHF/GHF; RKS/UKS/ROKS/GKS; UHF/UKS stability | [SCF](src/gradscf/scf), [DFT](src/gradscf/dft); closed-shell HF uses `scf.RHF` |
 | Periodic HF/DFT | Gamma/k-point calculations, GTH, FFT density fitting, bands | [Periodic modules](src/gradscf/pbc); method-specific periodic contracts |
-| MP | RMP2, UMP2, RMP3; frozen orbitals, E2 spin components | [MP](src/gradscf/mp/README.md); real canonical RHF/UHF, RMP3 restricted |
+| MP | MP2/MP3 and order-driven MPn; frozen orbitals, E2 spin components | [MP](src/gradscf/mp/README.md), [Taylor series](src/gradscf/mp/SERIES.md); real canonical RHF/UHF, capacity-limited high-order engine |
 | CI | Singlet/triplet CIS, singlet CIS(D), spin-conserving UCIS, rank-truncated CI | [CI](src/gradscf/ci/README.md); real RHF/UHF/ROHF determinant spaces |
 | FCI | Complete occupation-string spaces, core/active selection, RDMs, transition RDMs, spin diagnostics | [FCI](src/gradscf/fci/README.md); real common spatial orbitals, integer spin populations |
 | CC/QCI | CCS/CCD/CCSD/CC2/LCCD/LCCSD, QCISD, CCSD(T)/QCISD(T), Lambda, 1/2-RDMs | [CC](src/gradscf/cc/README.md); restricted models and UCCSD/UCCD; model-specific properties |
@@ -224,7 +224,7 @@ Choose the variable and observable before selecting a derivative path:
 | Target | Numerical response | Contract |
 | --- | --- | --- |
 | SCF energy/state | Explicit JAX computation or implicit stationarity/fixed-point response | Convergence, occupations, integral/XC derivatives |
-| MP energy/amplitudes | JAX algebra; MP3 uses a JVP of connected contractions | Canonical inputs, physical denominators; upstream HF response |
+| MP energy/amplitudes | Specialized JAX kernels or residual-driven Taylor lifting | Canonical inputs, physical denominators; upstream HF response |
 | CI/FCI/TDA states | Shared isolated-root response; FCI also exposes complete-subspace response | Coefficient objectives need an eigenvector response mode |
 | CC energy/amplitudes | Shared nonlinear-root response | Converged amplitudes and checked adjoint solves |
 | EOM energies | First-order non-Hermitian left/right energy response | Supported isolated roots; returned vectors are forward diagnostics with stopped AD |
@@ -314,7 +314,7 @@ Storage bounds and compile estimates are distinct from measured peak memory.
 
 | Task | Entry points |
 | --- | --- |
-| Correlated ground states | [MP2/MP3](examples/mp/molecular.py), [CI](examples/ci/restricted_ci.py), [CC](examples/cc/restricted_ground.py), [open-shell properties](examples/cc/open_shell_properties.py) |
+| Correlated ground states | [MP2/MP3](examples/mp/molecular.py), [MP2–MP6 series](examples/mp/taylor_series.py), [water MP2–MP8 comparison](examples/mp/compare_water_pyscf.py), [CI](examples/ci/restricted_ci.py), [CC](examples/cc/restricted_ground.py), [open-shell properties](examples/cc/open_shell_properties.py) |
 | FCI/active spaces | [Ground state](examples/fci/ground_state.py), [core/active selection](examples/fci/active_space.py) |
 | EOM excitation/ionization/attachment | [EE/IP/EA](examples/cc/eom_ccsd.py), [response](examples/cc/eom_response.py) |
 | GW/BSE spectra | [scGW](examples/scgw_matsubara_h2.py), [implicit GW](examples/gw/implicit_response.py), [molecular BSE](examples/bse/molecular_spectrum.py), [unrestricted BSE](examples/bse/oh_unrestricted.py) |

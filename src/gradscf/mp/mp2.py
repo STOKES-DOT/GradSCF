@@ -61,7 +61,7 @@ def evaluate_mp2(ints, config):
     t2 = ts[0] if restricted else (ts if config.with_t2 else None)
     return MPResult(mask(ints.reference_energy + e2), mask(e2), ints.reference_energy,
                     mask(e2), jnp.zeros_like(e2), mask(ss), mask(os), t2,
-                    minimum, ints.canonical_error, valid)
+                    minimum, ints.canonical_error, valid, jnp.stack([mask(e2)]))
 
 
 def run_mp(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config=None):
@@ -71,6 +71,10 @@ def run_mp(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config=None):
     Eager facades additionally verify source convergence and freshness.
     """
     cfg = MPConfig() if config is None else config
+    if cfg._use_series(isinstance(nocc, tuple)):
+        from .series import run_series
+        return run_series(h1, eri, nocc=nocc, frozen=frozen,
+                          nuclear_repulsion=nuclear_repulsion, config=cfg)
     if cfg.order == 3:
         from .mp3 import evaluate_mp3
         return evaluate_mp3(h1, eri, nocc=nocc, frozen=frozen,

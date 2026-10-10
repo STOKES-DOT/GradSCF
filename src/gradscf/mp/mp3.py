@@ -38,4 +38,5 @@ def evaluate_mp3(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0., config):
     ecorr = first.e2 + e3
     return first._replace(total_energy=first.reference_energy + ecorr,
                            correlation_energy=ecorr, e3=e3, valid=valid,
+                           corrections=jnp.stack([first.e2, e3]),
                            t2=first.t2 if config.with_t2 else None)

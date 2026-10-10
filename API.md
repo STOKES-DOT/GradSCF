@@ -39,7 +39,7 @@ removed root export and the additional facade relocations.
 | Prediction | `trainer.predict(mf)` |
 | Excited states | `tdscf.TDA(mf)`, `tdscf.TDDFT(mf)` |
 | CI / CC / FCI | `ci.CIS(mf)`, `cc.CCSD(mf)`, `fci.FCI(mf)` |
-| Moller–Plesset correlation | `mp.MP2(mf)`, `mp.MP3(mf)`; see [reference restrictions](src/gradscf/mp/README.md) |
+| Moller–Plesset correlation | `mp.MP2(mf)`, `mp.MP3(mf)`, `mp.MP(mf, order=6)`; see [reference restrictions](src/gradscf/mp/README.md) |
 | Configured workflow | `workflows.ExperimentPipeline(config)` |
 
 Meaningful mathematical array APIs remain in their domains, including

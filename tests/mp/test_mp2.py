@@ -145,7 +145,7 @@ def test_facade_accepts_explicit_reference_and_dispatches_spin(water, radical):
         mp.RMP2(UnrestrictedReference(uh, ug, (2, 1)))
 
 
-@pytest.mark.parametrize("kwargs", [{"order": 4}, {"denominator_tol": 0},
+@pytest.mark.parametrize("kwargs", [{"order": 1}, {"denominator_tol": 0},
                                      {"canonical_tol": float("nan")}])
 def test_invalid_configuration(kwargs):
     from gradscf.mp import MPConfig

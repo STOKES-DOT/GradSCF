@@ -18,10 +18,14 @@ class MPIntegrals(NamedTuple):
     finite: object
 
 
-def active_indices(nmo, nocc, frozen):
+def _active_orbitals(nmo, nocc, frozen):
     frozen = frozen_indices(nmo, nocc, frozen)
-    return (jnp.asarray([i for i in range(nocc) if i not in frozen], dtype=jnp.int32),
-            jnp.asarray([a for a in range(nocc, nmo) if a not in frozen], dtype=jnp.int32))
+    return ([i for i in range(nocc) if i not in frozen],
+            [a for a in range(nocc, nmo) if a not in frozen])
+
+
+def active_indices(nmo, nocc, frozen):
+    return tuple(jnp.asarray(x, dtype=jnp.int32) for x in _active_orbitals(nmo, nocc, frozen))
 
 
 def canonical_error(focks):
@@ -29,11 +33,12 @@ def canonical_error(focks):
                               for f in focks]))
 
 
-def prepare_integrals(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0.):
+def _reference_data(h1, eri, nocc):
+    """Validated full reference frames before projecting any frozen orbitals."""
     if isinstance(nocc, tuple):
         (ha, hb), (gaa, gab, gbb) = validate_unrestricted_integrals(h1, eri)
         n = ha.shape[0]
-        fr = unrestricted_frozen_indices(n, nocc, frozen)
+        unrestricted_frozen_indices(n, nocc)
         na, nb = nocc
         fa = (ha + jnp.einsum("pqii->pq", gaa[:, :, :na, :na])
               - jnp.einsum("piiq->pq", gaa[:, :na, :na, :])
@@ -42,23 +47,34 @@ def prepare_integrals(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0.):
               - jnp.einsum("piiq->pq", gbb[:, :nb, :nb, :])
               + jnp.einsum("iipq->pq", gab[:na, :na]))
         energy = .5 * (jnp.trace((ha + fa)[:na, :na])
-                       + jnp.trace((hb + fb)[:nb, :nb])) + nuclear_repulsion
-        selections = tuple(active_indices(n, no, f) for no, f in zip(nocc, fr))
-        (oa, va), (ob, vb) = selections
-        blocks = (gaa[jnp.ix_(oa, va, oa, va)], gab[jnp.ix_(oa, va, ob, vb)],
-                  gbb[jnp.ix_(ob, vb, ob, vb)])
-        focks, gs = (fa, fb), (gaa, gab, gbb)
+                       + jnp.trace((hb + fb)[:nb, :nb]))
+        return (ha, hb), (gaa, gab, gbb), (fa, fb), energy
     else:
         h, g = validate_integrals(h1, eri)
         if isinstance(nocc, bool) or not isinstance(nocc, int) or not 0 <= nocc <= h.shape[0]:
             raise ValueError("nocc must be an integer between 0 and nmo")
         f = (h + 2 * jnp.einsum("pqii->pq", g[:, :, :nocc, :nocc])
              - jnp.einsum("piiq->pq", g[:, :nocc, :nocc, :]))
-        energy = jnp.trace((h + f)[:nocc, :nocc]) + nuclear_repulsion
+        energy = jnp.trace((h + f)[:nocc, :nocc])
+        return (h,), (g,), (f,), energy
+
+
+def prepare_integrals(h1, eri, *, nocc, frozen=None, nuclear_repulsion=0.):
+    hs, gs, focks, energy = _reference_data(h1, eri, nocc)
+    energy = energy + nuclear_repulsion
+    if isinstance(nocc, tuple):
+        n = hs[0].shape[0]
+        fr = unrestricted_frozen_indices(n, nocc, frozen)
+        selections = tuple(active_indices(n, no, f) for no, f in zip(nocc, fr))
+        (oa, va), (ob, vb) = selections
+        gaa, gab, gbb = gs
+        blocks = (gaa[jnp.ix_(oa, va, oa, va)], gab[jnp.ix_(oa, va, ob, vb)],
+                  gbb[jnp.ix_(ob, vb, ob, vb)])
+    else:
+        h, g = hs[0], gs[0]
         selections = (active_indices(h.shape[0], nocc, frozen),)
         o, v = selections[0]
         blocks = (g[jnp.ix_(o, v, o, v)],)
-        focks, gs = (f,), (g,)
     energies = tuple(jnp.diag(f)[jnp.concatenate((o, v))]
                      for f, (o, v) in zip(focks, selections))
     finite = (jnp.isfinite(energy) & jnp.all(jnp.stack([jnp.all(jnp.isfinite(x))
