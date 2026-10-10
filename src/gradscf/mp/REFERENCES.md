@@ -1,5 +1,9 @@
 # Equations and implementation sources
 
+The general residual/Taylor route and its Wigner rank/energy completeness
+argument are documented separately in [SERIES.md](SERIES.md). The MP2/MP3
+equations below describe the independently retained specialized kernels.
+
 The MP partition is defined by the physical HF Fock operator. Using HF normal
 ordering, write
 

@@ -86,9 +86,9 @@ def test_mp3_facade(molecule):
     np.testing.assert_allclose(pt.e_corr, pt.e2 + pt.e3, atol=1e-13)
 
 
-def test_ump3_is_not_silently_rmp3():
+def test_direct_ump3_is_not_silently_rmp3():
     from gradscf.mp import run_mp, MPConfig
     h = jnp.diag(jnp.array([-1., .4]))
     g = jnp.zeros((2,) * 4)
     with pytest.raises(NotImplementedError, match="restricted"):
-        run_mp((h, h), (g, g, g), nocc=(1, 0), config=MPConfig(order=3))
+        run_mp((h, h), (g, g, g), nocc=(1, 0), config=MPConfig(order=3, algorithm="direct"))

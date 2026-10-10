@@ -2,6 +2,22 @@
 
 ## Unreleased — GradSCF
 
+### Residual-driven MP series
+
+- Add `MP(mf, order=p)` and a generic restricted/unrestricted canonical MP
+  engine with order-limited determinant spaces, normalized Taylor lifting of
+  one eigen residual, and shared checked linear forward/backward solves.
+- Use complete wavefunctions through floor(p/2) and a Rayleigh quotient to
+  obtain all energy coefficients through p; allow higher state orders, with
+  explicit capacity checks and invalid-response guards.
+- Retain optimized low-order kernels, automatically route UHF MP3 to the series
+  engine, and expose per-order energies and optional wavefunction coefficients.
+- Add native H6 MP2–MP6 and water MP2–MP8 demonstrations, independent full-space
+  RS comparisons, and a larger-basis water native-PySCF MP2 comparison.
+- Extend Cartesian 6-31G* comparisons to nine RHF/UHF systems through MP6,
+  including quadruple excitation ranks, frozen cores and a polarized quartet;
+  share the example-only PySCF RS reference with the water comparison.
+
 ### Molecular Moller--Plesset perturbation theory
 
 - Add canonical real RHF MP2/MP3 and collinear UHF MP2 with short eager
@@ -11,8 +27,8 @@
   stored doubles, and share selected dense/packed/DF orbital-block transforms.
 - Obtain MP3 from the existing connected CC doubles interaction action,
   validate it against independent determinant-space perturbation coefficients,
-  and demonstrate complete implicit-HF parameter response. MP3 remains in-core;
-  noncanonical/ROHF references, UMP3 and higher orders are not yet included.
+  and demonstrate complete implicit-HF parameter response. The specialized MP3
+  path remains in-core; the generic engine above extends its initial order scope.
 
 ### Exciton–vibration optical response
 
