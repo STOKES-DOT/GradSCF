@@ -245,9 +245,34 @@ def test_empty_excitation_space_and_scalar_constant(system):
     np.testing.assert_allclose(derivative, 1., atol=1e-12)
 
 
-def test_water_public_example_matches_independent_pyscf():
+def test_water_public_example_matches_independent_pyscf(monkeypatch):
     import runpy
+    from pathlib import Path
     pytest.importorskip("pyscf")
+    monkeypatch.syspath_prepend(str(Path("examples/mp").resolve()))
     data = runpy.run_path("examples/mp/compare_water_pyscf.py")
     assert len(data["actual"]) == 7  # Individual E2 through E8.
     np.testing.assert_allclose(data["actual"], data["expected"], atol=2e-10, rtol=0.)
+
+
+def test_shared_pyscf_reference_preserves_restricted_coefficients(system):
+    import runpy
+    from pyscf import mp
+    mf, h, g, no = system
+    reference = runpy.run_path("examples/mp/_pyscf_reference.py")["mp_coefficients"]
+    coefficients = reference(mf, 4)
+    expected, _, _ = reference_series(np.asarray(h), np.asarray(g), mf.mo_energy, no, 4)
+    np.testing.assert_allclose(coefficients, expected[2:], atol=2e-11, rtol=0.)
+    np.testing.assert_allclose(coefficients[0], mp.MP2(mf).run().e_corr, atol=2e-11, rtol=0.)
+
+
+def test_shared_pyscf_reference_preserves_unrestricted_coefficients(lithium):
+    import runpy
+    from pyscf import mp
+    mf, h, g = lithium
+    reference = runpy.run_path("examples/mp/_pyscf_reference.py")["mp_coefficients"]
+    coefficients = reference(mf, 4, frozen=1)
+    expected, _, _ = reference_series(tuple(map(np.asarray, h)), tuple(map(np.asarray, g)),
+        mf.mo_energy, (2, 1), 4, frozen=(0,))
+    np.testing.assert_allclose(coefficients, expected[2:], atol=2e-11, rtol=0.)
+    np.testing.assert_allclose(coefficients[0], mp.MP2(mf, frozen=1).run().e_corr, atol=2e-11, rtol=0.)

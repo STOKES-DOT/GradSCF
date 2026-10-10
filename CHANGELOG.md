@@ -14,6 +14,9 @@
   engine, and expose per-order energies and optional wavefunction coefficients.
 - Add native H6 MP2–MP6 and water MP2–MP8 demonstrations, independent full-space
   RS comparisons, and a larger-basis water native-PySCF MP2 comparison.
+- Extend Cartesian 6-31G* comparisons to nine RHF/UHF systems through MP6,
+  including quadruple excitation ranks, frozen cores and a polarized quartet;
+  share the example-only PySCF RS reference with the water comparison.
 
 ### Molecular Moller--Plesset perturbation theory
 

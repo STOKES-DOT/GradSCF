@@ -6,6 +6,7 @@ the textbook Rayleigh--Schrodinger recurrence, independently of GradSCF.
 Both packages solve their own RHF references. All energies are Hartree.
 """
 from time import perf_counter
+from math import comb
 
 import jax
 import numpy as np
@@ -13,7 +14,8 @@ import numpy as np
 jax.config.update("jax_enable_x64", True)
 
 from gradscf import gto, scf, mp
-from pyscf import gto as pyscf_gto, scf as pyscf_scf, mp as pyscf_mp, ao2mo, fci
+from pyscf import gto as pyscf_gto, scf as pyscf_scf, mp as pyscf_mp, fci
+from _pyscf_reference import mp_coefficients
 
 atom = "O 0 0 0; H 0 .75 .58; H 0 -.75 .58"
 order = 8
@@ -35,26 +37,7 @@ if not ref_mf.converged:
     raise RuntimeError("PySCF RHF did not converge")
 nmo = ref_mf.mo_coeff.shape[1]
 nocc = ref_mol.nelectron//2
-h = ref_mf.mo_coeff.T @ ref_mf.get_hcore() @ ref_mf.mo_coeff
-eri = ao2mo.kernel(ref_mol, ref_mf.mo_coeff, compact=False).reshape((nmo,)*4)
-occupied = fci.cistring.gen_occslst(range(nmo), nocc)
-shape = (len(occupied), len(occupied))
-phi = np.zeros(shape)
-phi[0, 0] = 1.
-tensor = fci.direct_spin1.absorb_h1e(h, eri, nmo, ref_mol.nelec, .5)
-action = lambda c: np.asarray(fci.direct_spin1.contract_2e(tensor, c, nmo, ref_mol.nelec))
-e0 = action(phi)[0, 0]
-orbital_sum = np.sum(ref_mf.mo_energy[occupied], axis=1)
-gaps = orbital_sum[:, None]+orbital_sum[None, :]-2*np.sum(ref_mf.mo_energy[:nocc])
-mask = np.ones(shape, dtype=bool)
-mask[0, 0] = False
-waves, energies = [phi], [e0]
-for degree in range(1, order+1):
-    source = action(waves[-1])-(e0+gaps)*waves[-1]
-    energies.append(source[0, 0])
-    for j in range(1, degree):
-        source -= energies[j]*waves[degree-j]
-    waves.append(np.where(mask, -source/np.where(mask, gaps, 1.), 0.))
+expected = mp_coefficients(ref_mf, order)
 reference_seconds = perf_counter()-start
 
 native_mp2 = pyscf_mp.MP2(ref_mf).run()
@@ -62,14 +45,14 @@ exact = fci.FCI(ref_mf)
 exact.conv_tol = 1e-12
 fci_energy = exact.kernel()[0]
 actual = np.asarray(pt.corrections)
-expected = np.asarray(energies[2:])
 np.testing.assert_allclose(mf.e_tot, ref_mf.e_tot, atol=2e-10, rtol=0.)
 np.testing.assert_allclose(actual, expected, atol=2e-10, rtol=0.)
 np.testing.assert_allclose(pt.e2, native_mp2.e_corr, atol=2e-10, rtol=0.)
 
 print("H2O / STO-3G, all electrons, Cartesian, CPU float64")
 print("RHF: GradSCF = %.12f  PySCF = %.12f" % (mf.e_tot, ref_mf.e_tot))
-print("Retained determinants = %d; reference determinants = %d" % (pt.space.size, phi.size))
+print("Retained determinants = %d; reference determinants = %d" %
+      (pt.space.size, comb(nmo, nocc)**2))
 print("Order   GradSCF correction    PySCF-action correction   absolute difference")
 for degree, value, reference in zip(range(2, order+1), actual, expected):
     print("%3d     % .12f         % .12f           %.3e" %

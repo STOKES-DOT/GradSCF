@@ -2,6 +2,17 @@
 
 ## Residual/Taylor extension, 2026-10-10
 
+The subsequent nine-system Cartesian 6-31G* extension is recorded in
+[MOLECULAR_VALIDATION.md](../../../examples/mp/MOLECULAR_VALIDATION.md).
+H2, H4, He, LiH, doublet/quartet H3, H4+, Li and BeH complete E2--E6 comparisons
+with maximum disagreement 4.429e-13 Ha. Both programs independently converge
+their HF references. The complete MP suite after sharing the example-only
+PySCF reference passed **91 tests in 168.85 s** with no skips or warnings:
+
+```bash
+PYTHONPATH=src JAX_PLATFORMS=cpu /opt/anaconda3/bin/python -m pytest -q tests/mp
+```
+
 Local macOS arm64 CPU, Python 3.12.2, JAX 0.8.1, PySCF 2.9.0, float64.
 The generic engine is described in [SERIES.md](SERIES.md). The working branch
 uses the same native CPU library as the parent checkout; no integral-kernel or

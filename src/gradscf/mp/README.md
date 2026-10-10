@@ -113,6 +113,9 @@ The generic engine compares R/U energy and wavefunction coefficients with an
 independent full-space perturbation recurrence. It also checks JIT, integral
 gradients/HVPs and the complete implicit-HF parameter derivative through MP4.
 See [VALIDATION.md](VALIDATION.md) for measured results and scope.
+The [molecular comparison](../../../examples/mp/compare_molecules_pyscf.py)
+also checks nine RHF/UHF cases with Cartesian 6-31G* through MP6, including
+frozen cores, actual quadruple excitations and a fully alpha-polarized quartet.
 
 Run from the repository root after building the native CPU integral library:
 
