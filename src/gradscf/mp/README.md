@@ -94,6 +94,8 @@ The generic engine also transforms full MO integrals, stores only retained
 determinants and sparse Slater--Condon connections, and reuses shared linear
 solves instead of diagonalization. Its storage is excitation-rank limited but
 still combinatorial; declared capacity bounds can reject a high-order request.
+Linear Hamiltonian nodes are shared across Taylor degrees and energy extraction;
+[paired CPU measurements](GRAPH_REUSE.md) document the benefit and its limits.
 For pth-order energies it computes complete state coefficients through
 floor(p/2), retaining rank through twice that value; see SERIES.md.
 

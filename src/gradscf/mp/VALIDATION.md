@@ -1,5 +1,14 @@
 # Canonical molecular MP validation
 
+## Shared Taylor graph optimization, 2026-10-10
+
+[GRAPH_REUSE.md](GRAPH_REUSE.md) records the exact linear-node transformation,
+old/new paired CPU timings and independent R/U coefficients through MP12.
+The complete MP regression before four new MP12 cases passed 97 tests in
+155.72 s; those additional cases passed 4 tests in 17.82 s. Physical space,
+solver tolerances and public APIs are unchanged. The comparisons measure
+compiled forward corrections; they do not establish GPU or peak-memory gains.
+
 ## Residual/Taylor extension, 2026-10-10
 
 The subsequent nine-system Cartesian 6-31G* extension is recorded in

@@ -58,7 +58,7 @@ def reference_series(h, g, eps, no, order, frozen=()):
     return np.asarray(energies), waves, lookup
 
 
-@pytest.mark.parametrize("order", [2, 3, 4, 5, 6])
+@pytest.mark.parametrize("order", [2, 3, 4, 5, 6, 12])
 def test_all_orders_match_independent_full_space(system, order):
     from gradscf.mp import MPConfig, run_mp
     mf, h, g, no = system
@@ -78,6 +78,28 @@ def test_low_orders_preserve_amplitudes_and_spin_components(system):
     np.testing.assert_allclose(series.t2, direct.t2, atol=1e-10)
     np.testing.assert_allclose(series.same_spin_energy, direct.same_spin_energy, atol=1e-10)
     np.testing.assert_allclose(series.opposite_spin_energy, direct.opposite_spin_energy, atol=1e-10)
+
+
+def test_linear_hamiltonian_nodes_are_shared_outside_taylor(system, monkeypatch):
+    from gradscf.mp import MPConfig, run_mp
+    from gradscf.ci import hamiltonian
+    _, h, g, no = system
+    build = hamiltonian.build_hamiltonian
+    calls = []
+    def counted(*args):
+        op = build(*args)
+        class Action:
+            diagonal = op.diagonal
+            def __call__(self, c):
+                assert type(c).__name__ != "JetTracer", "Share linear actions before Taylor propagation"
+                calls.append(c)
+                return op(c)
+        return Action()
+    monkeypatch.setattr(hamiltonian, "build_hamiltonian", counted)
+    result = run_mp(h, g, nocc=no, config=MPConfig(order=6, algorithm="series"))
+    assert result.valid
+    # W Phi0 and W Psi1..3, plus two distinct E2 spin-channel nodes.
+    assert len(calls) == 3+1+2
 
 
 def test_jitted_stored_amplitudes(system):
@@ -127,6 +149,29 @@ def test_jit_gradient_and_hvp(system):
     np.testing.assert_allclose(gradient, jnp.sum(powers*result.corrections), atol=2e-9)
     hvp = jax.jvp(jax.grad(energy), (1.,), (.2,))[1]
     np.testing.assert_allclose(hvp, .2*jnp.sum(powers*(powers-1)*result.corrections), atol=2e-8)
+
+
+def test_cached_nodes_retain_integral_and_gap_response(system):
+    from gradscf.mp import MPConfig, run_mp
+    _, h, g, no = system
+    interaction = 2*jnp.einsum("pqii->pq", g[:, :, :no, :no])-jnp.einsum("piiq->pq", g[:, :no, :no, :])
+    direction = jnp.diag(jnp.linspace(-.02, .03, h.shape[0]))
+    cfg = MPConfig(order=6, algorithm="series", with_coefficients=True)
+    def objective(x):
+        # The physical Fock remains diagonal, but its gaps and W both vary.
+        hx = h+(1-x)*interaction+((x-1)+.5*(x-1)**2)*direction
+        result = run_mp(hx, x*g, nocc=no, config=cfg)
+        return (result.correlation_energy+.01*jnp.sum(result.t2**2)
+                +.001*jnp.sum(result.wavefunction_coefficients[1:]**2))
+    evaluate = jax.jit(jax.value_and_grad(objective))
+    value, gradient = evaluate(1.)
+    step = 1e-4
+    plus, grad_plus = evaluate(1+step)
+    minus, grad_minus = evaluate(1-step)
+    assert jnp.isfinite(value)
+    np.testing.assert_allclose(gradient, (plus-minus)/(2*step), atol=3e-8, rtol=1e-6)
+    hvp = jax.jvp(jax.grad(objective), (1.,), (.2,))[1]
+    np.testing.assert_allclose(hvp, .2*(grad_plus-grad_minus)/(2*step), atol=3e-8, rtol=1e-6)
 
 
 def test_generic_facade_and_arbitrary_order(system):
@@ -203,7 +248,7 @@ def lithium():
     return mf, h, g
 
 
-@pytest.mark.parametrize("order", [2, 3, 4, 5])
+@pytest.mark.parametrize("order", [2, 3, 4, 5, 12])
 def test_unrestricted_orders(lithium, order):
     from gradscf import mp
     mf, h, g = lithium

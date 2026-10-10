@@ -58,6 +58,12 @@ preconditioner is the exact inverse for a valid canonical reference. Both
 primal and transpose solves retain the shared residual checks. No independent
 iterative or adjoint solver lives in MP.
 
+The linear nodes W Psi_j are computed once per state coefficient and shared
+with later residual degrees and Rayleigh extraction. Only the remaining
+polynomial/quotient graph is lifted by Taylor AD. This preserves all outer
+integral and gap derivatives; see [GRAPH_REUSE.md](GRAPH_REUSE.md) for the
+coefficient alignment, measured CPU speedups and scope.
+
 The determinant residual is only a generic polynomial in state, energy and
 coupling; no separate MP2, MP3 or higher-order correction formula is coded.
 Returned wavefunction rows contain Phi0, Psi1, ... in `calculation.space`

@@ -2,6 +2,14 @@
 
 ## Unreleased — GradSCF
 
+### Shared MP Taylor graphs
+
+- Reuse each linear Hamiltonian coefficient across residual lifting and the
+  Rayleigh energy graph, preserving the same complete states and outer AD.
+- Add moving-integral/gap gradient and HVP regressions and MP12 R/U references.
+- Record paired MP4--MP12 timings on H4, H3 and Li/Cartesian 6-31G*: observed
+  CPU forward speedups of 2.32--4.86 on Apple M4 Pro, with unchanged state spaces.
+
 ### Residual-driven MP series
 
 - Add `MP(mf, order=p)` and a generic restricted/unrestricted canonical MP
