@@ -96,8 +96,14 @@ continuous integrals and overlap remain differentiable. Use
 The default implicit path now composes JVP/VJP rules through its root and linear
 solves. `training.energy_and_forces`, `force_matching_loss`, and
 `make_force_loss_and_grad` provide force supervision for differentiable energy
-callbacks. Model/geometry mixed derivatives are supported with native integrals;
-pure native coordinate Hessians and native basis derivatives remain unsupported.
+callbacks whose full derivative chain is supported. Native derivative support
+is operator-, layout- and parameter-specific: documented dense operators have
+coordinate Hessian products, while one-electron and fixed-auxiliary three-center
+paths support coefficient products and first-order exponent derivatives.
+Native exponent Hessians and basis/geometry mixed second derivatives remain
+unsupported. See the [native derivative contract](src/gradscf/integrals/_native/README.md);
+integral-level rules alone do not establish complete molecular Hessian or
+force-loss coverage.
 Overlap orthogonalization now differentiates the inverse square root with a
 Sylvester solve above the eigenvalue cutoff, avoiding spurious loss of response
 at repeated overlap eigenvalues. Clipped overlaps retain regularized derivatives.
