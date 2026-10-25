@@ -10,13 +10,19 @@ reference-software calculations were added during this investigation.
 
 ## 1. Recommendation and scope
 
-Start with regularized Wu–Yang inversion for real, collinear molecular systems,
-including restricted and unrestricted densities. Use a fixed target density,
-an explicitly local potential representation, a declared potential gauge and
-occupation-subspace response. Add ZMP as an independently formulated comparison
-after the primary inversion and its derivatives work. Retain a common contract
-for periodic, finite-temperature and inverse-GKS extensions, without declaring
-those extensions supported before separate tests.
+**User revision, 2026-10-25:** RKS, UKS and GKS, hybrid functionals and the
+existing `custom_xc` entry are simultaneous first-version requirements.
+Inverse GKS and custom-functional integration are therefore not deferred
+extensions. Numerical implementation can proceed in small slices, but a
+restricted local inversion alone cannot close the first-version acceptance.
+
+Use regularized Wu–Yang/reduced constrained optimization with a common
+reference/operator contract for all three SCF representations. Local inversion
+uses a noninteracting state solve; live density/orbital-dependent base operators
+use an inner self-consistent state solve and its coupled response. Keep the
+target, correction-potential representation, gauge and occupation constraints
+explicit. ZMP remains an independent comparison. Periodic and finite-temperature
+inversion remain separately tested extensions.
 
 The implementation should belong to DFT, not to a particular neural-network
 model. It should export teacher quantities usable by the existing
@@ -145,8 +151,9 @@ C_\sigma^\dagger SC_\sigma=I.
 
 For local iKS with a fixed guide, this is a **noninteracting eigenproblem** at
 each potential update. It does not require a nonlinear candidate-XC SCF inside
-every WY evaluation. Inverse GKS with orbital-dependent exchange does require
-an inner self-consistent solve and belongs to a separately advertised variant.
+every WY evaluation. Inverse GKS with orbital-dependent exchange requires
+an inner self-consistent solve. Both state definitions are part of the revised
+first-version design and must be identified in the result metadata.
 
 A molecular Fermi–Amaldi guide can use
 `v_base = v_ext + (1 - 1/N) v_H[n_target]`. Then its XC guide contribution is
@@ -290,8 +297,83 @@ variant or diagnostic, not a replacement definition of the local iKS API.
 For inverse GKS, define the nonlocal operator and its orbital dependence first.
 The 2026 inverse-GKS paper self-consistently updates exchange inside the outer
 local-potential inversion. Freezing inverse-KS orbitals for later hybrid fitting
-does not implement that procedure. mRKS/other wavefunction inversions also need
-more than a density alone and are separate future input contracts.
+does not implement that procedure. This inner solve and its response are now
+mandatory in the first version. mRKS/other wavefunction inversions also need
+more than a density alone and remain separate future input contracts.
+
+### Required RKS/UKS/GKS and custom_xc contract
+
+SCF representation and XC operator family are independent axes. RKS and UKS
+can already use hybrid functionals; the repository's `GKS` additionally denotes
+a complex spinor representation. Do not equate RKS with a semilocal functional,
+or treat the presence of a `GKS` class as proof of inverse-hybrid support.
+
+| Required input | State/target convention | Inversion requirement |
+| --- | --- | --- |
+| RKS | Spatial AO density with occupancy two | Preserve the restricted closed-shell limit, including live hybrid exchange. |
+| UKS | Separate alpha/beta AO densities and populations | Match both spin densities; preserve unequal spin populations and separate correction potentials. |
+| GKS | Complex Hermitian spinor density in alpha-then-beta layout | Preserve off-diagonal spin blocks and their conjugate structure; distinguish scalar charge and magnetization targets. |
+| Named conventional recipe | Existing complete recipe and its exact-exchange/additional-term metadata | Preserve full-range/SR/LR exchange coefficients and kernels, and count physical energy terms once. |
+| `custom_xc("pbe0")` or another named recipe | Existing `TraditionalXCFunctional` | Numerically equivalent to the corresponding string recipe; do not reinterpret its local component as the whole functional. |
+| `custom_xc(input_fn=..., energy_fn=...)` | Existing external `Functional`, explicit parameters | Support a handwritten formula and an external neural model through the same scalar-energy/AD contract. |
+
+Separate a fixed initialization `guide` from the live base functional `xc`.
+A guide may be evaluated once on the target. A live base functional is evaluated
+on the **current inner-SCF density**, including its current features, exchange
+operator and response. Its parameters are prescribed inputs to an inversion;
+they are not simultaneously fitted with the correction potential by default.
+
+For a prescribed base energy, define a generalized reduced objective through
+the constrained orbital state:
+
+\[
+\mathcal W(b;\theta)=\min_{\Phi\in\mathcal A}
+\left\{E_{\rm base}[\Phi;\theta]
++\sum_a b_a\bigl(d_a[\Phi]-d_a^{\rm target}\bigr)\right\},
+\qquad
+F_{\rm total}[D,b;\theta]=F_{\rm base}[D;\theta]+U(b).
+\]
+
+The allowed states `A` encode the selected RKS/UKS/spinor occupation constraints;
+`d_a` are the declared density/magnetization moments. A stationary inner branch
+gives the envelope gradient `dW/db = d - d_target`. Numerical convergence to
+one inner SCF branch is not proof of a global minimum or global concavity.
+The canonical noninteracting WY objective is the special case with kinetic
+energy and a fixed local base potential. The prescribed-exchange inverse-GKS
+model and a general live-custom-functional correction model must retain their
+different energy/operator definitions in metadata.
+
+For global hybrids the live operator includes exact exchange. For RSH, reuse
+the complete recipe's `ExactExchange(full_range, short_range, long_range, omega)`
+and the corresponding existing kernels. A single `hybrid_coeff` value is
+insufficient. Parameters, including an allowed tunable omega, remain live where
+their derivatives are supported; unsupported parameter/order combinations
+must raise rather than freeze. GKS RSH relay and custom-hybrid composition are
+concrete compatibility work, not capabilities already supplied by the baseline.
+
+The existing external scalar callback deliberately has no implicit exact-
+exchange channel. Preserve that meaning. An explicit common hybrid composition
+adapter must specify which energy terms are external, which exchange operators
+are built by GradSCF, and whether exchange is already included in the callback.
+Do not add a hybrid fraction to an arbitrary callback and double-count exchange.
+No iKS-specific copy of `Functional`, XC parsing or a neural-network class is
+needed; required spinor/composition extensions belong in the shared DFT layer.
+
+For a spinor target, the local correction may be represented as
+`u0*I + ux*sigma_x + uy*sigma_y + uz*sigma_z`, with real coefficient fields.
+Charge alone cannot determine all magnetic correction fields. Require a
+compatible spin-density/magnetization target or an explicit scalar-only model.
+The fixed-total-N scalar constant is a gauge; a uniform magnetic field is not
+generically a gauge. Separate alpha/beta constants are gauges only for the
+collinear problem with separately fixed populations. Preserve advertised
+collinear/noncollinear XC capabilities instead of silently projecting spinors
+onto real diagonal blocks.
+
+Return the optimized local **correction**, the resulting full local remainder,
+and any prescribed nonlocal operator with distinct labels. In a hybrid model,
+derive the residual XC-energy label by subtracting the explicitly defined
+exchange component from the total XC decomposition; do not relabel all of
+`E_xc` or the full Fock matrix as a local correlation potential.
 
 ## 6. Differentiating the inversion
 
@@ -325,9 +407,27 @@ target path, not automatically the derivative of a recomputed FCI density.
 Within occupied or virtual degeneracies, differentiate the occupied projector
 or its block response rather than individual canonical eigenvectors. The
 existing `dfpt.ks.ks_problem` demonstrates a suitable fixed-occupation chart.
-For WY, set the Hamiltonian callback independent of the trial density: its
-response is the **unscreened noninteracting chi_s**, not the screened response
-of an interacting candidate DFT functional.
+For the noninteracting WY case, set the Hamiltonian callback independent of the
+trial density: its response is the **unscreened noninteracting chi_s**. For a
+live hybrid/custom base, include its density/orbital response instead; reusing
+chi_s alone would omit the inner-SCF dependence.
+
+For the latter case attach the coupled residual in the state and correction:
+
+\[
+\mathcal R(x,z;\theta)=
+\begin{pmatrix}
+r_{\rm SCF}(x,Zz;\theta)\\
+-Z^T\bigl(d(x)-d_{\rm target}\bigr)+\alpha Z^TK(Zz-b_0)
+\end{pmatrix}=0.
+\]
+
+Shared block-operator tangent/adjoint solves then include inner state response,
+exact-exchange response and custom-energy Hessian actions. A Schur reduction
+can be checked against this coupled system on tiny cases, without maintaining
+two production AD engines. Convergence and response validity must hold for
+both levels. Stop-gradient on the inner density/exchange is not the implicit
+derivative of this inverse-GKS problem.
 
 These derivatives need a converged stationary point, fixed response rank,
 controlled regularization and a separated occupied subspace. A closing Fermi
@@ -359,6 +459,15 @@ They must not be interchanged in TDDFT, DFPT or training.
 | `pbc/occupations.py` | Canonical finite-T chemical-potential response and Fermi density, with documented derivative limits. |
 | `dft/functional.py` and `dft/derivatives.py` | External scalar-energy callbacks, physical AO potentials and XC Hessian actions. |
 | `model/neural_xc/training/{config,trainer,targets}.py` | Existing three training modes and `Sample`; reuse instead of introducing an iKS trainer or another model package. |
+| `scf/gks.py` | Complex spinor state and full exchange blocks exist, but the facade rejects RSH, streamed grids, non-full J/K, some noncollinear/XC combinations and generalized response. These guards identify work to integrate, not inverse-GKS support. |
+
+The shared molecular `Functional.inputs_for_density` currently rejects complex
+densities and accepts spatial R/U layouts only. `GKS.kernel` also follows its
+named-recipe path rather than the external-functional facade route. Consequently
+complex/spinor `custom_xc` needs an explicit representation-aware shared adapter,
+real-energy/Hermitian-potential conventions and tests. Merely accepting an
+object in `xc`, changing a type annotation or removing the complex-data guard
+would not provide this support. Existing R/U callback behavior must stay intact.
 
 The potential-coefficient optimization gap must be solved in the **shared
 solver layer** if the current residual-driven iteration is insufficient.
@@ -395,8 +504,9 @@ src/gradscf/dft/iks/
     __init__.py     # small public exports
     api.py          # eager molecular facade and pure array entry
     types.py        # target/problem/config/result PyTrees
+    reference.py    # RKS/UKS/GKS snapshots; reuse shared XC/operator preparation
     potential.py    # local potential map, transpose, gauge and metric
-    ks.py           # noninteracting state and shared projector response bridge
+    state.py        # noninteracting/self-consistent state and response bridges
     wy.py           # objective, residual and method adapter
     response.py     # attach the inversion root using shared solvers
     diagnostics.py  # density, rank, gap and potential-quality diagnostics
@@ -417,6 +527,10 @@ from gradscf.dft import iks
 inverse = iks.IKS(mol, density=dm_target, energy=reference_total_energy,
                   method="wy", max_memory=60000.).run()
 ```
+
+An existing RKS/UKS/GKS source should also be accepted, inheriting its complete
+recipe or `custom_xc` object and explicit parameters. Inheriting a converged
+source does not freeze the density-dependent base operator during inversion.
 
 Also provide one pure array entry, `iks.invert(problem, config=...)`, so geometry
 and target-data differentiation do not depend on an eager object's cache. Do
@@ -459,18 +573,18 @@ inverse orbitals does not certify candidate self-consistency or global stability
 These are proposed tasks, not acceptance marks. Retain one child level and at
 most four children per parent; record exact tests and evidence when executed.
 
-- [ ] **IKS-01: Target, local-potential and gauge contract.**
-  - [ ] Validate AO/grid targets, spin counts, units and optional energy labels.
-  - [ ] Check potential apply/transpose duality and constant `c*S` invariance.
-  - [ ] Add dense/tiled parity, tail blocks and insufficient-budget preflights.
-- [ ] **IKS-02: Restricted/unrestricted WY forward.**
-  - [ ] Add the smallest necessary shared coefficient optimizer support.
-  - [ ] Compare AD gradient/HVP with analytic spin-factor and finite-difference oracles.
-  - [ ] Recover manufactured local potentials/densities with regularization/rank diagnostics.
-  - [ ] Cross-check KS-pies on pinned identical orbital/PBS/guide conventions.
+- [ ] **IKS-01: RKS/UKS/GKS target, potential and functional contracts.**
+  - [ ] Validate spatial/spinor AO or grid targets, spin constraints, gauges and energy labels.
+  - [ ] Unify named and custom_xc recipes/callbacks; specify shared spinor and hybrid-composition extensions.
+  - [ ] Check potential duality, complex Hermitian conventions, dense/tiled parity and budget preflights.
+- [ ] **IKS-02: Local and generalized inversion forward.**
+  - [ ] Reuse the three state representations and add necessary shared coefficient optimizer support.
+  - [ ] Converge live hybrid/custom inner states; relay full/SR/LR exchange and count recipe energies once.
+  - [ ] Validate manufactured R/U/spinor cases, closed-shell/block-diagonal limits, rank and regularization diagnostics.
+  - [ ] Compare derivative oracles and independent local/hybrid inversions with matched operator conventions.
 - [ ] **IKS-03: Implicit response and geometry.**
-  - [ ] Attach the gauge-reduced root and check target-data JVP/VJP duality.
-  - [ ] Check nested HVP and two FD steps on smooth fixed-rank examples.
+  - [ ] Attach gauge-reduced local/coupled-SCF roots; verify target and functional-parameter JVP/VJP duality.
+  - [ ] Check exact-exchange/custom-kernel response, nested HVP and two FD steps on fixed-rank examples.
   - [ ] Check occupied/virtual degeneracy invariance and genuine gap-closing rejection.
   - [ ] Check moving AO/grid/potential data and CPU/GPU parity on explicit devices.
 - [ ] **IKS-04: Independent method and quality assessment.**
@@ -478,14 +592,14 @@ most four children per parent; record exact tests and evidence when executed.
   - [ ] Compare density, kinetic energy and gauge-aligned observables on common targets.
   - [ ] Scan grid/PBS/regularization/noise sensitivity; validate on a separate grid.
 - [ ] **IKS-05: Existing functional-training integration.**
-  - [ ] Preserve spin-resolved teacher labels and reject invalid inverse results.
-  - [ ] Compare supported AO/grid potential or stationarity losses with explicit gauges.
-  - [ ] Validate unchanged fixed-density/explicit/implicit candidate-training modes.
+  - [ ] Preserve spinor/spin-resolved teacher labels and reject invalid inverse results.
+  - [ ] Verify named, traditional-custom and neural-custom potential/operator or stationarity losses.
+  - [ ] Validate unchanged fixed-density/explicit/implicit modes with explicit live parameters.
 - [ ] **IKS-06: Examples, measurements and final capability audit.**
   - [ ] Add thin H2/He and H2O examples, with an open-shell Li/OH case; no CLI.
   - [ ] Include FCI-derived density/total-energy data and clearly label representability limits.
   - [ ] Measure compile/warm/RSS/VRAM on a small increasing-size family.
-  - [ ] Document periodic/finite-T/inverse-GKS boundaries and retained numerical failures.
+  - [ ] Audit all three representations and custom/hybrid paths; document periodic/finite-T and remaining operator boundaries.
 
 Begin with deterministic manufactured potentials to isolate numerical correctness.
 Then use semilocal forward-density round trips, followed by correlated targets.
@@ -504,11 +618,22 @@ new iKS result, method benchmark or implemented feature is claimed here.
 
 ## 11. Decisions needed before production coding
 
-Recommended first acceptance slice: real molecular R/U, fixed integer
-occupations with an occupied–virtual gap, a local grid-evaluable PBS,
-regularized WY and an independently testable implicit backward. Keep periodic,
-finite-temperature, inverse GKS and full wavefunction-driven alternatives as
-separate advertised stages rather than silent fallbacks.
+The revised first-version completion gate includes molecular RKS/UKS/GKS,
+named and traditional-custom recipes, custom scalar-energy models, the live
+hybrid/nonlocal state problem and independently tested implicit backward.
+Cover both global hybrid and range-separated recipe relay, including the
+identified GKS gaps, before declaring that operator combination supported.
+Spinor/noncollinear capabilities remain explicitly typed and tested. Fixed
+integer occupations with a separated occupied subspace and a declared local
+PBS/gauge/regularization define the initial smooth-response domain. Periodic,
+finite-temperature and full wavefunction-driven alternatives remain separate.
+
+Minimum compatibility matrix: RKS, UKS and GKS source objects; named recipe
+versus `custom_xc(name)` equivalence; handwritten versus neural scalar-energy
+callbacks; an explicit hybrid-plus-custom composition; closed-shell and
+block-diagonal spinor reductions; complex off-diagonal spin response; live
+parameter first/second derivatives and the existing three training modes.
+Unsupported physical terms must raise explicitly, not disappear from a recipe.
 
 The immediate design review should settle the default PBS/guide and explicit
 regularization policy, together with the initial scope. Their implementation
