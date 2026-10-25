@@ -4,9 +4,11 @@ Date: 2026-10-25. Source baseline: `0f0fe2e298db202fe251d620f5b438655aa552cd`.
 Worktree: `artifacts/side/iks`; branch: `feat/iks`.
 Intended implementation: `src/gradscf/dft/iks/`.
 
-**Status: research and proposed design, not an implemented or numerically
-validated module.** No production Python, dependencies, numerical jobs or
-reference-software calculations were added during this investigation.
+**Status: research plus the first tested infrastructure slice.** The initial
+research phase added documentation only. Subsequent work implements AO target
+records, block-local potential maps and SCF metadata snapshots, described in
+Section 12 and the [package README](iks/README.md). Inversion optimization and
+its implicit backward are not implemented yet; no complete iKS result is claimed.
 
 ## 1. Recommendation and scope
 
@@ -513,8 +515,9 @@ src/gradscf/dft/iks/
     zmp.py          # added only in the comparison stage
 ```
 
-This is a proposed layout, not created Python scaffolding. No `solver.py` or
-method-local eigensolver/GMRES/DIIS is planned. Do not split every contraction
+The initial slice implements `__init__.py`, `types.py`, `potential.py` and
+`reference.py`; the other listed files remain proposed rather than empty Python
+scaffolding. No `solver.py` or method-local eigensolver/GMRES/DIIS is planned. Do not split every contraction
 into a module. Keep a single potential-map contract shared by forward, AD and
 diagnostics; numerical routines belong in src, not examples/reproducibility.
 
@@ -576,7 +579,11 @@ most four children per parent; record exact tests and evidence when executed.
 - [ ] **IKS-01: RKS/UKS/GKS target, potential and functional contracts.**
   - [ ] Validate spatial/spinor AO or grid targets, spin constraints, gauges and energy labels.
   - [ ] Unify named and custom_xc recipes/callbacks; specify shared spinor and hybrid-composition extensions.
-  - [ ] Check potential duality, complex Hermitian conventions, dense/tiled parity and budget preflights.
+  - [x] Check potential duality, complex Hermitian conventions, dense/tiled parity and budget preflights.
+
+  Partial frontier: AO targets and complete-XC metadata snapshots are tested;
+  grid-only target input, live shared custom-spinor/hybrid composition and
+  downstream operator support remain open. The parent is not accepted yet.
 - [ ] **IKS-02: Local and generalized inversion forward.**
   - [ ] Reuse the three state representations and add necessary shared coefficient optimizer support.
   - [ ] Converge live hybrid/custom inner states; relay full/SR/LR exchange and count recipe energies once.
@@ -611,12 +618,12 @@ well-conditioned fixture; refine tolerances from conditioning rather than
 loosening them to hide failures. Establish density and potential thresholds
 separately from grid convergence and external-oracle comparisons.
 
-All future numerical tests remain remote in the user-authorized Slurm pool and
-resource limits. This research stage performed source/document inspection only.
-The existing worktree baseline is clean, but no fresh numerical baseline run,
-new iKS result, method benchmark or implemented feature is claimed here.
+All numerical tests remain remote in the user-authorized Slurm pool and
+resource limits. The initial research stage performed inspection only; the
+subsequent finite infrastructure tests are recorded in Section 12. No inversion
+result or method-performance benchmark is inferred from those tests.
 
-## 11. Decisions needed before production coding
+## 11. First-version acceptance and remaining design choices
 
 The revised first-version completion gate includes molecular RKS/UKS/GKS,
 named and traditional-custom recipes, custom scalar-energy models, the live
@@ -639,3 +646,76 @@ The immediate design review should settle the default PBS/guide and explicit
 regularization policy, together with the initial scope. Their implementation
 can then follow the finite TDD sequence above. There is no basis-independent
 universal regularization constant justified by this literature survey.
+
+## 12. Initial infrastructure acceptance — 2026-10-25
+
+The user resumed this worktree and authorized basic infrastructure work.
+The implemented public symbols are `Target`, `Potential`, `constant_potential`
+and `Reference`, exposed through the existing lazy `dft.iks` namespace. No
+unimplemented inversion facade or result placeholder was exposed.
+
+`Target` checks concrete RKS/UKS/GKS AO data and retains a traced validity
+flag; correlated fractional occupations are accepted without normalization.
+GKS charge/magnetization components retain transverse spin coherences with an
+independently checked sigma-y sign. This is a representation contract, not an
+assertion that every target is locally noninteracting v-representable.
+
+`Potential` shares the existing `AOGrid` checkpointed block reduction for
+matrix construction and moment projection. Tests compare a full-grid dense
+contraction with blockwise values, coefficient VJP and joint JVP/HVP through
+grid coordinates, weights, potential-basis parameters and coefficients. The
+known input/AO minimum check precedes shape evaluation of an external callback;
+the selected block can shrink without changing the quadrature. Analytic `c*S`
+constants are separate from numerical grid overlap; uniform spinor magnetic
+fields are not gauge-fixed away. Additional response null-space reduction is
+still part of the future inversion solver.
+
+`Reference.from_source` preserves complete PBE0/HSE06 recipes and external
+Functional/parameter identities for all three source representations without
+calling a reference builder, SCF or ERI preparation. Synthetic fixtures test
+the metadata dispatch; a real H2/GKS-HF/STO-3G calculation at1.4bohr separately
+tests the full spinor-overlap snapshot and changed-XC rejection. This does not
+execute an HSE06/custom GKS inversion. A one-line shared GKS facade change
+records its SCF signature after convergence, following the existing R/U
+freshness convention; the numerical SCF body is unchanged.
+
+TDD evidence retains the initial31 expected missing-module failures followed
+by31 passes. Two added regressions then reproduce actual mixed float32/float64
+scan-carry inconsistency and missing GKS source invalidation; both are fixed.
+A third regression catches callback shape evaluation before the one-point
+minimum-memory rejection; its failure is retained before the final fix.
+
+All tests use the same existing pool106642/n002, one allocated V100 and disjoint
+eight-logical-CPU lanes. CPUsteps use no GPU,32GiB; GPUsteps48GiB. Each child is
+limited to600seconds; total step reservations plus holder fit96GiB. No local
+numerical execution, dependency installation or additional allocation occurred.
+JAX0.10.0, Python3.11.15 and float64 are the recorded baseline; mixed operand
+precision is tested explicitly. Native library, where used by existing
+regressions, retains SHA2561e63dc2b2a12f55adb3401679e42c75cf2761720faffd99c7a77c4b78a625c01.
+
+The expanded CPU regression snapshot has59 passing cases:33 infrastructure
+cases plus26 unchanged custom-XC/GHF/GKS tests, including PySCF comparisons.
+It exits0/0 in51.884s. After the final minimum-memory change,34 infrastructure
+cases pass in27.701s, exits0/0, peak child RSS1,383,664KiB. These process times
+include compilation and validation, and are not warm-time benchmarks. The
+existing26 regressions exercise the unchanged shared GKS/functional source;
+they are not counted as26 extra tests rerun after the potential-only fix.
+
+GPU tensor/target coverage excludes the eager SCF snapshot module. It checks
+the same potential/target fixtures:23 cases pass. The device-assertion follow-up
+explicitly requires the GPU backend, not merely a conditional placement check;
+all23 cases pass again in38.926s, exits0/0, peak child RSS1,524,296KiB and
+sampled whole-device usage884MiB. The source/CPU-test delta is only that stronger
+GPU guard and its os import; all numerical expressions are unchanged. These
+sampled device observations are not exact allocator peaks. This is not complete GPU inversion, custom-spinor
+SCF, a nuclear-gradient calculation, or an AD-memory hard-bound claim.
+
+Source and raw evidence are kept under
+`artifacts/iks-research-20261025/infra/` and the corresponding remote
+`runs/iks-infra-20261025/` directory. The final handoff verifies raw XML,
+process/Slurm exits and before/after file hashes, rather than accepting log
+dots or a scheduled step as a completed result. Final archive SHA256 is
+`d82d4ce863890b9ed9a808021dc3c6ad61aef367b4731f25f3d5825b8a5b2f87`;
+`infra/root-verification.json` records the exact successful and expected-failure
+groups. No missing/failed process is counted as a pass. IKS-01 remains in progress;
+IKS-02 through IKS-06 remain unchecked.

@@ -339,6 +339,7 @@ class GKS(_BaseKS):
         result = run_gks_from_integrals(**kwargs, nelectron=self.mol.nelectron, config=cfg)
         self.scf_result = result
         self._sync_from_scf_result(result)
+        self._cached_scf_key = self._scf_signature()
         return self.e_tot
 
     def run(self, dm0: Array | None = None) -> "GKS":
