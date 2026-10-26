@@ -41,7 +41,7 @@ and its derivative primitives remain in `gradscf.integrals`.
 
 SCF configuration, XC/grid input assembly and RKS/UKS input payloads are owned
 by `gradscf.scf.inputs`. Its grid cache lives with the grid implementation;
-electron-count validation lives in `scf.core`. SCF implicit/unrolled response
+electron-count validation lives in `scf.core`. SCF implicit/explicit response
 belongs to SCF/solver modules, not the integral backend. Existing public
 integrals-level SCF-builder re-exports remain lazy and contain no implementation.
 

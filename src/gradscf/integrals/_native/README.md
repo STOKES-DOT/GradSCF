@@ -23,6 +23,7 @@ remain unmodified; adaptations belong in `patches/`.
 - `csrc/coefficients.cc`: shell-local coefficient JVP/VJP and coefficient Hessian products.
 - `csrc/exponents.cc`: analytic Gaussian-exponent JVP/VJP through Cartesian angular raising.
 - `csrc/eri_basis.cc`: full-s1 four-leg coefficient first/second products and exponent first products.
+- `csrc/eri_symmetry.h`: streaming canonical shell-orbit metadata for selected four-center products.
 - `csrc/packed_eri.cc`, `csrc/density_fitting.cc`: compact ERI and auxiliary 2c/3c values.
 - `csrc/direct_jk*.cc`, `csrc/packed_jk.cc`: shell-direct and packed density actions.
 - `csrc/ecp.cc`, `vendor/pyscf_ecp/`: the separate scalar ECP adapter and required C sources.
@@ -62,9 +63,11 @@ of 1 uses the same workspace reuse and derivative kernels as parallel execution;
 it is not a legacy backend. Rebuild this library when updating the native sources.
 
 Set `GRADSCF_NATIVE_THREADS=4` before execution to parallelize coefficient VJP,
-coefficient Hessian-VJP, and exponent VJP. The default is 1; positive integer
-values are capped by the number of orbital shells. Other kernels, including
-JVP, retain their existing execution paths. `OMP_NUM_THREADS` is not inherited.
+coefficient Hessian-VJP, and exponent VJP. Full/window four-center basis JVPs
+also use this setting. The default is 1; workers are capped by the independent
+outer-pair count for these four-center products and by the orbital-shell count
+for existing one-/three-center parameter reductions. Other kernels retain
+their existing execution paths. `OMP_NUM_THREADS` is not inherited.
 Use `MKL_NUM_THREADS=1` / `OPENBLAS_NUM_THREADS=1` to avoid nested BLAS workers.
 The limit applies **per FFI call**, not to all concurrent JAX calls combined;
 budget for callback concurrency when choosing it within a Slurm allocation.
@@ -72,9 +75,23 @@ budget for callback concurrency when choosing it within a Slurm allocation.
 Workers own independent mutable BAS/ENV tables and shell buffers. They reduce
 small parameter vectors in fixed worker order; no primitive ERI or integral
 Jacobian is cached. Changing thread count can change floating-point summation
-order. Within each call, real 1e/3c products reuse libcint cache sizes by intor
-and shell shape; exponent products also reuse angular-raising maps and spherical
-scratch. These caches do not survive a call or retain stale basis parameters.
+order. Within each call, one-/three-center and four-center derivative products reuse
+libcint scratch sizes by actual kernel identity and all participating shell
+shapes, including raised/identity shadow contractions. At most 4096 entries are
+retained per driver. Exponent products also reuse angular-raising maps and
+spherical scratch. These caches do not survive a call or retain numerical
+integrals or stale basis parameters.
+
+Four-center products enumerate physical shell-pair orbits with O(nshell²)
+metadata, including orbits intersecting non-symmetric selected rectangles.
+Coefficient products retain all four first-order or twelve ordered second-order
+leg occurrences before emitting a complete tensor block. Adjoint products pool
+all admitted symmetry-related cotangents before the local primitive reduction.
+Coordinate kernels carry derivative-leg/component labels through permutations;
+their fixed-leg kernels are not assumed to have full eightfold symmetry.
+Repeated shell emissions are deduplicated separately from physical derivative
+multiplicities. Packed geometry and direct J/K keep their own output/reduction
+ownership; no full tensor or Jacobian is added to those consumers.
 
 Run `tests/integrals/test_native_parallel.py` for serial/parallel checks. The
 standalone `tools/benchmark_native_basis_vjp.py` compares thread counts in the
@@ -342,7 +359,7 @@ gradient = jax.jit(jax.grad(kinetic_from_log_scales))(beta)
 
 Joint first-order exponent/coefficient differentiation is supported. Exponent
 Hessians and mixed exponent/coefficient/geometry derivatives fail explicitly;
-pure coefficient HVP support is unchanged. Direct ECP, packed/generic-window ERI
+pure coefficient HVP support is unchanged. Direct ECP, packed/slab ERI
 basis AD, direct-J/K primitive exponent AD, auxiliary-basis AD and GPU-native
 integral FFI remain unsupported. Tests compare
 Cartesian/spherical s-through-g products against finite differences and verify
@@ -394,3 +411,20 @@ z-coordinate curvature, versus `0.400305897150` from PySCF's analytic RHF
 Hessian (absolute difference `2.18e-9` Hartree/Bohr²). The focused SCF test
 independently checks this curvature against finite differences of the
 self-consistent energy gradient.
+
+## Separate diagnostic builds
+
+`python -m gradscf.integrals._native.build --diagnostics` enables private
+per-family evaluation, scratch-query, scheduled-quartet and shell-emission
+counters. Use a separate source/library directory for this build. The ordinary
+build defaults to OFF and performs no atomic updates in integral kernels;
+rebuilding without the flag explicitly clears the CMake option.
+
+The private `diagnostics.reset_counts/get_counts` helpers expose the actual
+library path, SHA256 and build mode. Disabled counters are unavailable rather
+than measured zeros. Complete all outstanding JAX outputs before resetting,
+execute and synchronize the requested product, then read the counts. A count
+run is instrumentation, including any FD/validation calls within its boundary;
+its time is not a clean performance sample. See the thin runners under
+`tools/libcint_migration/` for isolated-process protocols and saved numerical
+inputs/results.
