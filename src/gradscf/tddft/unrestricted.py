@@ -1040,9 +1040,9 @@ def solve_unrestricted_tda_from_operator(
     diagonal: Array,
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
-    davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
+    davidson_tol: float = TD_DAVIDSON_TOL,
+    davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only",
     eigenvector_adjoint_tol: float = 1e-6,
@@ -1147,9 +1147,9 @@ def solve_unrestricted_casida_from_tdhf_operator(
     tdhf_vind_rows: Callable[[Array], Array],
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
     matrix_eps: float = 1e-10,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
+    davidson_tol: float = TD_DAVIDSON_TOL,
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
 ) -> UnrestrictedTDDFTResult:
@@ -1206,10 +1206,10 @@ class UnrestrictedTDA:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
-    davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE
+    davidson_tol: float = TD_DAVIDSON_TOL
+    davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
     eigenvector_adjoint_tol: float = 1e-6
@@ -1309,10 +1309,10 @@ class UnrestrictedCasidaTDDFT:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     matrix_eps: float = 1e-10
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
+    davidson_tol: float = TD_DAVIDSON_TOL
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only"

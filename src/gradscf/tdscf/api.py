@@ -6,10 +6,10 @@ from dataclasses import replace
 from ..scf.reference import as_reference
 from ..tools import spectra
 from ..tools.spectra import HARTREE_TO_EV
-from ..tddft.defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
+from ..tddft.defaults import TD_DAVIDSON_MAX_CYCLE
 from ..tddft.defaults import FULL_TDDFT_DAVIDSON_MAX_CYCLE
-from ..tddft.defaults import PYSCF_TD_DAVIDSON_TOL
-from ..tddft.defaults import PYSCF_TD_POSITIVE_EIG_THRESHOLD
+from ..tddft.defaults import TD_DAVIDSON_TOL
+from ..tddft.defaults import TD_POSITIVE_EIG_THRESHOLD
 from ..solvers.eigen.response import EigenGradientMode
 from ..tddft import RestrictedCasidaTDDFT, UnrestrictedCasidaTDDFT, UnrestrictedTDA
 from ..tddft._semilocal_response import SemilocalResponseFunctional
@@ -70,11 +70,11 @@ class _BaseTD:
         xc_params: Any | None = None,
         nstates: int | None = 3,
         occupation_tolerance: float = 1e-8,
-        excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+        excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
         matrix_eps: float = 1e-10,
         eigensolver: Literal["auto", "davidson"] = "auto",
-        davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
-        davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
+        davidson_tol: float = TD_DAVIDSON_TOL,
+        davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE,
         davidson_max_subspace: int | None = None,
         davidson_initial_guess_count: int | None = None,
         davidson_max_trial_vectors: int | None = None,

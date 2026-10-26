@@ -86,9 +86,9 @@ def solve_casida_from_tdhf_operator(
     tdhf_vind_rows: Callable,
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
     matrix_eps: float = 1e-10,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
+    davidson_tol: float = TD_DAVIDSON_TOL,
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     davidson_initial_guess_count: int | None = None,
@@ -135,10 +135,10 @@ class RestrictedCasidaTDDFT:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     matrix_eps: float = 1e-10
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
+    davidson_tol: float = TD_DAVIDSON_TOL
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     davidson_initial_guess_count: int | None = None
