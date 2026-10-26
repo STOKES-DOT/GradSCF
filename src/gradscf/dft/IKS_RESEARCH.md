@@ -4,11 +4,12 @@ Date: 2026-10-25. Source baseline: `0f0fe2e298db202fe251d620f5b438655aa552cd`.
 Worktree: `artifacts/side/iks`; branch: `feat/iks`.
 Intended implementation: `src/gradscf/dft/iks/`.
 
-**Status: research plus the first tested infrastructure slice.** The initial
-research phase added documentation only. Subsequent work implements AO target
-records, block-local potential maps and SCF metadata snapshots, described in
-Section 12 and the [package README](iks/README.md). Inversion optimization and
-its implicit backward are not implemented yet; no complete iKS result is claimed.
+**Status: tested infrastructure plus a bounded auxiliary reference/assessment
+route.** The initial research added documentation only. Section 12 records the
+first contracts; Section 13 records the explicitly finite-temperature local
+matrix-reference experiment and model evaluation. Zero-temperature Wu–Yang,
+live inverse-GKS optimization and the inverse-map implicit backward remain
+unfinished. See the [package README](iks/README.md) for actual public APIs.
 
 ## 1. Recommendation and scope
 
@@ -719,3 +720,96 @@ dots or a scheduled step as a completed result. Final archive SHA256 is
 `infra/root-verification.json` records the exact successful and expected-failure
 groups. No missing/failed process is counted as a pass. IKS-01 remains in progress;
 IKS-02 through IKS-06 remain unchecked.
+
+
+## 13. Local carbon experiment and assessment interface — 2026-10-26
+
+The user explicitly requested a local C/STO-3G/grid-level1 test and a reusable
+interface for training neural and assessing analytically derived functionals.
+This overrides the remote-only preference for this experiment and its narrow
+regressions. No remote resource allocation or dependency installation was made.
+
+The new `invert(..., method="thermal_matrix", temperature=...)` is a bounded
+auxiliary ensemble construction, not an implementation or silent fallback of
+WY/inverse GKS. A strictly interior1-RDM P yields H-mu=-T*log(P/(1-P)). The
+operator is projected into a declared local potential basis modulo constants,
+then its density is independently regenerated using the existing fixed-N Fermi
+filling. Targets are not clipped. The method requires a full AO density matrix;
+matching it is stronger than matching its real-space diagonal.
+
+AO-product basis columns are integrated in blocks with the existing AO supplier.
+Only a bounded coefficient-space Gram matrix is assembled (default cap256).
+Diagonal column normalization removes arbitrary basis scaling; shared Hermitian
+factorization identifies retained eigenvalues above an explicit relative rank
+cutoff. The shared checked diagonal solve handles the normalized regularized
+projection. Rank and retained condition are returned. This is a declared rank-
+reduced reference, not a hidden pseudoinverse or a continuum uniqueness claim.
+It also avoids an observed JAX0.8 checkpointed-scan linear-transpose failure
+when a grid normal action was passed directly to custom_linear_solve.
+
+The initial carbon projection had a small equation residual but density error
+about3e-4, so it stopped before training. An independent basis-rescaling test
+also fails for that version. Column normalization/rank reduction fixes the
+conditioning without loosening the original1e-6 density/operator thresholds.
+Original failures remain archived. This entry is eager offline only: inverse-
+map AD/JIT explicitly raises, while parameter derivatives of losses evaluated
+on the resulting fixed reference remain available. It does not close IKS-03.
+
+`evaluate(reference, energy_fn, params)` accepts any pure real scalar TOTAL-
+energy callback. AD supplies its physical AO derivative, including conjugation
+for complex Hermitian densities. Scores report total-energy error, aligned
+operator MSE and commutator stationarity separately. The commutator alone is
+not a density, occupation or stability certificate. Nonfinite evaluations stay
+invalid; no candidate self-consistent density error is fabricated.
+
+`energy_function(state, functional, ...)` binds named recipes, existing custom_xc
+or supported scalar-energy neural/analytic models to this same callback. It
+uses shared SCF energy/J-K assembly and explicit nuclear-energy metadata, with
+no doubled exchange term. Missing nuclear data now raises instead of silently
+assuming zero. Plain analytic energy objects need no neural-specific update
+method. The legacy neural frozen-HFX/PT2 and custom-spinor routes retain guards;
+this experiment does not complete their live inverse-GKS contract. Existing
+fixed_density/explicit/implicit Trainer modes are unchanged. The example uses
+standard Optax for offline fixed-reference pretraining, not a new Trainer mode.
+
+The carbon labels use all6electrons and5Cartesian AOs, (4,2),50determinants.
+Three lowest 3P/Ms=1 roots are equally averaged; all have S(S+1)=2 and degenerate
+energies. E_FCI=-37.21873355063647Ha. A separate PySCF2.9.0 calculation agrees
+within7.11e-15Ha in energy and1.45e-14 in the averaged AO spin density.
+The grid has5180points. AuxiliaryT=.01Ha and normalized regularization/rank
+cutoff1e-12 produce rank28 from30potential coefficients, retained condition
+3.212e5, density-metric max error2.285e-7, aligned operator max error8.209e-8Ha,
+and grid-density relativeL2 error5.807e-9. This is not a zero-temperature exact
+XC-potential label or a thermal correlated reference.
+
+The existing ResidualMixingMLP, widths16/16 and817parameters, is initialized at
+seed0 with a supplied spin-Dirac channel and HFX/PT2off.100Adam steps atlr.002
+fit total-energy MSE+MAE plus.01*operatorMSE. Loss falls7.6023347→.0536381;
+last-step energy error is+.02486519Ha. OperatorMSE rises2.34636→2.81546Ha^2.
+Spin-Dirac alone gives+.64829448Ha andoperatorMSE2.70415Ha^2. A transient
+minimum atstep56 is recorded separately, not substituted for the last-step
+checkpoint. The last model does not meet1mHa accuracy; this is an interface
+validation and an explicit demonstration that energy fit and potential quality
+can move in different directions. Two parameter-direction FD steps check the
+mixed operator-loss gradient within6.12e-11.
+
+The local full script exits0 on AppleM4Pro/macOSarm64, Python3.12.2,
+JAX/JAXlib 0.8.1, NumPy 2.3.4, Flax 0.12.1, Optax 0.2.6, float64, OMP4/BLAS1.
+Recorded20.216s/peakchildRSS1,798,422,528B include reference setup, compilation,
+100updates, derivative checks and plotting; no warm or exclusive-machine claim.
+A prior external BSDtime wrapper returned1 after its completed child because
+sysctl was sandboxed; its log is preserved and is not counted as a successful
+process. A separate subprocess receipt certifies the final0 exit and unchanged
+source snapshot. The package's local focused/regression matrix has58passes.
+
+Examples: examples/iks/{carbon_fci,compare_carbon_fci_pyscf}.py, with measured
+output comments and PNG/PDF diagnostics. All inverse/electronic-structure
+algorithms are in src; no algorithm is maintained under reproducibility.
+Generated data: artifacts/iks-carbon-sto3g-20261026/ in the worktree. Original
+RED/partial results, subprocess receipts and source manifests are retained in
+artifacts/iks-research-20261026/ under the primary workspace.
+
+This bounded user-requested slice does not mark the6-parent/21-child original
+plan complete: live hybrid/custom state solves, canonical WY, inverse-map
+implicit response, periodic interfaces and complete training-mode integration
+remain open. No new top-level TODO or extra child level was introduced.

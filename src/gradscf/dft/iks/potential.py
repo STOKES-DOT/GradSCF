@@ -11,6 +11,14 @@ from gradscf.integrals.grids.blocks import ao_point_bytes
 from .types import CHANNELS, _check, _components, _layout
 
 
+def _ao_products(provider, coordinates):
+    local = replace(provider, coords=coordinates,
+                    weights=jnp.ones(coordinates.shape[0], dtype=coordinates.dtype))
+    ao = local.block(0, coordinates.shape[0])[0]
+    i, j = np.triu_indices(provider.nao)
+    return ao[:, i]*ao[:, j]
+
+
 def _assemble(panels, layout):
     if layout == 'rks': return panels[0]
     if layout == 'uks': return panels
@@ -53,6 +61,19 @@ class Potential:
     params: object = None
     layout: str = 'rks'
     max_memory: float = DEFAULT_MAX_MEMORY_MB
+
+    @classmethod
+    def ao_products(cls, grid, overlap, *, layout='rks', max_memory=DEFAULT_MAX_MEMORY_MB):
+        """Finite local PBS from real AO products; not a unique continuum potential.
+
+        Keep only AO parameters in the evaluator, sharing their numerical leaves
+        with the grid supplier. Products are evaluated per block, never stacked
+        over the full grid or converted to a four-index overlap tensor.
+        """
+        provider = replace(grid, coords=jnp.zeros((0, 3), grid.coords.dtype),
+                           weights=jnp.zeros((0,), grid.weights.dtype), block_size=1)
+        return cls(grid, overlap, _ao_products, grid.nao*(grid.nao+1)//2,
+                   params=provider, layout=layout, max_memory=max_memory)
 
     def __post_init__(self):
         _layout(self.layout)

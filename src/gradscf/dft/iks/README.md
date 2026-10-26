@@ -1,9 +1,11 @@
-# Inverse Kohn–Sham infrastructure
+# Inverse references and functional assessment
 
-This package currently provides physical target records, local potential maps
-and eager SCF snapshots. It does **not** yet solve the inverse problem. There
-is no `IKS.run` or `invert` entry until the forward and implicit-response gates
-in [the research plan](../IKS_RESEARCH.md) are implemented and verified.
+The package provides physical targets, block-local potential maps, SCF metadata
+snapshots, an explicitly selected finite-temperature matrix-reference generator
+and fixed-reference functional evaluation. Zero-temperature Wu–Yang and coupled
+inverse-GKS optimization/backward remain unfinished in
+[the research plan](../IKS_RESEARCH.md). The matrix-reference method does not
+silently substitute for either of those methods.
 
 ## AO target conventions
 
@@ -111,3 +113,92 @@ the existing GKS forward restrictions on RSH and external `Functional`, the
 shared complex custom-functional adapter, hybrid/custom composition, and the
 coupled inverse-GKS backward remain explicit implementation work. The package
 does not introduce another XC registry, trainer or numerical solver.
+
+
+## Explicit auxiliary matrix reference
+
+```python
+reference = iks.invert(
+    target, potential, base_fock,
+    method="thermal_matrix", temperature=.01,
+    regularization=1e-12, rank_tolerance=1e-12, tolerance=1e-6,
+)
+```
+
+This entry requires a full AO 1-RDM strictly inside its occupation bounds,
+not just a sampled density. Temperature is in Hartree (kB=1). With normalized
+orthogonal-frame occupations P, it constructs H-mu=-T*log(P/(1-P)), and projects
+the resulting operator into the supplied local potential basis modulo the
+constant gauges. `base_fock` is a prescribed fixed operator; it is not updated
+as a hybrid/custom inner SCF. Target occupations are never clipped into range.
+Integer/idempotent boundary targets must use a different formulation.
+
+`Potential.ao_products(grid, overlap, layout=...)` supplies a small local PBS
+from products of real Gaussian AOs. Products are evaluated blockwise. For this
+explicit small-system method, the coefficient-space Gram matrix is dense and
+bounded by the shared linear config's max_dense (default256 coefficients).
+That bound is checked before forming its identity/matrix; this is not a large-
+system matrix-free inversion implementation.
+
+Projection columns are normalized by their metric norm before shared spectral
+factorization. Eigenvalues below rank_tolerance times the largest eigenvalue
+are explicitly excluded. Regularization penalizes normalized coefficients;
+projection_rank and projection_condition expose this choice. The method uses
+the shared Hermitian and checked linear solvers, not a method-local solver.
+Constant/null-space ambiguity and potential smoothness remain distinct issues.
+
+The fitted operator independently generates a density through fixed-electron-
+number Fermi filling, including chemical-potential determination. `valid` needs
+both metric-density and gauge-aligned operator errors below tolerance, plus
+converged shared solves. A small projection-equation residual alone is not a
+successful inverse. Reported density_error is the maximum absolute entry of
+S^(1/2)*(D_recovered-D_target)*S^(1/2), and operator_error is the corresponding
+aligned orthogonal-frame operator maximum in Hartree.
+
+This is an **eager offline reference generator**. Traced inputs, JIT or AD
+through this inverse entry raise explicitly. The returned fixed reference can
+be used inside differentiable model losses. A finite-temperature fit to a
+zero-temperature FCI density is an auxiliary numerical construction, not an
+exact zero-temperature KS/XC potential or a thermal many-body reference.
+Potential recovery is only within the declared finite basis and gauge.
+Matching the full correlated1-RDM fixes its kinetic expectation as well; this
+does not establish the zero-temperature density-constrained KS kinetic energy.
+The evaluator therefore supervises total energy, not a mislabeled exact
+zero-temperature XC-energy decomposition.
+
+## One interface for analytic and neural functionals
+
+```python
+energy = iks.energy_function(state, functional, layout="uks", nuclear_repulsion=enuc)
+score = iks.evaluate(reference, energy, params)
+loss = score.energy_error**2 + abs(score.energy_error) + .01*score.operator_mse
+```
+
+`energy_function` binds an existing traditional recipe, `custom_xc` or supported
+neural model to a TOTAL-energy callback, adding one-electron, Coulomb and
+nuclear terms once. It uses existing SCF assembly for conventional exchange
+recipes. Missing nuclear-energy metadata requires an explicit value, including
+zero for an isolated atom. An object implementing energy_from_molecule returns
+XC energy under this adapter; it needs no neural-specific density-update method.
+Alternatively pass any pure `energy_fn(params, density) -> total energy`
+directly to `evaluate`.
+
+The evaluator uses AD to obtain the physical Hermitian AO derivative, with the
+complex-gradient conjugation convention. It returns separate total-energy
+error, gauge-aligned operator MSE and commutator stationarity MSE. Parameters
+remain live through the operator loss, so its gradient includes mixed parameter-
+density derivatives. A nonfinite model result stays invalid, rather than being
+changed to a finite score. No candidate SCF is run. The commutator is a necessary
+orbital-stationarity diagnostic, not proof of correct occupations, stability or
+self-consistent density. There is no candidate-density error fabricated from
+an unchanged reference density.
+
+This does not introduce a fourth mode in the existing Trainer. The carbon
+example uses a fixed-reference loss with standard Optax Adam; subsequent
+self-consistent fine-tuning still belongs to the existing explicit/implicit
+paths. Complete custom-spinor, frozen HFX/PT2 neural channels and inverse-GKS
+inner-state contracts remain separately guarded.
+
+See [the carbon example](../../../../examples/iks/carbon_fci.py) and its
+[independent FCI comparison](../../../../examples/iks/compare_carbon_fci_pyscf.py).
+Both are ordinary scripts with no CLI and reuse src implementations.
