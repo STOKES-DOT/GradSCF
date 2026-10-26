@@ -36,7 +36,7 @@ def run(config, root, *, deadline, timeout=6000, profile=False):
     threads = str(config['threads'])
     for key in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
         env[key] = threads
-    env.update(JAX_PLATFORMS='cuda' if config.get('device') == 'gpu' else 'cpu',
+    env.update(JAX_PLATFORMS='cuda,cpu' if config.get('device') == 'gpu' else 'cpu',
                JAX_ENABLE_X64='1', JAX_ENABLE_COMPILATION_CACHE='false',
                XLA_PYTHON_CLIENT_PREALLOCATE='false')
     affinity = sorted(os.sched_getaffinity(0))[:config['threads']]
