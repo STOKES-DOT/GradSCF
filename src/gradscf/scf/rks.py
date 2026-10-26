@@ -1026,6 +1026,44 @@ def _run_scf_iterations_lax_core(
     )
 
 
+@partial(jax.jit, static_argnames=(
+    "cfg", "xc_kind", "nocc", "with_k", "skip_first_fock_damping",
+))
+def _run_rks_iterations(
+    *, h, s, x, eri, eri_pair_matrix, df_factors, direct_basis,
+    ao, ao_deriv1, weights, grid_ao, enuc, alpha, cfg, xc_kind, nocc,
+    with_k, skip_first_fock_damping, density, mo_coeff, mo_occ, mo_energy,
+    raw_fock, j_mat, k_mat, eri_lr,
+):
+    """Reuse the SCF executable with all physical inputs as dynamic leaves.
+
+    Build the local callbacks inside this stable JIT boundary. Creating a new
+    integral/grid/provider object must not create another compiled scan body.
+    """
+    jk_builder = _make_jk_builder(
+        eri, cfg, eri_pair_matrix=eri_pair_matrix, df_factors=df_factors,
+        direct_basis=direct_basis, with_k=with_k, nocc=nocc, eri_lr=eri_lr,
+    )
+
+    def energy_and_fock_builder(density_i, mo_coeff_i, mo_occ_i, mo_energy_i,
+                                density_last, j_last, k_last):
+        return _energy_and_raw_fock_for_density(
+            density=density_i, mo_coeff=mo_coeff_i, mo_occ=mo_occ_i,
+            mo_energy=mo_energy_i, jk_builder=jk_builder,
+            density_last=density_last, j_last=j_last, k_last=k_last,
+            ao=ao, ao_deriv1=ao_deriv1, weights=weights, h=h, enuc=enuc,
+            alpha=alpha, cfg=cfg, xc_kind=xc_kind, grid_ao=grid_ao,
+        )
+
+    return _run_scf_iterations_lax_core(
+        h=h, s=s, x=x, energy_and_fock_builder=energy_and_fock_builder,
+        cfg=cfg, mo_occ_fixed=mo_occ, diis_basis=mo_coeff,
+        skip_first_fock_damping=skip_first_fock_damping,
+        density=density, mo_coeff=mo_coeff, mo_occ=mo_occ,
+        mo_energy=mo_energy, raw_fock=raw_fock, j_mat=j_mat, k_mat=k_mat,
+    )
+
+
 def _run_rks_from_integrals_shared(
     *,
     overlap: Array,
@@ -1111,6 +1149,10 @@ def _run_rks_from_integrals_shared(
     skip_first_fock_damping = (init_mo_coeff is not None) or (init_density_matrix is not None)
     alpha_scalar = 1.0 if rsh is not None else float(hybrid_coeff(cfg.xc_spec))
     alpha = jnp.asarray(alpha_scalar, dtype=h.dtype)
+    if cfg.jk_backend == "df" and df_factors is None and eri_arr is not None:
+        # The existing rank-selecting spectral compression is a host step.
+        # Pass its factors to both Fock builders, outside the compiled loop.
+        df_factors = eri_to_df_factors(eri_arr, tol=cfg.df_tol, max_rank=cfg.df_max_rank)
     jk_builder = _make_jk_builder(
         eri_arr,
         cfg,
@@ -1137,52 +1179,6 @@ def _run_rks_from_integrals_shared(
         grid_ao=grid_ao,
     )
 
-    def energy_and_fock_builder(
-        density_i: Array,
-        mo_coeff_i: Array,
-        mo_occ_i: Array,
-        mo_energy_i: Array,
-        density_last: Array | None,
-        j_last: Array | None,
-        k_last: Array | None,
-    ) -> tuple[Array, Array, Array, Array, Array]:
-        return _energy_and_raw_fock_for_density(
-            density=density_i,
-            mo_coeff=mo_coeff_i,
-            mo_occ=mo_occ_i,
-            mo_energy=mo_energy_i,
-            jk_builder=jk_builder,
-            density_last=density_last,
-            j_last=j_last,
-            k_last=k_last,
-            ao=ao,
-            ao_deriv1=ao_deriv1,
-            weights=weights,
-            h=h,
-            enuc=enuc,
-            alpha=alpha,
-            cfg=cfg,
-            xc_kind=xc_kind,
-            grid_ao=grid_ao,
-        )
-
-    scf_kwargs = dict(
-        h=h,
-        s=s,
-        x=x,
-        energy_and_fock_builder=energy_and_fock_builder,
-        cfg=cfg,
-        mo_occ_fixed=mo_occ_fixed,
-        diis_basis=mo_coeff,
-        skip_first_fock_damping=skip_first_fock_damping,
-        density=density,
-        mo_coeff=mo_coeff,
-        mo_occ=mo_occ_fixed,
-        mo_energy=mo_energy,
-        raw_fock=fock,
-        j_mat=j_mat,
-        k_mat=k_mat,
-    )
     (
         converged,
         cycles,
@@ -1198,8 +1194,19 @@ def _run_rks_from_integrals_shared(
         _mo_coeff_history,
         _mo_energy_history,
         _density_rms_history,
-    ) = _run_scf_iterations_lax_core(
-        **scf_kwargs,
+    ) = _run_rks_iterations(
+        h=h, s=s, x=x, eri=eri_arr, eri_pair_matrix=eri_pair_arr,
+        df_factors=df_factors,
+        direct_basis=(direct_basis if cfg.jk_backend == "direct" or
+                      (cfg.jk_backend == "full" and eri_arr is None and eri_pair_arr is None)
+                      else None),
+        ao=ao, ao_deriv1=ao_deriv1, weights=weights, grid_ao=grid_ao,
+        enuc=enuc, alpha=alpha, cfg=cfg, xc_kind=xc_kind, nocc=nocc,
+        with_k=bool(abs(alpha_scalar) > 1e-14),
+        skip_first_fock_damping=skip_first_fock_damping,
+        density=density, mo_coeff=mo_coeff, mo_occ=mo_occ_fixed,
+        mo_energy=mo_energy, raw_fock=fock, j_mat=j_mat, k_mat=k_mat,
+        eri_lr=eri_lr,
     )
     density, mo_coeff, mo_energy, energy, xc_energy, fock, converged = _maybe_run_extra_final_cycle(
         density=density,
