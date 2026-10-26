@@ -8,6 +8,15 @@ void GTOnr2e_fill_s1(LegacyIntor, LegacyIntor, double*, double*, int, int, int,
 }
 static int NoPrescreen() { return 1; }
 
+#ifdef GRADSCF_LIBCINT_DIAGNOSTICS
+template<Intor Kernel>
+static int CountedERI(double* output,int* dims,int* shells,int* atoms,int natm,
+    int* basis,int nbas,double* env,CINTOpt* optimizer,double* cache) {
+  return libcint_diagnostics::invoke(libcint_diagnostics::eri4c,Kernel,output,dims,
+                                    shells,atoms,natm,basis,nbas,env,optimizer,cache);
+}
+#endif
+
 static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
                            ffi::BufferR2<ffi::S32> basis,
                            ffi::BufferR1<ffi::F64> environment,
@@ -33,6 +42,9 @@ static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
     Intor sph_funcs[] = {int1e_ovlp_sph, int1e_kin_sph, int1e_nuc_sph,
                          int1e_r_sph, int2e_sph, int1e_rinv_sph};
     Intor intor = cart ? cart_funcs[op] : sph_funcs[op];
+#ifdef GRADSCF_LIBCINT_DIAGNOSTICS
+    if (op==4) intor=cart ? CountedERI<int2e_cart>:CountedERI<int2e_sph>;
+#endif
     double* output = result->typed_data();
     std::fill(output, output + result->element_count(), 0.);
     if (op == 4) {
@@ -68,7 +80,7 @@ static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
           const int di = ao[i+1] - ao[i], dj = ao[j+1] - ao[j];
           const size_t size = size_t(di)*dj;
           std::vector<double> block(size * components, 0.);
-          intor(block.data(), nullptr, shells, atm.data(), natm,
+          libcint_diagnostics::invoke(libcint_diagnostics::one_electron,intor,block.data(), nullptr, shells, atm.data(), natm,
                 bas.data(), nbas, env.data(), nullptr, nullptr);
           // libcint shell blocks have the first AO index contiguous.
           for (int c = 0; c < components; ++c)
@@ -106,6 +118,9 @@ static ffi::Error ERISliceImpl(ffi::BufferR2<ffi::S32> atoms,
     ERIWindow window(t,slice,count);
     if (padded) window.pad_to(*result); else window.check_shape(*result);
     Intor intor=cart ? int2e_cart : int2e_sph;
+#ifdef GRADSCF_LIBCINT_DIAGNOSTICS
+    intor=cart ? CountedERI<int2e_cart>:CountedERI<int2e_sph>;
+#endif
     LocalOptimizer optimizer(t,4);
     int maxcache=0;
     int64_t maxblock=1;

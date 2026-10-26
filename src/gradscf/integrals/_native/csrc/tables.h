@@ -7,6 +7,7 @@
 #include <map>
 #include <stdexcept>
 #include <vector>
+#include "diagnostics.h"
 #include "xla/ffi/api/ffi.h"
 extern "C" {
 #include "cint.h"
@@ -29,7 +30,7 @@ struct ShellShapeLess {
 
 // Owned libcint buffers shared by value and derivative drivers.
 struct IntegralTables {
-  int natm, nbas, n;
+  int natm, nbas, n, operator_code;
   std::vector<int> atm, bas, ao;
   std::vector<double> env;
   Intor cached_intor=nullptr;
@@ -37,6 +38,7 @@ struct IntegralTables {
   IntegralTables(ffi::BufferR2<ffi::S32> atoms, ffi::BufferR2<ffi::S32> basis,
                  ffi::BufferR1<ffi::F64> environment, int op, int cart,
                  bool allow_long_range=false) {
+    operator_code=op;
     if (atoms.dimensions()[1] != ATM_SLOTS || basis.dimensions()[1] != BAS_SLOTS ||
         environment.element_count() < 20 || op < 0 || op > 5 || (cart != 0 && cart != 1))
       throw std::invalid_argument("Invalid libcint table dimensions or operator");
@@ -104,11 +106,13 @@ struct IntegralTables {
       }
     }
     auto found=cache_sizes.find(key);
+    const int family=legs==3 ? libcint_diagnostics::ri3c :
+                     operator_code==4 ? libcint_diagnostics::eri4c:libcint_diagnostics::one_electron;
     int nc=legs && found!=cache_sizes.end() ? found->second
-      : intor(nullptr,nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,nullptr);
+      : libcint_diagnostics::invoke(family,intor,nullptr,nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,nullptr);
     if (nc<=0) throw std::invalid_argument("libcint derivative cache query failed or exceeded int32 indexing");
     if (legs) cache_sizes.emplace(key,nc);
     block.assign(size,0.); cache.resize(nc);
-    intor(block.data(),nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,cache.data());
+    libcint_diagnostics::invoke(family,intor,block.data(),nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,cache.data());
   }
 };

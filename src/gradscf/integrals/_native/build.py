@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--build-dir", type=Path)
     parser.add_argument("--blas-library", type=Path, help="Existing LP64 BLAS runtime library (Linux override).")
     parser.add_argument("--jobs", type=int, default=2)
+    parser.add_argument("--diagnostics", action="store_true",
+                        help="Opt into call counters for a separate diagnostic build, not clean timing.")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
@@ -42,6 +44,7 @@ def main():
         "cmake", "-S", str(native), "-B", str(build_dir),
         "-DCMAKE_BUILD_TYPE=Release", f"-DJAX_INCLUDE_DIR={jax.ffi.include_dir()}",
         f"-DGRADSCF_OUTPUT_DIR={output_dir}", *blas_args,
+        f"-DGRADSCF_LIBCINT_DIAGNOSTICS={'ON' if args.diagnostics else 'OFF'}",
     ], check=True)
     subprocess.run(["cmake", "--build", str(build_dir), "--parallel", str(args.jobs)],
                    check=True)

@@ -34,6 +34,8 @@ static void block(IntegralTables& t, Intor f, CINTOpt* opt, int* shells,
                   ERICacheSizes* sizes=nullptr) {
   if (count > size_t(std::numeric_limits<int>::max()))
     throw std::invalid_argument("Integral shell block exceeds int32 indexing");
+  const int family=(f==int2c2e_cart || f==int2c2e_sph) ? libcint_diagnostics::ri2c:
+                   (f==int3c2e_cart || f==int3c2e_sph) ? libcint_diagnostics::ri3c:libcint_diagnostics::eri4c;
   std::array<int,17> key{};
   int length=0;
   if (sizes) {
@@ -49,12 +51,12 @@ static void block(IntegralTables& t, Intor f, CINTOpt* opt, int* shells,
     if (found!=sizes->end()) length=found->second;
   }
   if (!length) {
-    length=f(nullptr,nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),opt,nullptr);
+    length=libcint_diagnostics::invoke(family,f,nullptr,nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),opt,nullptr);
     if (length<=0) throw std::invalid_argument("libcint cache query failed");
     if (sizes) sizes->emplace(key,length);
   }
   data.assign(count,0.); cache.resize(length);
-  f(data.data(),nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),opt,cache.data());
+  libcint_diagnostics::invoke(family,f,data.data(),nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),opt,cache.data());
 }
 
 static std::vector<double> eri_schwarz_bounds(IntegralTables& t, int cart, double cutoff,

@@ -44,8 +44,10 @@ struct ERIBasisTables {
     for (int i=window.shells[0]+first_shell;i<window.shells[1];i+=shell_stride)
       for (int j=window.shells[2];j<window.shells[3];++j)
       for (int k=window.shells[4];k<window.shells[5];++k)
-      for (int l=window.shells[6];l<window.shells[7];++l)
+      for (int l=window.shells[6];l<window.shells[7];++l) {
+        libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::scheduled_quartets);
         consume(std::array<int,4>{i,j,k,l});
+      }
   }
   size_t integral_index(const std::array<int,4>& shells,const std::array<int,4>& local) const {
     return window.index(t.ao[shells[0]]+local[0],t.ao[shells[1]]+local[1],
