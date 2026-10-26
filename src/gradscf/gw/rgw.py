@@ -40,6 +40,24 @@ _run_g0w0_numerics = jax.jit(g0w0_cd_restricted, static_argnames=(
 ))
 
 
+def _use_cpu_resolvent(arrays, *, nmo, transitions):
+    """Reuse exact RPA factors only for bounded, explicitly CPU data."""
+    if not (0 < transitions <= 256 and transitions*nmo*nmo <= 20_000_000):
+        return False
+    default = jax.config.jax_default_device
+    if default is not None and getattr(default, "platform", None) != "cpu":
+        return False
+    for value in jax.tree.leaves(arrays):
+        # NumPy inputs can be moved by the caller's default JAX placement.
+        # Require actual array devices, including C/B/F/h/D as well as e.
+        if not isinstance(value, jax.Array):
+            return False
+        devices = value.devices()
+        if not devices or any(device.platform != "cpu" for device in devices):
+            return False
+    return True
+
+
 class GW:
     """Molecular restricted G0W0, evGW, qsGW and Matsubara scGW on RHF/RKS.
 
@@ -294,7 +312,10 @@ class GW:
             g_window = _window_indices(g_window, range(nmo), "g_orbitals")
             occupied_window = _window_indices(occupied_window, range(nocc), "screening_occupied")
             virtual_window = _window_indices(virtual_window, range(nocc, nmo), "screening_virtual")
-        controls = dict(qp_solver=self.qp_solver) if self.method == "g0w0" else dict(
+        controls = dict(qp_solver=self.qp_solver,
+            resolvent_expansion=_use_cpu_resolvent((result.mo_energy, result.mo_coeff,
+                factors, result.fock_matrix, result.hcore_matrix, result.density_matrix),
+                nmo=nmo, transitions=len(occupied_window)*len(virtual_window))) if self.method == "g0w0" else dict(
             max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
             update_w=self.method == "evgw")
         res = driver(
