@@ -1,7 +1,7 @@
 // Shared second-coordinate contraction. Higher products differentiate only
 // the shell evaluator; index permutations and nuclear-center terms stay shared.
 #pragma once
-#include "eri_window.h"
+#include "eri_geometry_entries.h"
 
 template<class Evaluate, class Accumulate>
 void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
@@ -17,42 +17,39 @@ void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
   };
   const int n=t.n;
   auto index2=[&](int c,int i,int j) { return (size_t(c)*n+i)*n+j; };
-  auto index4=[&](int i,int j,int k,int l) {
-    return window ? window->index(i,j,k,l) : ((size_t(i)*n+j)*n+k)*n+l;
-  };
   std::vector<double> block,cache;
   if (op==4) {
     Intor kernels_cart[]={int2e_ipip1_cart,int2e_ipvip1_cart,int2e_ip1ip2_cart};
     Intor kernels_sph[]={int2e_ipip1_sph,int2e_ipvip1_sph,int2e_ip1ip2_sph};
-    for_each_eri_shell(t,window,[&](int i,int j,int k,int l) {
-        int shells[]={i,j,k,l};
-        int di=t.ao[i+1]-t.ao[i],dj=t.ao[j+1]-t.ao[j];
-        int dk=t.ao[k+1]-t.ao[k],dl=t.ao[l+1]-t.ao[l];
-        size_t size=size_t(di)*dj*dk*dl;
-        for (int kind=0; kind<3; ++kind) {
-          evaluate(cart ? kernels_cart[kind] : kernels_sph[kind],shells,9*size,block,cache,-1);
-          for (int x=0; x<3; ++x) for (int y=0; y<3; ++y)
-            for (int s=0; s<dl; ++s) for (int r=0; r<dk; ++r)
-              for (int q=0; q<dj; ++q) for (int p=0; p<di; ++p) {
-                double value=block[(x*3+y)*size+((size_t(s)*dk+r)*dj+q)*di+p];
-                int a=t.ao[i]+p,b=t.ao[j]+q,c=t.ao[k]+r,d=t.ao[l]+s;
-                int px=t.coord_ptr(i)+x;
-                if (kind==0) {
-                  int py=t.coord_ptr(i)+y;
-                  add(index4(a,b,c,d),px,py,value); add(index4(b,a,c,d),px,py,value);
-                  add(index4(c,d,a,b),px,py,value); add(index4(c,d,b,a),px,py,value);
-                } else if (kind==1) {
-                  int py=t.coord_ptr(j)+y;
-                  cross(index4(a,b,c,d),px,py,value);
-                  cross(index4(c,d,a,b),px,py,value);
-                } else {
-                  int py=t.coord_ptr(k)+y;
-                  cross(index4(a,b,c,d),px,py,value); cross(index4(b,a,c,d),px,py,value);
-                  cross(index4(a,b,d,c),px,py,value); cross(index4(b,a,d,c),px,py,value);
+    constexpr std::array<std::array<int,4>,2> same_pair{{{{0,1,2,3}},{{2,3,0,1}}}};
+    constexpr std::array<std::array<int,4>,4> cross_pair{{
+      {{0,1,2,3}},{{0,1,3,2}},{{1,0,2,3}},{{1,0,3,2}}
+    }};
+    for_each_eri_geometry_orbit(t,window,[&](const ERIGeometryOrbit& orbit) {
+      auto modes=[&](int kind,const auto& permutations) {
+        eri_geometry_modes(orbit,permutations,[&](int* shells) {
+          evaluate(cart ? kernels_cart[kind] : kernels_sph[kind],shells,
+                    9*orbit.size,block,cache,-1);
+        },[&](const auto& mode) {
+          for (int s=0;s<orbit.dims[3];++s) for (int r=0;r<orbit.dims[2];++r)
+            for (int q=0;q<orbit.dims[1];++q) for (int p=0;p<orbit.dims[0];++p) {
+              const std::array<int,4> ao{p,q,r,s};
+              const auto indices=orbit.indices(ao);
+              const size_t local=orbit.kernel_index(ao,mode);
+              const int first=t.coord_ptr(orbit.shells[mode[0]]);
+              const int second=t.coord_ptr(orbit.shells[mode[kind]]);
+              for (int x=0;x<3;++x) for (int y=0;y<3;++y) {
+                const double value=block[(x*3+y)*orbit.size+local];
+                for (size_t index:indices) if (index!=ERIWindow::outside) {
+                  if (kind==0) add(index,first+x,second+y,value);
+                  else cross(index,first+x,second+y,value);
                 }
               }
-        }
-      },first_shell,last_shell);
+            }
+        });
+      };
+      modes(0,eri_geometry_legs);modes(1,same_pair);modes(2,cross_pair);
+    },first_shell,last_shell);
   } else {
     Intor same_cart[]={int1e_ipipovlp_cart,int1e_ipipkin_cart,int1e_ipiprinv_cart,int1e_ipipr_cart};
     Intor same_sph[]={int1e_ipipovlp_sph,int1e_ipipkin_sph,int1e_ipiprinv_sph,int1e_ipipr_sph};
