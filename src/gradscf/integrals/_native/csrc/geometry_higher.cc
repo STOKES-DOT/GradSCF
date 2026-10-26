@@ -173,8 +173,8 @@ public:
       }
       if (components*shifted_size>=size_t(std::numeric_limits<int>::max()))
         throw std::invalid_argument("Higher geometry component workspace exceeds int32 indexing");
-      // Reuse scratch storage, not the 2/3-leg query cache. All four ERI legs
-      // would have to enter its key before four-leg cache reuse is valid.
+      // Scratch-size keys include the kernel and all actual shifted shell
+      // shapes; alpha-weighted numerical blocks are always recomputed.
       t.shell(kernel,shifted_shells,components*shifted_size,raw,cache);
       for (const Reduction& entry:group.second) for (size_t contraction=0;contraction<contraction_size;++contraction) {
         size_t rest=contraction,original_index=0,shifted_index=0,original_stride=1,shifted_stride=1;
