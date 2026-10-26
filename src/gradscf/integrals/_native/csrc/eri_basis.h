@@ -1,5 +1,5 @@
 #pragma once
-#include "eri_window.h"
+#include "eri_symmetry.h"
 
 inline int eri_ncart(int l) { return (l+1)*(l+2)/2; }
 
@@ -16,13 +16,14 @@ void eri_local_entries(const std::array<int,4>& dims, Consume consume) {
 struct ERIBasisTables {
   IntegralTables t;
   ERIWindow window;
+  ERICanonicalQuartets symmetry;
   int active,first_shell=0,shell_stride=1;
-  std::vector<double> block,cache;
+  std::vector<double> block,cache,contracted;
 
   ERIBasisTables(ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
                  ffi::BufferR1<ffi::F64> env,int cart,
                  const int32_t* slice=nullptr,size_t count=0)
-      :t(atoms,basis,env,4,cart,true),window(t,slice,count),active(t.nbas) {}
+      :t(atoms,basis,env,4,cart,true),window(t,slice,count),symmetry(window),active(t.nbas) {}
 
   static void finite(const double* values,size_t size) {
     for (size_t i=0;i<size;++i)
@@ -41,17 +42,44 @@ struct ERIBasisTables {
   }
   template<class Consume>
   void quartets(Consume consume) {
-    for (int i=window.shells[0]+first_shell;i<window.shells[1];i+=shell_stride)
-      for (int j=window.shells[2];j<window.shells[3];++j)
-      for (int k=window.shells[4];k<window.shells[5];++k)
-      for (int l=window.shells[6];l<window.shells[7];++l) {
-        libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::scheduled_quartets);
-        consume(std::array<int,4>{i,j,k,l});
-      }
+    symmetry.for_each([&](const auto& shells) {
+      libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::scheduled_quartets);
+      consume(shells);
+    },first_shell,shell_stride);
   }
-  size_t integral_index(const std::array<int,4>& shells,const std::array<int,4>& local) const {
-    return window.index(t.ao[shells[0]]+local[0],t.ao[shells[1]]+local[1],
-                        t.ao[shells[2]]+local[2],t.ao[shells[3]]+local[3]);
+  std::array<int,4> contracted_dims(const std::array<int,4>& shells) const {
+    std::array<int,4> dims;int64_t cartesian=1;
+    for (int a=0;a<4;++a) {
+      dims[a]=t.ao[shells[a]+1]-t.ao[shells[a]];
+      const int* row=t.bas.data()+shells[a]*BAS_SLOTS;
+      cartesian*=int64_t(eri_ncart(row[ANG_OF]))*row[NCTR_OF];
+    }
+    // Validate before allocating the extra contracted shell buffer as well.
+    if (cartesian>=std::numeric_limits<int>::max()/3)
+      throw std::invalid_argument("ERI basis internal Cartesian cache exceeds int32 indexing");
+    return dims;
+  }
+  static size_t local_index(const std::array<int,4>& dims,const std::array<int,4>& local) {
+    return ((size_t(local[3])*dims[2]+local[2])*dims[1]+local[1])*dims[0]+local[0];
+  }
+  void reset_contracted(const std::array<int,4>& dims) {
+    size_t size=1;for (int d:dims) size*=d;
+    contracted.assign(size,0.);
+  }
+  template<bool transpose>
+  void orbit(const std::array<int,4>& shells,const std::array<int,4>& dims,
+             const double* input,double* output) {
+    eri_shell_orbit(window,shells,[&](const auto& permutation,const auto& target) {
+      libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::emissions);
+      eri_local_entries(dims,[&](const auto& local,size_t index) {
+        std::array<int,4> ao;
+        for (int a=0;a<4;++a) ao[a]=t.ao[target[a]]+local[permutation[a]];
+        const size_t destination=window.index(ao[0],ao[1],ao[2],ao[3]);
+        if (destination==ERIWindow::outside) return;
+        if constexpr (transpose) contracted[index]+=input[destination];
+        else output[destination]+=contracted[index];
+      });
+    });
   }
   void shell(Intor intor,std::array<int,4> shells,const std::array<int,4>& dims) {
     int64_t cartesian=1;size_t size=1;

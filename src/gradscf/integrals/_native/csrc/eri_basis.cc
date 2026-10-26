@@ -72,33 +72,39 @@ struct ERICoefficientTables:ERIBasisTables {
   }
   void directional(const double* left,const double* right,double* output) {
     quartets([&](const auto& shells) {
+      const auto dims=contracted_dims(shells);reset_contracted(dims);
       for (int a=0;a<4;++a) for (int b=0;b<(right ? 4:1);++b) {
         if (right && a==b) continue;
         std::array<const double*,4> directions{};directions[a]=left;
         if (right) directions[b]=right;
-        auto dims=evaluate(shells,directions);
-        eri_local_entries(dims,[&](const auto& local,size_t index) {
-          output[integral_index(shells,local)]+=block[index];
-        });
+        evaluate(shells,directions);
+        for (size_t index=0;index<contracted.size();++index) contracted[index]+=block[index];
       }
+      // Only the complete sum is covariant under the shell stabilizer. In
+      // particular, diagonal shells still contribute four/twelve leg terms.
+      orbit<false>(shells,dims,nullptr,output);
     });
   }
   void transpose(const double* direction,const double* cotangent,double* output) {
     quartets([&](const auto& shells) {
+      const auto dims=contracted_dims(shells);reset_contracted(dims);
+      orbit<true>(shells,dims,cotangent,nullptr);
       for (int free=0;free<4;++free)
         for (int leg=0;leg<(direction ? 4:1);++leg) {
           if (direction && free==leg) continue;
           std::array<const double*,4> directions{};
           if (direction) directions[leg]=direction;
-          auto dims=evaluate(shells,directions,free);
+          const auto free_dims=evaluate(shells,directions,free);
           int s=shells[free],np=primitives[s],nc=contractions[s],na=angular[s];
-          eri_local_entries(dims,[&](const auto& local,size_t index) {
+          eri_local_entries(free_dims,[&](const auto& local,size_t index) {
             int primitive=local[free]/na,angular_index=local[free]%na;
             auto target=local;
             for (int contraction=0;contraction<nc;++contraction) {
               target[free]=contraction*na+angular_index;
+              // Identity-shadow dimensions describe primitives; the pooled
+              // cotangent retains the physical contracted AO dimensions.
               output[offsets[s]+size_t(contraction)*np+primitive]+=
-                block[index]*cotangent[integral_index(shells,target)];
+                block[index]*contracted[local_index(dims,target)];
             }
           });
         }
@@ -211,23 +217,59 @@ struct ERIExponentTables:ERIBasisTables {
   template<bool transpose>
   void apply(const double* input,double* output) {
     quartets([&](const auto& shells) {
+      const auto dims=contracted_dims(shells);reset_contracted(dims);
+      if constexpr (transpose) orbit<true>(shells,dims,input,nullptr);
       for (int leg=0;leg<4;++leg) {
         int s=shells[leg],np=t.bas[s*BAS_SLOTS+NPRIM_OF];
         for (int p=0;p<np;++p) {
           size_t parameter=offsets[s]+p;
           if constexpr (!transpose) if (input[parameter]==0.) continue;
-          auto dims=evaluate(shells,leg,p);double value=0.;
-          eri_local_entries(dims,[&](const auto& local,size_t index) {
-            size_t target=integral_index(shells,local);
-            if constexpr (transpose) value+=input[target]*reduced[index];
-            else output[target]+=input[parameter]*reduced[index];
+          const auto evaluated=evaluate(shells,leg,p);double value=0.;
+          eri_local_entries(evaluated,[&](const auto&,size_t index) {
+            if constexpr (transpose) value+=contracted[index]*reduced[index];
+            else contracted[index]+=input[parameter]*reduced[index];
           });
           if constexpr (transpose) output[parameter]+=value;
         }
       }
+      if constexpr (!transpose) orbit<false>(shells,dims,nullptr,output);
     });
   }
 };
+
+// Canonical outer pairs own disjoint full/window tensor blocks. Forward
+// workers share the output; adjoints replicate only the small parameter vector.
+template<bool transpose,class Driver,class Apply>
+static void parallel_eri_basis(Driver& driver,double* output,Apply apply) {
+  const int workers=native_threads(driver.symmetry.tasks());
+  if (workers==1) {apply(driver,output);return;}
+  std::vector<std::vector<double>> partial;
+  if constexpr (transpose) partial.resize(workers);
+  std::vector<std::exception_ptr> errors(workers);
+  std::vector<std::thread> threads;
+  auto run=[&](int worker) {
+    try {
+      Driver local=driver;
+      local.first_shell=worker;local.shell_stride=workers;
+      if constexpr (transpose) {
+        partial[worker].assign(driver.count,0.);
+        apply(local,partial[worker].data());
+      } else apply(local,output);
+    } catch (...) {errors[worker]=std::current_exception();}
+  };
+  try {
+    for (int w=1;w<workers;++w) threads.emplace_back(run,w);
+  } catch (...) {
+    for (auto& thread:threads) thread.join();
+    throw;
+  }
+  run(0);
+  for (auto& thread:threads) thread.join();
+  for (const auto& error:errors) if (error) std::rethrow_exception(error);
+  if constexpr (transpose)
+    for (const auto& values:partial)
+      for (size_t p=0;p<driver.count;++p) output[p]+=values[p];
+}
 
 template<bool transpose,bool second>
 static ffi::Error ERICoefficientProduct(ffi::BufferR2<ffi::S32> atoms,
@@ -246,10 +288,10 @@ static ffi::Error ERICoefficientProduct(ffi::BufferR2<ffi::S32> atoms,
     driver.finite(vector.typed_data(),vector.element_count());
     double* output=result->typed_data();std::fill(output,output+result->element_count(),0.);
     const double* left=second ? direction.typed_data():nullptr;
-    if constexpr (transpose) parallel_vjp(driver,output,[&](auto& local,double* out) {
-      local.transpose(left,vector.typed_data(),out);
+    parallel_eri_basis<transpose>(driver,output,[&](auto& local,double* out) {
+      if constexpr (transpose) local.transpose(left,vector.typed_data(),out);
+      else local.directional(second ? left:vector.typed_data(),second ? vector.typed_data():nullptr,out);
     });
-    else driver.directional(second ? left:vector.typed_data(),second ? vector.typed_data():nullptr,output);
     return ffi::Error::Success();
   } catch (const std::invalid_argument& e) {return ffi::Error::InvalidArgument(e.what());}
     catch (const std::exception& e) {return ffi::Error::Internal(e.what());}
@@ -282,10 +324,9 @@ static ffi::Error ERIExponentProduct(ffi::BufferR2<ffi::S32> atoms,
     else {driver.check_vector(vector,driver.count);driver.check_integrals(*result);}
     driver.finite(vector.typed_data(),vector.element_count());
     double* output=result->typed_data();std::fill(output,output+result->element_count(),0.);
-    if constexpr (transpose) parallel_vjp(driver,output,[&](auto& local,double* out) {
-      local.template apply<true>(vector.typed_data(),out);
+    parallel_eri_basis<transpose>(driver,output,[&](auto& local,double* out) {
+      local.template apply<transpose>(vector.typed_data(),out);
     });
-    else driver.template apply<false>(vector.typed_data(),output);
     return ffi::Error::Success();
   } catch (const std::invalid_argument& e) {return ffi::Error::InvalidArgument(e.what());}
     catch (const std::exception& e) {return ffi::Error::Internal(e.what());}
