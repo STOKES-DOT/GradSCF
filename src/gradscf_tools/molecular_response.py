@@ -1,8 +1,9 @@
 """A molecular energy E(R,F) for small, fully relaxed derivative examples.
 
-All electronic solves use GradSCF's shared orbital optimizer and implicit
-response. This adapter only assembles moving molecular inputs and the electric
-field interaction. It contains no SCF, response or diagonalization algorithm.
+Stationary states use GradSCF's shared orbital optimizer and implicit response.
+An optional existing DIIS solve supplies the numerical orbital seed. This
+adapter assembles moving molecular inputs and the electric field interaction;
+it contains no SCF, response or diagonalization algorithm.
 """
 from dataclasses import replace
 
@@ -28,6 +29,9 @@ class MolecularEnergy:
     The initial orbitals seed each forward solve; they are not a frozen density.
     Every call transports the AO metric and relaxes the orbitals again. The
     implicit backward follows this stationary branch, including in nested AD.
+    ``forward="scf"`` optionally prepares a stopped DIIS orbital seed for a
+    restricted implicit solve. The final stationary equations and response
+    remain the same live orbital minimization as ``forward="minimize"``.
 
     Full native ERIs are the default geometry-AD representation. HF may opt
     into ``jk_backend="direct"`` to use moving native J/K without AO ERIs.
@@ -39,8 +43,10 @@ class MolecularEnergy:
     grid convergence must be checked for each demonstrated observable.
     """
 
-    def __init__(self, mf, *, mode="implicit", gradient_tolerance=1e-9,
+    def __init__(self, mf, *, mode="implicit", forward="minimize", gradient_tolerance=1e-9,
                  jk_backend="full", max_memory=None, reserved_bytes=0):
+        if forward not in ("minimize", "scf"):
+            raise ValueError("forward must be 'minimize' or 'scf'.")
         if jk_backend not in ("full", "direct"):
             raise ValueError("jk_backend must be 'full' or 'direct'.")
         self.max_memory = None if max_memory is None else validate_memory_mb(max_memory)
@@ -85,6 +91,17 @@ class MolecularEnergy:
         self.gradient_tolerance = gradient_tolerance
         self.differentiation = scf.SCFDifferentiationConfig(
             mode=mode, tolerance=1e-10, max_iter=100, restart=40)
+        self.forward = forward
+        if forward == "scf":
+            if self.unrestricted or self.differentiation.mode != "implicit":
+                raise ValueError("forward='scf' requires a restricted implicit solve.")
+            self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
+            if self.max_memory is not None:
+                self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
+            self.nelectron = int(np.sum(occupations))
+            self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
+                                                        np.flatnonzero(occupations == 0)])
+            self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
         topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
         self.plan = integrals.make_plan(topology)
         distances = np.linalg.norm(np.asarray(self.parameters.centers)[:, None]
@@ -167,8 +184,10 @@ class MolecularEnergy:
             eri = data.eri if data.eri is not None else data.eri_pair_matrix
             enuc = data.nuclear_repulsion
             ao, dao, weights = data.ao, data.ao_deriv1, data.grid_weights
+            if data.grid_ao is not None:
+                extra["grid_ao"] = data.grid_ao
             if self.rsh is not None:
-                extra = dict(eri_lr=data.eri_lr, dispersion_energy=data.dispersion_energy)
+                extra.update(eri_lr=data.eri_lr, dispersion_energy=data.dispersion_energy)
         if potential is not None:
             hcore = hcore+.5*(potential+potential.T)
         if has_field:
@@ -181,19 +200,37 @@ class MolecularEnergy:
         """Return the relaxed array-valued state, retaining its implicit response."""
         return self.solve_with_inputs(coordinates, field, potential=potential)[0]
 
+    def _scf_seed(self, inputs):
+        """Use existing DIIS only for the numerical seed, before implicit AD."""
+        from gradscf.scf.orbital_optimization import _orthonormalize
+        from gradscf.scf.rks import run_rks_from_integrals_traceable
+
+        numerical, coefficients = jax.tree.map(jax.lax.stop_gradient, (inputs, self.coefficients))
+        reordered = self.scf_order != tuple(range(coefficients.shape[-1]))
+        if reordered:
+            coefficients = coefficients[:, jnp.asarray(self.scf_order)]
+        coefficients = _orthonormalize(coefficients[None], numerical["overlap"])[0]
+        coefficients = run_rks_from_integrals_traceable(
+            **numerical, nelectron=self.nelectron,
+            init_mo_coeff=coefficients, config=self.scf_config).mo_coeff
+        if reordered:
+            coefficients = coefficients[:, jnp.asarray(self.scf_inverse)]
+        return jax.lax.stop_gradient(coefficients)
+
     def solve_with_inputs(self, coordinates, field=None, *, potential=None):
         """Return ``(state, inputs)`` from one assembly for downstream response."""
         inputs = self.inputs(coordinates, field, potential=potential)
+        coefficients = self._scf_seed(inputs) if self.forward == "scf" else self.coefficients
         minimize = scf.minimize_uks_from_integrals if self.unrestricted else scf.minimize_roks_from_integrals
         options = dict(direct_scf_workers=self.direct_scf_workers) if self.jk_backend == "direct" else {}
         if self.max_memory is not None:
             options.update(max_memory=self.max_memory,
                 reserved_bytes=self.reserved_bytes+tree_storage_bytes(
                     self._memory_inputs(), coordinates, field, potential,
-                    exclude=(inputs, self.coefficients, self.occupations)))
+                    exclude=(inputs, coefficients, self.occupations)))
         state = minimize(
             **inputs, xc_spec=self.xc,
-            mo_coeff=self.coefficients, mo_occ=self.occupations,
+            mo_coeff=coefficients, mo_occ=self.occupations,
             orthonormalize_initial=True, max_iterations=300,
             gradient_tolerance=self.gradient_tolerance, differentiation=self.differentiation, **options)
         return state, inputs
