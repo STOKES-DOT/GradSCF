@@ -5,18 +5,19 @@ from functools import lru_cache
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.scipy.linalg import solve_triangular
 from gradscf import scf
 from gradscf.integrals.backends.native.jk import ProjectedNativeDirectBasis
 from gradscf.integrals.molecular.jk import build_jk_from_df
 from gradscf.solvers.nonlinear import ImplicitFixedPointConfig, implicit_fixed_point_solution
-from gradscf.scf.core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
+from gradscf.scf.core import _build_density_from_occ, _restricted_density_from_fock, _diagonalize_fock, _orthogonalizer
 from gradscf.scf.rks import RKSConfig,run_rks_from_integrals_traceable
 from gradscf.model.nnao import prepare_basis
 
 from ..integrals.fixed_exponents import contracted_one_electron, physical_inputs
 
-def _run_scf_with_rescue(solver,kwargs,config,*,rescue_level_shift):
-    """Use shifted iterations only after failure, then solve the raw problem."""
+def _run_scf_with_rescue(solver,kwargs,config,*,rescue_level_shift,fallback_guess=None):
+    """Bounded shifted/damped restarts, always polished on the raw problem."""
     primary=solver(**kwargs,config=config)
     unchanged=(primary,jnp.asarray(False),primary.cycles)
     if rescue_level_shift==0.:return unchanged
@@ -25,7 +26,26 @@ def _run_scf_with_rescue(solver,kwargs,config,*,rescue_level_shift):
         polished=solver(**dict(kwargs,init_density=shifted.density_matrix,
             init_mo_coeff=shifted.mo_coeff,init_mo_energy=shifted.mo_energy),config=config)
         return polished,jnp.asarray(True),previous.cycles+shifted.cycles+polished.cycles
-    return jax.lax.cond(primary.converged,lambda _:unchanged,rescue,primary)
+    first=jax.lax.cond(primary.converged,lambda _:unchanged,rescue,primary)
+    def damped_rescue(previous):
+        _,_,cycles=previous
+        shifted=solver(**kwargs,config=replace(config,level_shift=.5,damping=.2))
+        polished=solver(**dict(kwargs,init_density=shifted.density_matrix,
+            init_mo_coeff=shifted.mo_coeff,init_mo_energy=shifted.mo_energy),config=config)
+        return polished,jnp.asarray(True),cycles+shifted.cycles+polished.cycles
+    second=jax.lax.cond(first[0].converged,lambda state:state,damped_rescue,first)
+    if fallback_guess is None:return second
+    def atomic_rescue(previous):
+        atomic_kwargs=dict(kwargs,init_density=fallback_guess(),init_mo_coeff=None,init_mo_energy=None)
+        result=solver(**atomic_kwargs,config=config)
+        state=(result,jnp.asarray(True),previous[2]+result.cycles)
+        def shifted_atomic_rescue(state):
+            shifted=solver(**atomic_kwargs,config=replace(config,level_shift=rescue_level_shift))
+            polished=solver(**dict(kwargs,init_density=shifted.density_matrix,
+                init_mo_coeff=shifted.mo_coeff,init_mo_energy=shifted.mo_energy),config=config)
+            return polished,jnp.asarray(True),state[2]+shifted.cycles+polished.cycles
+        return jax.lax.cond(result.converged,lambda state:state,shifted_atomic_rescue,state)
+    return jax.lax.cond(second[0].converged,lambda state:state,atomic_rescue,second)
 
 class NonfiniteGradientError(RuntimeError):
     """Keep the failed backward arrays alongside its already validated primal."""
@@ -36,18 +56,35 @@ class NonfiniteGradientError(RuntimeError):
 
 @lru_cache(maxsize=32)
 def _df_rhf_solver(nelectron,implicit_tolerance,rescue_level_shift):
-    """Cache SCF/response by algorithm configuration; integrals are operands."""
+    """Cache SCF/response with an orthonormal density as the implicit state.
+
+    The invertible Cholesky transform retains every AO. Its overlap derivative
+    stays in the physical input graph, including for higher-order response.
+    Residual acceptance uses this orthonormal metric; the AO norm is diagnostic.
+    """
     cfg=RKSConfig(xc_spec='hf',jk_backend='df',max_cycle=150,
                   conv_tol=1e-12,conv_tol_density=1e-10,conv_tol_grad=1e-9)
 
-    def value(inputs,nuclear_energy):
-        s,h,factors=inputs;n=s.shape[0]
+    def value(inputs,nuclear_energy,atomic_guess=None,init_density=None):
+        ao_overlap,h,factors=inputs;n=ao_overlap.shape[0]
+        lower=jnp.linalg.cholesky(ao_overlap)
+        s=jnp.eye(n,dtype=ao_overlap.dtype)
+        transform=solve_triangular(lower.T,s,lower=False)
+        h=transform.T@h@transform
+        factors=transform.T@factors@transform
+        physical=(s,h,factors)
         mo_occ=jnp.zeros(n,dtype=s.dtype).at[:nelectron//2].set(2.)
         kwargs=dict(overlap=s,hcore=h,eri=None,df_factors=factors,
             nelectron=nelectron,nuclear_repulsion=nuclear_energy,
             ao=jnp.zeros((0,n)),ao_deriv1=jnp.zeros((4,0,n)),grid_weights=jnp.zeros(0))
+        if init_density is not None:
+            # The search seed selects a branch; physical derivatives use the fixed point.
+            kwargs['init_density']=jax.lax.stop_gradient(lower.T@init_density@lower)
+        from .initial_guess import atomic_density_guess
+        fallback=None if atomic_guess is None else lambda:jax.lax.stop_gradient(
+            lower.T@atomic_density_guess(ao_overlap,*atomic_guess)@lower)
         result,rescued,cycles=_run_scf_with_rescue(run_rks_from_integrals_traceable,
-            kwargs,cfg,rescue_level_shift=rescue_level_shift)
+            kwargs,cfg,rescue_level_shift=rescue_level_shift,fallback_guess=fallback)
         initial_scf_energy=result.total_energy
         from gradscf.scf.stability import stabilize_df_rhf
         result,stability=stabilize_df_rhf(result,**kwargs,config=cfg)
@@ -56,22 +93,23 @@ def _df_rhf_solver(nelectron,implicit_tolerance,rescue_level_shift):
         def fixed_point(density,physical):
             overlap,core,df=physical
             j,k=build_jk_from_df(df,density)
-            _,coeff=_diagonalize_fock(core+j-.5*k,
-                                     _orthogonalizer(overlap,cfg.orthogonalization_eps))
-            return _build_density_from_occ(coeff,mo_occ)
+            return _restricted_density_from_fock(core+j-.5*k,
+                _orthogonalizer(overlap,cfg.orthogonalization_eps),nelectron//2)
 
-        density=implicit_fixed_point_solution(inputs,solution=result.density_matrix,
+        density=implicit_fixed_point_solution(physical,solution=result.density_matrix,
             fixed_point=fixed_point,
             config=ImplicitFixedPointConfig(tolerance=implicit_tolerance,max_iter=100,restart=40),
             converged=result.converged & stability['stable'],require_converged=True)
         j,k=build_jk_from_df(factors,density);fock=h+j-.5*k
         energy=jnp.sum(density*h)+.5*jnp.sum(density*j)-.25*jnp.sum(density*k)+nuclear_energy
         _,coeff=_diagonalize_fock(fock,_orthogonalizer(s,cfg.orthogonalization_eps))
+        delta=_build_density_from_occ(coeff,mo_occ)-density
         info=dict(converged=result.converged,scf_cycles=result.cycles,
             rescue_used=rescued,total_scf_cycles=cycles,
-            fixed_point_residual=jnp.linalg.norm(_build_density_from_occ(coeff,mo_occ)-density),
+            fixed_point_residual=jnp.linalg.norm(delta),
+            ao_fixed_point_residual=jnp.linalg.norm(transform@delta@transform.T),
             orbital_residual=jnp.linalg.norm(fock@density@s-s@density@fock),
-            min_overlap_eigenvalue=jnp.linalg.eigvalsh(s)[0],
+            min_overlap_eigenvalue=jnp.linalg.eigvalsh(ao_overlap)[0],
             reconstruction_error=jnp.abs(energy-result.total_energy))
         info.update(stability)
         info['initial_scf_energy']=initial_scf_energy

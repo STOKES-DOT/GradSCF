@@ -29,6 +29,7 @@ from .rks import (
     _apply_optional_fock_damping,
     _apply_optional_level_shift,
     _build_jk,
+    _df_jk_with_orbital_hint,
     _diagonalize_fock,
     _diis_extrapolate,
     _orthonormal_diis_error,
@@ -243,11 +244,10 @@ def _spin_jk_matrices(
                 projected = jnp.matmul(factors, density, precision=Precision.HIGHEST)
                 k_mat = jnp.einsum("Qps,Qqs->pq", projected, factors, precision=Precision.HIGHEST)
             else:
-                weighted = jnp.asarray(coeff, dtype=factors.dtype) * jnp.sqrt(
-                    jnp.maximum(jnp.asarray(occ, dtype=factors.dtype), 0.0)
-                )[None, :]
-                b_occ = jnp.einsum("Qpr,ri->Qpi", factors, weighted, precision=Precision.HIGHEST)
-                k_mat = jnp.einsum("Qpi,Qqi->pq", b_occ, b_occ, precision=Precision.HIGHEST)
+                _, k_mat = _df_jk_with_orbital_hint(
+                    factors, density, jnp.asarray(coeff, dtype=factors.dtype),
+                    jnp.asarray(occ, dtype=factors.dtype), int(coeff.shape[-1]),
+                )
             return 0.5 * (k_mat + k_mat.T)
 
         k_a = _k_from_density_or_orbitals(density_a, mo_coeff_a, mo_occ_a)

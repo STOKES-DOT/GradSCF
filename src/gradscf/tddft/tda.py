@@ -12,9 +12,9 @@ from collections.abc import Callable
 
 import jax.numpy as jnp
 
-from .defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
-from .defaults import PYSCF_TD_DAVIDSON_TOL
-from .defaults import PYSCF_TD_POSITIVE_EIG_THRESHOLD
+from .defaults import TD_DAVIDSON_MAX_CYCLE
+from .defaults import TD_DAVIDSON_TOL
+from .defaults import TD_POSITIVE_EIG_THRESHOLD
 from ..solvers.eigen.response import (
     EigenGradientMode,
 )

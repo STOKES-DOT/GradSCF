@@ -66,6 +66,38 @@ class StabilityAttempt:
     accepted: bool = False
 
 
+def _df_rhf_orbital_curvature(hcore, factors, coeff, nocc):
+    """Real occupied-virtual energy gradient and exact origin Hessian action.
+
+    For the existing convention kappa[i,a]=x[i,a], dC_occ=-C_vir x.T.
+    Hence dD=-2(C_occ x C_vir.T + transpose), g=-4 F_ov and
+    Hx=4(x F_vv - F_oo x - C_occ.T dF C_vir), with dF=J[dD]-K[dD]/2.
+    This equals the Cayley-energy Hessian at zero even away from stationarity;
+    no canonical-orbital approximation or four-index ERI is needed.
+    """
+    from ..integrals.molecular.jk import build_jk_from_df
+    occupied = coeff[:, :nocc]
+    density = 2*occupied@occupied.T
+    j, k = build_jk_from_df(factors, density)
+    fock = coeff.T@(hcore+j-.5*k)@coeff
+    gradient = -4*fock[:nocc, nocc:].reshape(-1)
+    # Transform three-index factors once. Davidson then applies the response
+    # in occupied/virtual blocks instead of rebuilding full AO J/K per vector.
+    mo = jnp.einsum('pi,Qpq,qj->Qij', coeff, factors, coeff,
+                    precision=jax.lax.Precision.HIGHEST)
+    oo, ov, vv = mo[:, :nocc, :nocc], mo[:, :nocc, nocc:], mo[:, nocc:, nocc:]
+
+    def apply(vector):
+        x = vector.reshape(nocc, coeff.shape[1]-nocc)
+        precision = jax.lax.Precision.HIGHEST
+        rho = jnp.einsum('Qia,ia->Q', ov, x, precision=precision)
+        response = -4*jnp.einsum('Qia,Q->ia', ov, rho, precision=precision)
+        response += jnp.einsum('Qij,jb,Qba->ia', oo, x, vv, precision=precision)
+        response += jnp.einsum('Qib,jb,Qja->ia', ov, x, ov, precision=precision)
+        return (4*(x@fock[nocc:, nocc:]-fock[:nocc, :nocc]@x-response)).reshape(-1)
+    return gradient, apply
+
+
 def stabilize_df_rhf(result, *, max_restarts=4, stability_tol=1e-5,
                      eigensolver_tol=1e-7, step_sizes=(.5, 1.), **scf_inputs):
     """JIT-compatible real internal RHF check and bounded negative-mode escape.
@@ -74,11 +106,13 @@ def stabilize_df_rhf(result, *, max_restarts=4, stability_tol=1e-5,
     to the original physical inputs. Unresolved curvature or exhausted retries
     return stable=False, never a silent successful fallback. Small orbital
     spaces use a dense Hessian; larger spaces use HVP/Davidson estimates.
+    An unresolved Davidson solve gets one larger, bounded search with more
+    initial directions at the same residual tolerance, for clustered roots.
+    If that remains unresolved, the standard dense-solver budget permits an
+    orbital Hessian up to 2048 dimensions (32 MiB) at the same tolerance.
     Neither path materializes four-index ERIs.
     """
     from .rks import run_rks_from_integrals_traceable
-    from ..integrals.molecular.jk import build_jk_from_df
-
     steps = _follow_controls(max_restarts, step_sizes, 1e-10)
     cfg = scf_inputs['config']
     if cfg.xc_spec.lower() != 'hf' or cfg.jk_backend != 'df':
@@ -91,7 +125,7 @@ def stabilize_df_rhf(result, *, max_restarts=4, stability_tol=1e-5,
     data = {**scf_inputs, **{k: jax.lax.stop_gradient(scf_inputs[k]) for k in keys}}
     for key in ('init_density','init_mo_coeff','init_mo_energy','init_mo_occ'):
         data.pop(key,None)
-    s,h,b,enuc = (data[k] for k in keys)
+    s,h,b = (data[k] for k in keys[:3])
     if jnp.iscomplexobj(s) or jnp.iscomplexobj(result.mo_coeff) or data['nelectron'] % 2:
         raise ValueError('DF-RHF stability requires real closed-shell inputs.')
     n = s.shape[0]; no = int(data['nelectron'])//2
@@ -99,43 +133,60 @@ def stabilize_df_rhf(result, *, max_restarts=4, stability_tol=1e-5,
         raise ValueError('Invalid DF-RHF closed-shell electron count.')
     occ = (1.,)*no + (0.,)*(n-no)
     expected_occ = 2*jnp.asarray(occ)
-    dimension, rotate, density_from = _rotation_functions('roks', (occ,occ))
+    dimension, rotate, _ = _rotation_functions('roks', (occ,occ))
     if not dimension:
         valid = result.converged & jnp.all(result.mo_occ == expected_occ)
         return result, dict(stable=valid, minimum_curvature=jnp.asarray(0.,s.dtype),
                             stability_restarts=jnp.asarray(0), stability_resolved=valid,
-                            stability_scf_cycles=jnp.asarray(0))
-    origin = jnp.zeros(dimension, s.dtype)
-
-    def energy(angles, coeff):
-        d = jnp.sum(density_from(rotate(angles, coeff[None])), axis=0)
-        j,k = build_jk_from_df(b,d)
-        return jnp.sum(d*h)+.5*jnp.sum(d*j)-.25*jnp.sum(d*k)+enuc
-
+                            stability_scf_cycles=jnp.asarray(0),
+                            stability_eigen_residual=jnp.asarray(0.,s.dtype),
+                            stability_eigensolver_retries=jnp.asarray(0),
+                            stability_dense_fallback=jnp.asarray(False))
     def analyze(current):
-        gradient,apply = jax.linearize(jax.grad(lambda x:energy(x,current.mo_coeff)),origin)
+        gradient,apply = _df_rhf_orbital_curvature(h,b,current.mo_coeff,no)
         diagonal = _orbital_gap_diagonal('roks', (tuple(2*x for x in occ),),
             current.mo_coeff[None], current.fock_matrix[None])
         operator = LinearOperator((dimension,dimension),s.dtype,apply,diagonal=diagonal,
                                   matmat=jax.vmap(apply,in_axes=1,out_axes=1))
-        solved = solve_hermitian(operator,config=EigenSolverConfig(
+        eigen_config = EigenSolverConfig(
             method='dense' if dimension<=128 else 'davidson',nroots=min(3,dimension),
             atol=eigensolver_tol,maxiter=100,max_subspace=min(40,dimension),
-            initial_guess_count=min(8,dimension)))
+            initial_guess_count=min(8,dimension))
+        solved = solve_hermitian(operator,config=eigen_config)
+        retry = jnp.asarray(False)
+        dense_retry = jnp.asarray(False)
+        if dimension > 128:
+            retry = ~jnp.all(solved.converged)
+            solved = jax.lax.cond(retry,
+                lambda _: solve_hermitian(operator,config=replace(eigen_config,
+                    maxiter=500,max_subspace=min(160,dimension),
+                    initial_guess_count=min(16,dimension))),
+                lambda _: solved,None)
+            if dimension <= eigen_config.max_dense:
+                dense_retry = ~jnp.all(solved.converged)
+                def dense_rescue(_):
+                    # Bound DF intermediates by applying one Hessian column at
+                    # a time; only the orbital Hessian itself is materialized.
+                    bounded = replace(operator,matmat=lambda vectors:jax.lax.map(apply,vectors.T).T)
+                    return solve_hermitian(bounded,config=replace(eigen_config,method='dense'))
+                solved = jax.lax.cond(dense_retry,dense_rescue,lambda _:solved,None)
+        diagnostics = dict(stability_eigen_residual=jnp.max(solved.residual_norms),
+                           stability_eigensolver_retries=retry.astype(jnp.int32)+dense_retry.astype(jnp.int32),
+                           stability_dense_fallback=dense_retry)
         resolved = (current.converged & jnp.all(current.mo_occ == expected_occ) & jnp.all(solved.converged)
             & jnp.all(jnp.isfinite(solved.values))
             & (jnp.linalg.norm(gradient) <= 1e-7))
         minimum = solved.values[0]
-        return resolved & (minimum >= -stability_tol),minimum,solved.vectors[:,0],resolved
+        return resolved & (minimum >= -stability_tol),minimum,solved.vectors[:,0],resolved,diagnostics
 
-    stable,minimum,direction,resolved = analyze(result)
+    stable,minimum,direction,resolved,diagnostics = analyze(result)
     signed_steps = jnp.asarray([sign*step for step in steps for sign in (1.,-1.)],s.dtype)
     def condition(state):
-        _,stable,_,_,resolved,count,improved,_ = state
+        _,stable,_,_,resolved,count,improved,_,_ = state
         return (~stable) & resolved & improved & (count < max_restarts)
 
     def escape(state):
-        current,_,_,direction,_,count,_,cycles = state
+        current,_,_,direction,_,count,_,cycles,_ = state
         def trial(carry, step):
             best,cycles = carry
             c = rotate(step*direction,current.mo_coeff[None])[0]
@@ -146,13 +197,14 @@ def stabilize_df_rhf(result, *, max_restarts=4, stability_tol=1e-5,
             return (jax.lax.cond(accept,lambda _:candidate,lambda _:best,None),
                     cycles+candidate.cycles),None
         (best,cycles),_ = jax.lax.scan(trial,(current,cycles),signed_steps)
-        stable,minimum,direction,resolved = analyze(best)
-        return best,stable,minimum,direction,resolved,count+1,best.total_energy<current.total_energy-1e-10,cycles
+        stable,minimum,direction,resolved,diagnostics = analyze(best)
+        return best,stable,minimum,direction,resolved,count+1,best.total_energy<current.total_energy-1e-10,cycles,diagnostics
 
-    result,stable,minimum,_,resolved,count,_,cycles = jax.lax.while_loop(condition,escape,
-        (result,stable,minimum,direction,resolved,jnp.asarray(0),jnp.asarray(True),jnp.asarray(0)))
+    result,stable,minimum,_,resolved,count,_,cycles,diagnostics = jax.lax.while_loop(condition,escape,
+        (result,stable,minimum,direction,resolved,jnp.asarray(0),jnp.asarray(True),jnp.asarray(0),diagnostics))
     return result,dict(stable=stable,minimum_curvature=minimum,
-                       stability_restarts=count,stability_resolved=resolved,stability_scf_cycles=cycles)
+                       stability_restarts=count,stability_resolved=resolved,stability_scf_cycles=cycles,
+                       **diagnostics)
 
 
 def _curvature_check(

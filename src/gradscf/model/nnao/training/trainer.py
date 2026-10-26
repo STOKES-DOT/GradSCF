@@ -203,13 +203,29 @@ def run_training(initial, evaluate, optimizer, output_dir, identity, *, epochs, 
     _pilot.atomic_json(directory / 'progress.json', summary)
     return summary
 
+def trainable_parameter_mask(parameters):
+    """Flatten NNX mutability metadata in the same order as ravel_pytree."""
+    import jax
+    return np.concatenate([np.full(leaf.size, variable.get_metadata().get('is_mutable', True), dtype=bool)
+        for _, variable in parameters.flat_state() for leaf in jax.tree.leaves(variable)])
+
+
 class Adam:
-    def __init__(self, learning_rate, *, final_learning_rate=None, epochs=1000):
+    def __init__(self, learning_rate, *, final_learning_rate=None, epochs=1000,
+                 trainable_mask=None,decay_steps=None,decay_factor=.5):
         import jax
         import optax
         from flax import serialization
         self.jax = jax; self.serialization = serialization
-        if final_learning_rate is not None:
+        self._parameter_mask = (None if trainable_mask is None
+                                else np.array(trainable_mask, dtype=bool, copy=True))
+        if final_learning_rate is not None and decay_steps is not None:
+            raise ValueError('Choose cosine or staircase learning rate, not both.')
+        if decay_steps is not None:
+            if isinstance(decay_steps,bool) or int(decay_steps)!=decay_steps or decay_steps<1 or not 0<decay_factor<=1:
+                raise ValueError('Staircase decay requires positive integer steps and a factor in (0, 1].')
+            self.schedule=optax.exponential_decay(learning_rate,int(decay_steps),decay_factor,staircase=True)
+        elif final_learning_rate is not None:
             if not 0 < final_learning_rate <= learning_rate or epochs < 1:
                 raise ValueError('Cosine learning rates require 0 < final <= initial and positive epochs.')
             self.schedule = optax.cosine_decay_schedule(learning_rate, epochs,
@@ -217,19 +233,26 @@ class Adam:
         else:
             self.schedule = lambda count: learning_rate
         self.transform = optax.chain(optax.clip_by_global_norm(1.), optax.adam(
-            self.schedule if final_learning_rate is not None else learning_rate))
+            self.schedule if final_learning_rate is not None or decay_steps is not None else learning_rate))
         self.step = jax.jit(self._step)
 
     def learning_rate_at(self, count):
         return float(self.schedule(count))
 
     def init(self, vector):
+        if self._parameter_mask is not None and self._parameter_mask.shape != np.shape(vector):
+            raise ValueError('Trainable mask must match the parameter vector.')
         return self.transform.init(self.jax.numpy.asarray(vector))
 
     def _step(self, vector, gradient, state):
         import optax
+        if self._parameter_mask is not None:
+            gradient = self.jax.numpy.where(self._parameter_mask, gradient, 0.)
         updates, state = self.transform.update(gradient, state, vector)
-        return optax.apply_updates(vector, updates), state
+        candidate = optax.apply_updates(vector, updates)
+        if self._parameter_mask is not None:
+            candidate = self.jax.numpy.where(self._parameter_mask, candidate, vector)
+        return candidate, state
 
     def update(self, vector, gradient, state):
         return self.step(self.jax.numpy.asarray(vector), self.jax.numpy.asarray(gradient), state)
@@ -240,18 +263,14 @@ class Adam:
     def decode(self, data, template):
         return self.serialization.from_bytes(template, data)
 
-def make_evaluators(rows, args, jax, experiment_class):
+def make_mace_predictor(seed, model_config, *, return_mask=False):
+    """Flat trainable MACE state with shared prediction and parameter VJP."""
+    import jax
     from flax import nnx
     from jax.flatten_util import ravel_pytree
-    from gradscf.data.molecule import atomic_number
-    from gradscf.model.nnao import MACEBasisModel, build_graph
-    model_config = dict(elements=(1, 6, 7, 8, 9), channels=8, num_interactions=2,
-        max_ell=1, correlation=2, zero_init=True, basis_family='szp663_direct')
-    model = MACEBasisModel(**model_config, rngs=nnx.Rngs(args.seed))
-    import mace_jax
-    vendor = _pilot.vendor_directory()
-    if not Path(mace_jax.__file__).resolve().is_relative_to(vendor):
-        raise RuntimeError(f'MACE source mismatch: imported {mace_jax.__file__}; expected {vendor}.')
+    from gradscf.model.nnao import MACEBasisModel
+    _pilot.verify_mace_source()
+    model = MACEBasisModel(**model_config, rngs=nnx.Rngs(seed))
     definition, parameters, other = nnx.split(model, nnx.Param, ...)
     initial, unravel = ravel_pytree(parameters)
     if str(initial.dtype) != 'float64':
@@ -265,6 +284,18 @@ def make_evaluators(rows, args, jax, experiment_class):
     def backward(vector, graph, cotangent):
         return jax.vjp(lambda value: predict(value, graph), vector)[1](cotangent)[0]
 
+    if return_mask:
+        return initial, predict, backward, trainable_parameter_mask(parameters)
+    return initial, predict, backward
+
+
+def make_evaluators(rows, args, jax, experiment_class):
+    from gradscf.data.molecule import atomic_number
+    from gradscf.model.nnao import build_graph
+    from ..config import MODEL_CONFIG
+    model_config = dict(MODEL_CONFIG)
+    initial, predict, backward = make_mace_predictor(args.seed, model_config)
+
     evaluators = []; value_evaluators = []; manifests = {}
     for row in rows:
         path = _pilot.cache_location(args.cache_dir, row)
@@ -276,7 +307,7 @@ def make_evaluators(rows, args, jax, experiment_class):
             implicit_tolerance=args.implicit_tolerance, cache_storage=args.cache_storage,
             scf_rescue_level_shift=args.scf_rescue_level_shift)
         graph = build_graph([atomic_number(symbol) for symbol in experiment.symbols],
-                            experiment.coords, element_order=model.elements)
+                            experiment.coords, element_order=model_config['elements'])
         if str(experiment.ps.dtype) != 'float64':
             raise RuntimeError('RHF integral arrays must use float64.')
         def evaluate(vector, graph=graph, experiment=experiment):
