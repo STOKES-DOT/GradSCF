@@ -70,7 +70,7 @@ def main():
         import jax
         import jax.numpy as jnp
         from gradscf import integrals
-        from gradscf.integrals._native import diagnostics
+        from gradscf.integrals._native import diagnostics, register_integrals
         from gradscf.integrals.backends.native.autodiff.eri_basis import evaluate_eri_basis
         from gradscf.integrals.backends.native.autodiff.geometry import evaluate_geometry
         from probes import CounterAdapter, counted_call
@@ -79,6 +79,10 @@ def main():
         cpu = jax.devices('cpu')[0]
         jax.config.update('jax_default_device', cpu)
         ready = jax.block_until_ready
+        tick = time.perf_counter()
+        register_integrals()
+        report['library_load_seconds'] = time.perf_counter()-tick
+        report['timing_contract'] += '; library loading reported separately before kernel preparation'
         counter = CounterAdapter(diagnostics.reset_counts, diagnostics.get_counts) if args.counts else None
         if counter is not None:
             report['native'] = {k: x for k, x in counter.snapshot().items() if k != 'families'}
