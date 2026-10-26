@@ -445,7 +445,7 @@ def g0w0_cd_restricted(
         freqs=freqs,
         wts=wts,
         ef=ef,
-        eta=float(eta),
+        eta=eta,
         delta_v=delta_v,
         nocc=nocc,
         orbs=orbs,

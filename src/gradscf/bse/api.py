@@ -1,12 +1,18 @@
 """Eager molecular BSE facade; functional numerical path is run_bse."""
 
 from dataclasses import fields
+import jax
 import numpy as np
 from .types import BSEConfig
 from .space import make_bse_space, SpinBSESpace
 from .reference import reference_from_source, source_signature
 from .response import run_bse
 from .properties import transition_dipoles, oscillator_strengths, polarizability, absorption_cross_section
+
+
+# Iterative operators close over dynamic spectra/factors during tracing. Keep
+# that trace stable across newly constructed references, spaces and facades.
+_run_bse_numerics = jax.jit(run_bse, static_argnames=("space", "screening_space", "config"))
 
 
 class BSE:
@@ -86,7 +92,8 @@ class BSE:
                     raise ValueError(
                         "Every selected BSE level requires an actually computed, converged QP energy"
                     )
-        self.result = run_bse(
+        numerical = run_bse if cfg.solver == "dense" else _run_bse_numerics
+        self.result = numerical(
             ref.qp_energy,
             ref.screening_energy,
             ref.mo_factors,
