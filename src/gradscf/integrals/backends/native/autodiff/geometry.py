@@ -23,12 +23,16 @@ import numpy as np
 from ..ffi import (evaluate as evaluate_values, evaluate_eri_slab as evaluate_slab_values,
                    evaluate_compact,
                    _OPERATORS, _eri_shell_slice, _eri_slab_inputs)
+from ...._native import register_integrals
 from .common import batch_product, register_cpu_product
 
 
 @lru_cache(maxsize=64)
 def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=None, slab_shape=None,
                        compact_layout=None):
+    # A derivative-only trace can eliminate the opaque bounded primal. Do not
+    # rely on that primal's eager implementation to register the FFI handlers.
+    register_integrals()
     atoms = np.asarray(atoms_key, dtype=np.int32)
     basis = np.asarray(basis_key, dtype=np.int32)
     offsets = atoms[:, 1, None]+np.arange(3)[None, :]
