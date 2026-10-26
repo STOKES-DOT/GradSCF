@@ -18,6 +18,13 @@ import jax.numpy as jnp
 import numpy as np
 from gradscf import integrals
 from gradscf.integrals.backends.native.autodiff.geometry import evaluate_eri_slab
+if INSTALLED:
+    import importlib.util
+    from pathlib import Path
+    import sys
+    import gradscf
+    assert importlib.util.find_spec('pyscf') is None
+    assert Path(gradscf.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
 
 top, p = integrals.prepare_basis('H 0 0 0; H 0 0 1.4',
     {'H': [[0, [.8, 1.]]]}, unit='Bohr', cart=True)
@@ -59,8 +66,9 @@ else:
     actual = jnp.vdot(actual, direction)
 np.testing.assert_allclose(actual, expected, atol=3e-8, rtol=3e-6)
 '''
-    code = 'LAYOUT='+repr(layout)+'\nPRODUCT='+repr(product)+'\n'+code
-    environment = dict(os.environ, PYTHONPATH=str(source),
+    installed = os.environ.get('GRADSCF_TEST_INSTALLED') == '1'
+    code = 'LAYOUT='+repr(layout)+'\nPRODUCT='+repr(product)+'\nINSTALLED='+repr(installed)+'\n'+code
+    environment = dict(os.environ, PYTHONPATH='' if installed else str(source),
                        JAX_PLATFORMS='cpu', JAX_ENABLE_X64='1')
     process = subprocess.run([sys.executable, '-c', code], env=environment,
                              capture_output=True, text=True, timeout=6000)
