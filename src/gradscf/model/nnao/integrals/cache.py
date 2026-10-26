@@ -1,20 +1,66 @@
 """Read-only fixed-primitive integral cache storage."""
 from pathlib import Path
+from functools import lru_cache
 import math
 import hashlib
 import json
 import struct
 import zipfile
 import numpy as np
+from ..runtime import file_hash
 
 
-def fixed_signature(layout, symbols, coords, basis_family, auxbasis, topology, parameters):
-    """Preserve the fixed-primitive cache identity used by accepted pilot runs."""
-    payload = dict(symbols=symbols, coords=coords.tolist(), basis=basis_family,
-                   auxbasis=auxbasis, cart=layout.topology.cart,
-                   angular_momenta=topology.angular_momenta,
-                   primitive_counts=topology.primitive_counts,
-                   exponents=[np.asarray(x).tolist() for x in parameters.exponents])
+_FIXED_CACHE_SCHEMA = "nnao-fixed-primitive-libcint-v3"
+
+
+@lru_cache(maxsize=32)
+def _hash_file(path, fingerprint):
+    """Memoize content hashes, never numerical integrals, by file identity."""
+    del fingerprint  # Its inode/timestamps/size participate in the LRU key.
+    return file_hash(path)
+
+
+def _source_hash(path):
+    path = Path(path).resolve()
+    stat = path.stat()
+    fingerprint = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+    return _hash_file(str(path), fingerprint)
+
+
+def _array_identity(value):
+    array = np.asarray(value)
+    return dict(dtype=array.dtype.str, shape=array.shape, values=array.tolist())
+
+
+def _basis_identity(topology, parameters):
+    return dict(cart=bool(topology.cart), angular_momenta=topology.angular_momenta,
+        primitive_counts=topology.primitive_counts, contraction_counts=topology.contraction_counts,
+        nuclear_charges=topology.nuclear_charges,
+        exponents=[_array_identity(x) for x in parameters.exponents],
+        coefficients=[_array_identity(x) for x in parameters.coefficients],
+        centers=_array_identity(parameters.centers), nuclear_coords=_array_identity(parameters.nuclear_coords))
+
+
+def fixed_signature(layout, symbols, coords, basis_family, auxbasis, topology, parameters,
+                    *, auxiliary_topology=None, auxiliary_parameters=None):
+    """Bind fixed primitive data and the libcint/normalization implementation.
+
+    Model theta and contracted coefficients in ``layout`` are applied after
+    this cache; only the supplied physical primitive snapshot enters its key.
+    Prepared auxiliary data are supplied by DF consumers, without evaluating
+    an integral or parsing an unrelated auxiliary basis on direct paths.
+    """
+    from gradscf.integrals import _native
+    from gradscf.integrals.basis import normalization
+
+    if (auxiliary_topology is None) != (auxiliary_parameters is None):
+        raise ValueError('Supply auxiliary topology and parameters together.')
+    auxiliary = (None if auxiliary_topology is None else
+                 _basis_identity(auxiliary_topology, auxiliary_parameters))
+    payload = dict(format=_FIXED_CACHE_SCHEMA, symbols=symbols, coords=_array_identity(coords),
+        basis=basis_family, auxbasis=auxbasis, primitive=_basis_identity(topology, parameters),
+        auxiliary=auxiliary, native_sha256=_source_hash(_native.register_integrals()._name),
+        normalization_sha256=_source_hash(normalization.__file__))
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -23,7 +69,8 @@ def read_fixed_cache(path, signature, storage):
     names = ('overlap', 'hcore', 'df_factors')
     with np.load(path, allow_pickle=False) as cache:
         if str(cache['signature'].item()) != signature:
-            raise ValueError('Integral cache does not match this geometry and basis.')
+            raise ValueError('Integral cache identity does not match this geometry, basis or libcint implementation; '
+                             'rebuild this cache.')
         if storage == 'mmap':
             return tuple(map_npz_numeric(path, name) for name in names)
         array = np.asarray if storage == 'host' else jnp.asarray

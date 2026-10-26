@@ -24,14 +24,19 @@ def prepare_fixed_context(layout, symbols, coords, *, basis_family, jk_backend,
                           auxbasis, integral_cache=None, cache_storage='device',
                           metric_factor=None):
     """Prepare fixed primitive data; never construct a four-index ERI."""
+    if integral_cache is not None and jk_backend != 'df':
+        raise ValueError('Integral caches currently support jk_backend="df" only.')
     topology, parameters = primitive_basis(layout.topology, layout.parameters)
+    at = ap = None
+    if jk_backend == 'df':
+        at, ap = integrals.prepare_basis(list(zip(symbols, coords)), auxbasis,
+                                         cart=layout.topology.cart)
     signature = fixed_signature(layout, symbols, coords, basis_family, auxbasis,
-                                topology, parameters)
+                                topology, parameters,
+                                auxiliary_topology=at, auxiliary_parameters=ap)
     direct_basis = None
     factors = None
     if integral_cache is not None:
-        if jk_backend != 'df':
-            raise ValueError('Integral caches currently support jk_backend="df" only.')
         overlap, hcore, factors = read_fixed_cache(integral_cache, signature, cache_storage)
     else:
         plan = integrals.make_plan(topology)
@@ -42,8 +47,6 @@ def prepare_fixed_context(layout, symbols, coords, *, basis_family, jk_backend,
         if basis_family == 'qvszps':
             hcore = hcore + plan.evaluate('ecp', parameters, ecps=layout.ecps)
         if jk_backend == 'df':
-            at, ap = integrals.prepare_basis(list(zip(symbols, coords)), auxbasis,
-                                             cart=layout.topology.cart)
             kwargs = {} if metric_factor is None else {'metric_factor': metric_factor}
             factors = make_auxiliary_plan(topology, at).factors(parameters, ap, **kwargs)
     for array in (overlap, hcore, factors):
