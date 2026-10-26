@@ -54,7 +54,6 @@ def main():
     started = time.perf_counter()
     report = dict(status='preparing', command=sys.argv, config=vars(args).copy(), samples=[],
         counts=[], timing_eligible=False, scope='fixed-input ERI products; CPU native kernels; no SCF relaxation',
-        probe_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         coefficient_chart='independent libcint-normalized ENV coefficients',
         exponent_chart='Bohr^-2; partial at fixed normalized coefficients',
         coordinate_chart='Bohr; nuclear positions plus independent shell centers',
@@ -185,7 +184,8 @@ def main():
             array = np.ascontiguousarray(value)
             identity.update(repr((array.shape, array.dtype.str)).encode()+array.tobytes())
         native = diagnostics.get_counts()  # After clean timings: do not preload the library.
-        import gradscf
+        from provenance import collect
+        provenance = collect(__file__)
         root = Path(__file__).resolve().parents[2]
         revision = root/'SOURCE_REVISION'
         report.update(status='complete', result_shape=list(values.shape), output_norm=float(np.linalg.norm(values.ravel())),
@@ -194,7 +194,8 @@ def main():
             numerical_input_sha256=identity.hexdigest(),
             native={k: x for k, x in native.items() if k != 'families'},
             timing_eligible=not args.counts and not native['enabled'],
-            source_path=str(Path(gradscf.__file__).resolve()), probe_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            provenance=provenance, source_path=provenance['sources']['gradscf']['path'],
+            probe_sha256=provenance['probes'][str(Path(__file__).resolve())],
             source_revision=revision.read_text().strip() if revision.exists() else
                 subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip(),
             jax_version=jax.__version__, numpy_version=np.__version__)

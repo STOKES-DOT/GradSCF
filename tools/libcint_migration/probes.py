@@ -201,7 +201,7 @@ def _worker(cfg, output, case, counter, profile):
             return result
         module.calculate = calculate
     with _arguments([str(HERE/'worker.py'), str(path), str(output)]+(['--profile'] if profile else [])):
-        module.main()
+        module.main(provenance_probes=(__file__,))
     return json.loads((output/'records.json').read_text())
 
 
@@ -296,7 +296,8 @@ def main():
         return
     if args.config is None or args.output is None:
         parser.error('Supply the existing input JSON and output directory, or --list')
-    cfg = json.loads(args.config.read_text())
+    input_bytes = args.config.read_bytes()
+    cfg = json.loads(input_bytes)
     args.output.mkdir(parents=True, exist_ok=True)
     case = CASES[cfg['probe']]
     started = time.perf_counter()
@@ -322,10 +323,18 @@ def main():
                      if case['driver'] == 'nnao_step' else 'validation fixture; not a clean single-method timer')
             rows = [dict(result, repeat=0, timing_scope=scope)]
         build = _build_metadata(case['native_applicable'])
+        # Worker delegates already collected once after their four samples.
+        provenance = next((row['provenance'] for row in rows if 'provenance' in row), None)
+        if provenance is None:
+            from provenance import collect
+            files = (__file__, HERE/'nnao_step.py') if case['driver'] == 'nnao_step' else (__file__,)
+            provenance = collect(files)
+        input_sha256 = hashlib.sha256(input_bytes).hexdigest()
         for row in rows:
             row.update(consumer_probe=cfg['probe'], consumer_group=case['group'], derivative_scope=case['scope'],
-                requested_outputs=case['outputs'], probe_input_sha256=hashlib.sha256(args.config.read_bytes()).hexdigest(),
-                probe_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), native_build=build,
+                requested_outputs=case['outputs'], probe_input_sha256=input_sha256,
+                probe_sha256=provenance['probes'][str(Path(__file__).resolve())],
+                provenance=provenance, native_build=build,
                 native_counts_requested=bool(cfg.get('native_counts')), cprofile=args.profile,
                 timing_eligible=(case['driver'] in {'worker', 'nnao_step'} and not args.profile and counter is None and
                                  build.get('enabled') is False),

@@ -212,13 +212,14 @@ def calculate(cfg, folder, repeat):
     return result, stages
 
 
-def main():
+def main(*, provenance_probes=()):
     parser = argparse.ArgumentParser()
     parser.add_argument('config', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--profile', action='store_true')
     args = parser.parse_args()
-    cfg = json.loads(args.config.read_text())
+    input_bytes = args.config.read_bytes()
+    cfg = json.loads(input_bytes)
     folder = args.output
     folder.mkdir(parents=True, exist_ok=True)
     records = []
@@ -228,7 +229,7 @@ def main():
             start_monotonic=t0,
             timing_scope='independent_geometry_to_result_fresh_object',
             cache_state='new_process_first' if repeat == 0 else 'same_process_new_objects_compilation_allowed',
-            final_result_reused=False, input_sha256=hashlib.sha256(args.config.read_bytes()).hexdigest(),
+            final_result_reused=False,
             config=cfg, affinity=sorted(os.sched_getaffinity(0)))
         try:
             if args.profile:
@@ -252,6 +253,12 @@ def main():
         print(json.dumps(row), flush=True)
         if row['status'] != 'ok':
             break
+    from provenance import collect
+    provenance = collect((__file__, *provenance_probes))
+    input_sha256 = hashlib.sha256(input_bytes).hexdigest()
+    for row in records:
+        row.update(provenance=provenance, input_sha256=input_sha256)
+    (folder/'records.json').write_text(json.dumps(records, indent=2)+'\n')
 
 
 if __name__ == '__main__':
