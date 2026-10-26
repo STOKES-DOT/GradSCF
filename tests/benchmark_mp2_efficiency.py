@@ -93,7 +93,7 @@ def main():
                 basis='6-31g*', unit='Angstrom', cart=True)
     report['phase'] = 'seed'
     save()
-    mf = scf.RHF(mol, integral_backend='native', execution_device='cpu',
+    mf = scf.RHF(mol, execution_device='cpu',
         jk_backend=args.mode, direct_scf_tol=0., conv_tol=1e-12,
         conv_tol_density=1e-11, conv_tol_grad=1e-10,
         max_cycle=250, max_memory=60000.).run()

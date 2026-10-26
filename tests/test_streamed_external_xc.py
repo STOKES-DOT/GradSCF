@@ -19,7 +19,7 @@ def _molecule(displacement, *, streamed):
                     (0, 0, 0), jnp.asarray([.7]), jnp.asarray([1.])),
         CartesianAO(jnp.asarray([.4, -.2, .1]), (1, 0, 0),
                     jnp.asarray([.9]), jnp.asarray([.8])),
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[0., 0., 0.], [.2, -.1, .3], [-.4, .5, -.2],
                           [.8, -.7, .1], [.1, .3, -.4], [-.2, -.1, .6], [.5, .2, .1]])
     weights = jnp.asarray([.2, .4, .1, .3, .15, .25, .35])

@@ -14,7 +14,7 @@ from gradscf.ao2mo import transform_eri_block
 
 def _problem(basis_spec='3-21g', cart=True):
     top, parameters = integrals.prepare_basis('H 0 0 0; H .2 -.1 .8', basis=basis_spec, cart=cart)
-    plan = integrals.make_plan(top, backend='native')
+    plan = integrals.make_plan(top)
     rng = np.random.default_rng(218)
     coefficients = tuple(jnp.asarray(rng.normal(scale=.3, size=(top.nao, n)))
                          for n in (2, 3, 1, 2))

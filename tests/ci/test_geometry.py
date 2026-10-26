@@ -32,12 +32,12 @@ def check_nitrogen_cisd_geometry(*, basis="sto-3g", conv_tol=1e-11,
 
     mol = gto.M(atom=atoms, basis=basis, unit="Bohr", cart=True)
     topology, parameters = integrals.prepare_basis(mol.to_spec(), basis, cart=True)
-    overlap = np.asarray(integrals.make_plan(topology, backend="native").evaluate("overlap", parameters))
+    overlap = np.asarray(integrals.make_plan(topology).evaluate("overlap", parameters))
     nao = overlap.shape[0]
     seed_scale = mol.nelectron/np.trace(overlap)
     seed = seed_scale*np.eye(nao)
     record("native_hf", nao=nao, nelectron=mol.nelectron, seed_scale=float(seed_scale))
-    mf = scf.RHF(mol, integral_backend="native", init_guess=seed,
+    mf = scf.RHF(mol, init_guess=seed,
                  conv_tol=1e-13, conv_tol_grad=1e-10, conv_tol_density=1e-11).run()
     record("native_hf_result", native_hf_converged=bool(mf.converged),
            native_hf_energy_hartree=float(mf.e_tot),

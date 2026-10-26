@@ -55,8 +55,7 @@ def test_integral_and_explicit_reference_facades_accept_small_action_tiles(metho
 def native_rhf():
     from gradscf import gto, scf
 
-    source = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True),
-                     integral_backend="native", execution_device="cpu",
+    source = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True), execution_device="cpu",
                      jk_backend="direct", direct_scf_tol=0., max_memory=128.,
                      conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     assert source.converged

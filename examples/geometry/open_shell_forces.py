@@ -32,7 +32,7 @@ def run(name, method):
         raise ValueError("Choose HF, PBE, MP2 or CCSD.")
     mol = gto.M(atom=SYSTEMS[name], spin=1, basis="6-31g*", unit="Bohr", cart=True)
     controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                    max_cycle=250, integral_backend="native")
+                    max_cycle=250)
     mf = (scf.UHF(mol, **controls) if method != "PBE"
           else dft.UKS(mol, xc="pbe", grids_level=3, **controls)).run()
     if not mf.converged:

@@ -1,6 +1,7 @@
 // Analytic coordinate products from libcint derivative kernels. No Python,
 // PySCF bridge, numerical differences, or full coordinate Jacobian.
 #include "eri_geometry_entries.h"
+#include "parallel.h"
 
 template<bool transpose>
 static ffi::Error GeometryImpl(ffi::BufferR2<ffi::S32> atoms,
@@ -9,18 +10,20 @@ static ffi::Error GeometryImpl(ffi::BufferR2<ffi::S32> atoms,
                            ffi::Buffer<ffi::F64> vector,
                            ffi::ResultBuffer<ffi::F64> result,
                            int32_t op, int32_t cart,
-                           const int32_t* slice=nullptr,size_t count=0,bool padded=false) {
+                           const int32_t* slice=nullptr,size_t count=0,bool padded=false,
+                           int compact_layout=-1) {
   try {
     if (padded && count!=8) throw std::invalid_argument("ERI slab bounds must have eight endpoints");
     IntegralTables t(atoms,basis,environment,op,cart,true);
-    ERIWindow window(t,slice,count);
+    ERIWindow window(t,slice,count,compact_layout);
+    if (compact_layout>=0 && op!=4) throw std::invalid_argument("Packed geometry requires ERI");
     if (slice && op!=4) throw std::invalid_argument("shell_slice applies only to ERI");
     if (padded) {
       if constexpr (transpose) window.pad_to(vector); else window.pad_to(*result);
     }
     auto check_shape=[&](const ffi::Buffer<ffi::F64>& buffer) {
       if (padded) return;
-      if (slice) window.check_shape(buffer); else t.check_shape(buffer,op);
+      if (slice || compact_layout>=0) window.check_shape(buffer); else t.check_shape(buffer,op);
     };
     if constexpr (transpose) {
       check_shape(vector);
@@ -34,6 +37,7 @@ static ffi::Error GeometryImpl(ffi::BufferR2<ffi::S32> atoms,
       for (int a=0; a<t.natm; ++a)
         for (int x=0; x<3; ++x) allowed[t.atm[a*ATM_SLOTS+PTR_COORD]+x]=true;
       if (op==3) for (int x=0; x<3; ++x) allowed[PTR_COMMON_ORIG+x]=true;
+      if (op==5) for (int x=0; x<3; ++x) allowed[PTR_RINV_ORIG+x]=true;
       for (size_t i=0; i<t.env.size(); ++i)
         if (!allowed[i] && vector.typed_data()[i]!=0.)
           throw std::invalid_argument("Native JVP supports coordinates/origin only, not basis exponents/coefficients");
@@ -52,11 +56,21 @@ static ffi::Error GeometryImpl(ffi::BufferR2<ffi::S32> atoms,
     auto index2=[&](int c,int i,int j) { return (size_t(c)*n+i)*n+j; };
     std::vector<double> block,cache;
     if (op==4) {
-      for_each_eri_geometry_entry(t,cart,add,slice ? &window : nullptr);
+      if constexpr (transpose) {
+        if (compact_layout>=0) {
+          parallel_shell_vjp(t,output,[&](auto& local,double* out,int first,int last) {
+            auto accumulate=[&](size_t index,int coordinate,double value) {
+              if (index!=ERIWindow::outside) out[coordinate]+=value*input[index];
+            };
+            for_each_eri_geometry_entry(local,cart,accumulate,&window,first,last);
+          });
+        } else for_each_eri_geometry_entry(t,cart,add,slice ? &window : nullptr);
+      } else for_each_eri_geometry_entry(t,cart,add,(slice || compact_layout>=0) ? &window : nullptr);
     } else {
       Intor ips_cart[]={int1e_ipovlp_cart,int1e_ipkin_cart,int1e_ipnuc_cart,int1e_irp_cart};
       Intor ips_sph[]={int1e_ipovlp_sph,int1e_ipkin_sph,int1e_ipnuc_sph,int1e_irp_sph};
-      Intor ip=cart ? ips_cart[op] : ips_sph[op];
+      Intor ip=op==5 ? (cart ? int1e_iprinv_cart:int1e_iprinv_sph)
+                    : (cart ? ips_cart[op]:ips_sph[op]);
       int components=op==3 ? 3 : 1;
       for (int i=0; i<t.nbas; ++i) for (int j=0; j<t.nbas; ++j) {
         int shells[]={i,j};
@@ -70,6 +84,11 @@ static ffi::Error GeometryImpl(ffi::BufferR2<ffi::S32> atoms,
             // irp differentiates ket; the other kernels differentiate bra.
             int ptr=t.coord_ptr(op==3 ? j : i)+x;
             add(index2(c,a,b),ptr,v); add(index2(c,b,a),ptr,v);
+            if (op==5) {
+              // Rinv depends only on AO-center minus potential-origin vectors.
+              add(index2(c,a,b),PTR_RINV_ORIG+x,-v);
+              add(index2(c,b,a),PTR_RINV_ORIG+x,-v);
+            }
           }
         if (op==2) {
           // Derivative of the attraction operator itself, independently of AO centers.
@@ -124,6 +143,15 @@ static ffi::Error ERISlabGeometry(ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ff
                                   bounds.typed_data(),bounds.element_count(),true);
 }
 
+template<bool transpose>
+static ffi::Error ERICompactGeometry(ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
+                                     ffi::BufferR1<ffi::F64> env,ffi::Buffer<ffi::F64> vector,
+                                     ffi::ResultBuffer<ffi::F64> result,int32_t op,int32_t cart,
+                                     int32_t layout) {
+  if (layout<0 || layout>1) return ffi::Error::InvalidArgument("Packed ERI layout must be 0 or 1");
+  return GeometryImpl<transpose>(atoms,basis,env,vector,result,op,cart,nullptr,0,false,layout);
+}
+
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFGeometryJVP(XLA_FFI_CallFrame*);
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFGeometryVJP(XLA_FFI_CallFrame*);
 #define GEOMETRY_BIND ffi::Ffi::Bind().Arg<ffi::BufferR2<ffi::S32>>() \
@@ -132,6 +160,12 @@ extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFGeometry
     .Attr<int32_t>("operator").Attr<int32_t>("cart")
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFGeometryJVP, Geometry<false>, GEOMETRY_BIND);
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFGeometryVJP, Geometry<true>, GEOMETRY_BIND);
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERICompactGeometryJVP(XLA_FFI_CallFrame*);
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERICompactGeometryVJP(XLA_FFI_CallFrame*);
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFERICompactGeometryJVP, ERICompactGeometry<false>,
+                              GEOMETRY_BIND.Attr<int32_t>("layout"));
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFERICompactGeometryVJP, ERICompactGeometry<true>,
+                              GEOMETRY_BIND.Attr<int32_t>("layout"));
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERISliceGeometryJVP(XLA_FFI_CallFrame*);
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERISliceGeometryVJP(XLA_FFI_CallFrame*);
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFERISliceGeometryJVP, ERISliceGeometry<false>,

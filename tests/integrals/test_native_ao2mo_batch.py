@@ -24,7 +24,7 @@ def _batch(coefficients, requests, **kwargs):
 def _problem(cart=True, basis_spec='3-21g'):
     topology, parameters = integrals.prepare_basis(
         'H 0 0 0; H .2 -.1 .8', basis=basis_spec, cart=cart)
-    basis = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    basis = NativeDirectBasis(integrals.make_plan(topology), parameters)
     rng = np.random.default_rng(6201)
     # Spaces 0 and 4 have the same shape and different values. IDs, not
     # shape/equality guesses, determine sharing and coefficient derivatives.

@@ -44,7 +44,7 @@ def folder(xc):
 def molecular_energy(xc, coordinates):
     mol = gto.M(atom=list(zip(SYMBOLS, coordinates)), basis="6-31g*", unit="Bohr", cart=True)
     mf = dft.RKS(mol, xc=xc, grids_level=3, conv_tol=1e-12, conv_tol_density=1e-11,
-                 conv_tol_grad=1e-10, max_cycle=200, integral_backend="native").run()
+                 conv_tol_grad=1e-10, max_cycle=200).run()
     return MolecularEnergy(mf)
 
 
@@ -54,7 +54,7 @@ def metadata(xc):
              "src/gradscf/scf/rsh.py", "src/gradscf/scf/inputs/grid.py",
              "src/gradscf/dft/dispersion.py", "src/gradscf/integrals/grids/ao.py")
     return dict(method="RKS", xc=xc.upper(), basis="6-31g*", cart=True, symbols=SYMBOLS,
-                grid_level=3, grid_response=True, integral_backend="native", grid_ao_backend="jax",
+                grid_level=3, grid_response=True, grid_ao_backend="jax",
                 dispersion="original CHG" if xc == "wb97xd" else "none",
                 b3lyp_convention="VWN-RPA" if xc == "b3lyp" else None,
                 orbital_gradient_tolerance=1e-9, implicit_tolerance=1e-10,

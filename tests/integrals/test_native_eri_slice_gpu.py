@@ -46,7 +46,7 @@ def test_native_shell_slice_cuda_value_and_coordinate_response(dynamic):
         top, params = integrals.prepare_basis("H 0 0 0; H .2 -.1 .8", basis="3-21g")
         assert top.angular_momenta == (0, 0, 0, 0)
         assert top.contraction_counts == (1, 1, 1, 1)
-        plan = integrals.make_plan(top, backend="native")
+        plan = integrals.make_plan(top)
         centers = params.centers + jnp.arange(params.centers.size).reshape(-1, 3) * .003
         coords = jnp.concatenate((params.nuclear_coords, centers))
         rng = np.random.default_rng(20261022)

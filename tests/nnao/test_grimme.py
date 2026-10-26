@@ -101,8 +101,8 @@ def test_direct_ecp_geometry_ad_is_explicitly_unsupported():
     from dataclasses import replace
     b=grimme()('C 0 0 0; H 0 0 1.09')
     p=b.bind(b.reference_outputs());plan=integrals.make_plan(b.topology)
-    assert integrals.backend_capabilities('native').supports('ecp')
-    assert not integrals.backend_capabilities('native').supports('ecp',variable='centers',derivative_order=1)
+    assert integrals.backend_capabilities('libcint').supports('ecp')
+    assert not integrals.backend_capabilities('libcint').supports('ecp',variable='centers',derivative_order=1)
     with pytest.raises(ValueError,match='cannot be differentiated'):
         jax.grad(lambda centers:jnp.sum(plan.evaluate('ecp',replace(p,centers=centers),ecps=b.ecps)))(p.centers)
 

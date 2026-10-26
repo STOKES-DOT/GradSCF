@@ -31,7 +31,7 @@ direction = jnp.array([[0., 0., -.5], [0., 0., .5]])
 
 def build_model():
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="6-31g", unit="Bohr", cart=True)
-    controls = dict(integral_backend="native", conv_tol=1e-13,
+    controls = dict(conv_tol=1e-13,
                     conv_tol_density=1e-12, conv_tol_grad=1e-11)
     mf = scf.RHF(mol, **controls).run()
     energy = MolecularEnergy(mf, gradient_tolerance=1e-11)

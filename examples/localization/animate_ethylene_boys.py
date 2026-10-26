@@ -42,8 +42,7 @@ axes_bohr = [np.linspace(-5.5, 5.5, 68), np.linspace(-4.5, 4.5, 56),
              np.linspace(-3.5, 3.5, 44)]
 grid_shape = tuple(len(axis) for axis in axes_bohr)
 points = np.stack(np.meshgrid(*axes_bohr, indexing="ij"), axis=-1).reshape(-1, 3)
-basis = integrals.basis_from_spec(mol.atom, basis=mol.basis, unit=mol.unit,
-                                 precompute_eri_groups=False)
+basis = integrals.basis_from_spec(mol.atom, basis=mol.basis, unit=mol.unit)
 ao = integrals.evaluate_cartesian_ao(basis, jnp.asarray(points), chunk_size=2048)
 occupied_grid = np.asarray(ao @ jnp.asarray(c_occ))
 del ao

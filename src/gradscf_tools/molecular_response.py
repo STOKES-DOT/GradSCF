@@ -86,7 +86,7 @@ class MolecularEnergy:
         self.differentiation = scf.SCFDifferentiationConfig(
             mode=mode, tolerance=1e-10, max_iter=100, restart=40)
         topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
-        self.plan = integrals.make_plan(topology, backend="native")
+        self.plan = integrals.make_plan(topology)
         distances = np.linalg.norm(np.asarray(self.parameters.centers)[:, None]
                                    - np.asarray(self.coordinates)[None], axis=-1)
         self.owners = np.argmin(distances, axis=1)
@@ -162,7 +162,7 @@ class MolecularEnergy:
             data = build(
                 atom=replace(self.spec, coords_bohr=coordinates), basis=self.basis,
                 xc_spec=self.xc, grids_level=self.grids_level, max_l=self.max_l,
-                integral_backend="native", cart=True, **options)
+                cart=True, **options)
             overlap, hcore = data.overlap, data.hcore
             eri = data.eri if data.eri is not None else data.eri_pair_matrix
             enuc = data.nuclear_repulsion

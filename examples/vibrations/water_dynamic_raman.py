@@ -57,7 +57,7 @@ def main():
     molecule = gto.M(atom=list(zip(harmonic['symbols'], harmonic['coordinates_bohr'])),
                      basis=harmonic['basis'], unit='Bohr', cart=True)
     mean_field = scf.RHF(molecule, conv_tol=1e-12, conv_tol_density=1e-11,
-                        conv_tol_grad=1e-10, integral_backend='native').run()
+                        conv_tol_grad=1e-10).run()
     assert mean_field.converged
     response = MolecularPolarizability(mean_field, gradient_tolerance=1e-10)
     make_reference = jax.jit(response.reference)

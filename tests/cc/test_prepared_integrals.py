@@ -113,7 +113,7 @@ def test_selected_array_raw_chart_joint_jvp_vjp_hvp(representation):
 
 def _native_problem(dtype=jnp.float64):
     topology, parameters = integrals.prepare_basis('H 0 0 0; H .2 -.1 .8', basis='3-21g')
-    basis = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    basis = NativeDirectBasis(integrals.make_plan(topology), parameters)
     rng = np.random.default_rng(6303)
     c = jnp.asarray(rng.normal(scale=.15, size=(topology.nao, 4)), dtype=dtype)
     f = jnp.diag(jnp.asarray([-1.2, .3, .5, .8], dtype=dtype))

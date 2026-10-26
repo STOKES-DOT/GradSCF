@@ -30,7 +30,7 @@ def _case(cart=True, custom=False):
     ]} if custom else "3-21g")
     atom = "H 0 0 0; H .2 .1 .8" if custom else "O 0 0 0; H .1 .75 .58; H -.1 -.75 .58"
     top, params = integrals.prepare_basis(atom, basis=basis, cart=cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     atm, bas, env = plan.pack(params)
     indices = np.concatenate([
         np.arange(int(row[6]), int(row[6]) + int(row[2])*int(row[3]))
@@ -109,7 +109,7 @@ def test_coefficient_hessian_products_and_cotangent_derivative(operator):
 def test_coefficient_jacfwd_jacrev_vmap_and_raw_normalization_chain():
     evaluate = _backend()
     top, params = integrals.prepare_basis("H 0 0 0; H .2 .1 .8", "3-21g")
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     atm, bas, env = plan.pack(params)
     indices = np.concatenate([np.arange(int(b[6]), int(b[6])+int(b[2])*int(b[3])) for b in bas])
     fixed = env.at[indices].set(0)

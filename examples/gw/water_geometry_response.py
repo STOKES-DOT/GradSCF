@@ -31,8 +31,7 @@ OUTPUT = Path("reproducibility/ad_showcase/X02_water_gw_bse_response")
 def water_reference():
     """The same native RHF reference for the forward and response examples."""
     mol = gto.M(atom=list(zip(SYMBOLS, COORDINATES)), basis="6-31g*", unit="Bohr", cart=True)
-    return scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10,
-                   integral_backend="native").run()
+    return scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10).run()
 
 
 def run(method="g0w0", *, tda=True, nw=100, track_qp=True, qp_anchor=None, output=OUTPUT,

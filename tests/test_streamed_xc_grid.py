@@ -23,7 +23,7 @@ def _quadrature(parameters):
                     coefficients=jnp.asarray([.6, .4]) * (1. + parameters[2])),
         CartesianAO(center=jnp.asarray([.4, -.2, .1]), angular=(1, 0, 0),
                     exponents=jnp.asarray([.9]), coefficients=jnp.asarray([.8])),
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[0., 0., 0.], [.2, -.1, .3], [-.4, .5, -.2],
                           [.8, -.7, .1], [.1, .3, -.4], [-.2, -.1, .6],
                           [.5, .2, .1]])
@@ -210,7 +210,7 @@ def test_streamed_scf_assembly_does_not_evaluate_full_grid_ao(monkeypatch, unres
     config = config_type(xc_spec="pbe", grid_block_size=3, grid_max_memory=16.)
     spec = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True).to_spec()
     inputs = builder(atom=spec, basis="sto-3g", config=config,
-                     grids_level=0, integral_backend="jax")
+                     grids_level=0)
     assert inputs.grid_ao is not None
     assert inputs.grid_ao.block_size == 3
     assert inputs.grid_ao.ngrids == inputs.grid_weights.shape[0] > 3

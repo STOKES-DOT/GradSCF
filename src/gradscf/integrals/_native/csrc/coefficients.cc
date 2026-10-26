@@ -25,8 +25,8 @@ struct CoefficientTables {
                     int operation, int cartesian, int split)
       : t(atoms,basis,environment,operation==6 ? 4:operation,cartesian),
         op(operation), cart(cartesian) {
-    if (op!=6 && (op<0 || op>3))
-      throw std::invalid_argument("Native coefficient products support operators 0..3 and 6 only");
+    if (op!=5 && op!=6 && (op<0 || op>3))
+      throw std::invalid_argument("Native coefficient products support operators 0..3, 5 and 6 only");
     if (op==6 ? (split<1 || split>=t.nbas) : split!=0)
       throw std::invalid_argument("Invalid coefficient orbital/auxiliary shell split");
     active=op==6 ? split:t.nbas;
@@ -65,7 +65,8 @@ struct CoefficientTables {
     t.nbas+=2;
     Intor cart_funcs[]={int1e_ovlp_cart,int1e_kin_cart,int1e_nuc_cart,int1e_r_cart};
     Intor sph_funcs[]={int1e_ovlp_sph,int1e_kin_sph,int1e_nuc_sph,int1e_r_sph};
-    intor=op==6 ? (cart ? int3c2e_cart:int3c2e_sph)
+    intor=op==5 ? (cart ? int1e_rinv_cart:int1e_rinv_sph)
+          : op==6 ? (cart ? int3c2e_cart:int3c2e_sph)
                : (cart ? cart_funcs[op]:sph_funcs[op]);
   }
 

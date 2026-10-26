@@ -12,7 +12,7 @@ from gradscf import integrals
 def problem(operator, cart=True, d_shell=False):
     basis = {'H': [[0, [1.1, 1.]], [2, [.7, 1.]]]} if d_shell else '3-21g'
     top, p = integrals.prepare_basis('H 0 0 0; H .2 -.1 .8', basis=basis, cart=cart)
-    plan = integrals.make_plan(top, backend='native')
+    plan = integrals.make_plan(top)
     nnuc = len(top.nuclear_charges)
     x = jnp.concatenate((p.nuclear_coords, p.centers, jnp.array([[.1, -.2, .3]])))
     def value(coords):

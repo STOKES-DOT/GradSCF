@@ -41,7 +41,7 @@ def _fd(function, x, direction, step):
 
 def _problem(cart=True, omega=0., basis="3-21g"):
     top, params = integrals.prepare_basis(ATOM, basis=basis, cart=cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     nnuc = len(top.nuclear_charges)
     centers = params.centers + jnp.arange(params.centers.size).reshape(-1, 3) * .003
     coords = jnp.concatenate((params.nuclear_coords, centers))

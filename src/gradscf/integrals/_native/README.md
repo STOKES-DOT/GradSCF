@@ -1,11 +1,16 @@
-# Private native integral backend
+# Private libcint build and FFI
 
-This directory builds a private CPU library with JAX typed FFI entry
-points. Runtime evaluation does not import or load PySCF. The source subset is
-pinned to PySCF v2.13.0 and libcint v6.1.3; full commit IDs, original relative
-paths, Git blob IDs and SHA256 checksums are in `vendor/manifest.json`.
-Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
-`vendor/libcint/LICENSE`. No vendor patches are currently needed.
+This directory builds the private CPU library for the sole public Gaussian
+interface, `libcint`, with JAX typed FFI entry points. Runtime evaluation does
+not import PySCF/gpu4pyscf Python or load their `libcgto` libraries.
+
+The Gaussian kernels are pinned to libcint v6.1.3. A small ERI filling-driver
+subset is pinned to PySCF v2.13.0. Scalar ECP additionally uses the distinct
+PySCF v2.9.0 C subset in `vendor/pyscf_ecp`; it remains necessary for the ECP
+Hamiltonian and is not a duplicate Gaussian runtime. Versions, source paths,
+commit/blob IDs where available, file hashes and licenses are recorded in
+`vendor/manifest.json` and the corresponding vendor directories. Vendor bytes
+remain unmodified; adaptations belong in `patches/`.
 
 ## Directory layout
 
@@ -17,6 +22,10 @@ Upstream Apache-2.0 licenses are retained at `vendor/pyscf/LICENSE` and
 - `csrc/geometry_higher.cc`: Cartesian cubic/quartic products by exact Gaussian center recurrence.
 - `csrc/coefficients.cc`: shell-local coefficient JVP/VJP and coefficient Hessian products.
 - `csrc/exponents.cc`: analytic Gaussian-exponent JVP/VJP through Cartesian angular raising.
+- `csrc/eri_basis.cc`: full-s1 four-leg coefficient first/second products and exponent first products.
+- `csrc/packed_eri.cc`, `csrc/density_fitting.cc`: compact ERI and auxiliary 2c/3c values.
+- `csrc/direct_jk*.cc`, `csrc/packed_jk.cc`: shell-direct and packed density actions.
+- `csrc/ecp.cc`, `vendor/pyscf_ecp/`: the separate scalar ECP adapter and required C sources.
 - `csrc/tables.h`: shared table validation and owned libcint buffers.
 - `csrc/parallel.h`: bounded shell workers and parameter-gradient reduction.
 - `vendor/`: pinned, unmodified upstream C sources, licenses and checksums.
@@ -48,7 +57,7 @@ evaluation is serial by default and does not modify process-wide threading setti
 
 ## Parameter VJP threading and reuse
 
-The optimized implementation is the sole maintained native path. A thread count
+The optimized implementation is the sole maintained libcint path. A thread count
 of 1 uses the same workspace reuse and derivative kernels as parallel execution;
 it is not a legacy backend. Rebuild this library when updating the native sources.
 
@@ -89,19 +98,29 @@ also contain the value, ECP, packed-ERI and J/K entry points. There is no dynami
 linked libcint, PySCF, OpenMP, or Python library. The build links an existing
 platform BLAS provider (Accelerate on macOS). Loading uses `RTLD_LOCAL`.
 
-## Contract
+## Public plans and private ABI
 
 ```python
-from gradscf.integrals.backends.native import evaluate
-values = evaluate("overlap", atm, bas, env, nao, cart=True)
+from gradscf import integrals
+topology, parameters = integrals.prepare_basis("H 0 0 0; H 0 0 .74", "3-21g")
+plan = integrals.make_plan(topology)
+values = plan.evaluate("overlap", parameters)
 ```
+
+Ordinary HF/DFT constructors use this interface implicitly; they do not accept
+an integral-engine selector. Private names such as `backends/native` describe
+implementation files, not additional public engines. The removed `native`,
+`cpu`, `jax` and `jax_reference` engine names are not aliases for `libcint`.
+
+The following table details are for the private ABI, not required arguments
+to ordinary public methods.
 
 `atm` is a static NumPy int32 `(natm, 6)` array, and `bas` is a static NumPy
 int32 `(nshell, 8)` array, using libcint's public table layout. The dynamic
 `env` is a JAX float64 vector. The caller supplies normalized contraction
 coefficients in libcint convention and coordinates in Bohr. The range parameter
 `env[PTR_RANGE_OMEGA]` is zero for ordinary Coulomb and may be positive for the
-full ERI value/geometry paths only. Enable JAX x64 before constructing arrays. Tables may
+ERI value/geometry paths. Enable JAX x64 before constructing arrays. Tables may
 be closed over by `jax.jit`; changing coordinates/exponents/coefficients in
 `env` updates values without replacing the static topology.
 
@@ -111,7 +130,9 @@ be closed over by `jax.jit`; changing coordinates/exponents/coefficients in
 | `kinetic` | `(nao, nao)` | -1/2 Laplacian, Hartree |
 | `nuclear` | `(nao, nao)` | Electron–point-nucleus attraction, Hartree |
 | `dipole` | `(3, nao, nao)` | Position r relative to `env[1:4]`, Bohr; no electron charge factor |
+| `rinv` | `(nao, nao)` | Coulomb potential about an explicit origin; static finite zeta gives `erf(sqrt(zeta)*r)/r` |
 | `eri` | `(nao, nao, nao, nao)` | Chemists' `(ij|kl)`, Hartree, full s1 tensor |
+| `ecp` (plan adapter) | `(nao, nao)` | Explicit scalar semilocal ECP, Hartree; separate vendored special kernel |
 
 Both Cartesian and real spherical AOs use libcint/PySCF ordering and
 normalization. This initial interface supports point nuclei, scalar Gaussian
@@ -128,7 +149,7 @@ libcint's zero-on-overflow sentinel is returned to JAX as an error before fillin
 
 ## Coordinate derivatives
 
-`integrals.make_plan(..., backend="native").evaluate(...)` supports first- and second-order
+`integrals.make_plan(...).evaluate(...)` supports first- and second-order
 `jax.jvp`, `jax.vjp`, `jax.grad`, `jax.jacfwd` and `jax.jacrev` for nuclear
 coordinates and basis centers, including JIT/batching. Dipole origins also
 participate in AD; a default charge-center origin follows nuclear motion.
@@ -152,7 +173,7 @@ from gradscf import integrals
 
 jax.config.update("jax_enable_x64", True)
 topology, parameters = integrals.prepare_basis("H 0 0 0; H 0 0 .74", basis="3-21g")
-plan = integrals.make_plan(topology, backend="native")
+plan = integrals.make_plan(topology)
 
 def overlap_sum(centers):
     return plan.evaluate("overlap", replace(parameters, centers=centers)).sum()
@@ -168,7 +189,7 @@ An SCF energy Hessian additionally needs the converged orbital/density response
 and nuclear repulsion derivatives. Integral Hessians alone, or differentiating
 a frozen-density force expression, do not supply that response.
 
-The low-level raw-ENV `backends.native.evaluate` remains value-only: an arbitrary
+The private raw-ENV value entry point remains value-only: an arbitrary
 ENV vector mixes geometry, exponents and coefficients. Use integral plans for
 geometry and basis-parameter AD. Cartesian overlap, kinetic, nuclear attraction
 and full Coulomb ERIs support third/fourth coordinate products and their adjoints.
@@ -180,12 +201,19 @@ derivatives, third/fourth spherical or dipole derivatives, nonzero-omega higher
 derivatives and mixed basis-parameter/geometry derivatives remain unsupported.
 The higher-order shadow workspace requires original shell angular momentum
 `l <= 10`; numerical higher-order tests cover s/p/d shells, not that entire bound.
-Geometry AD is limited to the five full
-operators listed above: ECP, RI, zero-omega compact ERIs and fused J/K do not acquire
-geometry derivatives through this change. Positive-omega packed layouts use the
-full-ERI gather path described below. GPU FFI, periodic integrals and spinors
-are outside this interface.
-Full integral values still require O(nao^4) memory.
+Dipole and Rinv origin/coordinate products stop at order two. Ordinary static
+Cartesian ERI shell windows retain coordinate products through order four;
+spherical windows, packed s4/s8 buffers and bounded slabs retain the separate
+first/second-order boundary. Packed values and coordinate products are produced
+in their requested layout, without gathering a full ERI tensor. Shell-direct J/K
+has its own density/coordinate rules, described below. ECP geometry and
+auxiliary RI geometry/parameter AD remain unsupported.
+
+Integral products execute on CPU. Selected bounded/one-electron calls can use
+a CPU callback when their JAX caller is on CUDA; this does not introduce a GPU
+Gaussian engine. GPU model/SCF workflows explicitly transfer physical inputs
+and cotangents. Periodic FFT/GTH and spinor methods are separate interfaces.
+An explicitly requested full-s1 ERI output still requires O(nao^4) storage.
 
 ### Fixed long-range ERIs
 
@@ -195,16 +223,15 @@ scalar in inverse Bohr, at most `sqrt(float64.max)/2` to keep native squared-ome
 arithmetic finite. Both Python and C++ enforce this bound. `omega=0.0` retains the existing ordinary Coulomb
 behavior; it is not the zero-omega limit of the erf operator. Negative omega,
 omega differentiation, dynamic omega under JIT, and nonzero omega on
-one-electron/ECP operators are explicitly rejected. The JAX reference backend
-does not implement this option.
+one-electron/ECP operators are explicitly rejected.
 
 At fixed positive omega, Cartesian and real spherical full ERIs support the
 same first/second coordinate JVP/VJP and Hessian products as ordinary ERIs.
-`aosym="s4"` and `"s8"` gather the long-range full tensor in JAX, retaining
-geometry AD but still allocating O(nao^4) temporary storage. Zero-omega packed
-forward calls retain their original compact implementation and AD limits.
-This option does not add range-separated direct J/K, auxiliary RI,
-exponent/coefficient derivatives of ERIs, or third geometry derivatives.
+Packed values and first/second coordinate products use the compact layout
+directly. Range-separated shell-direct J/K also accepts fixed omega, with its
+own density/coordinate products and zero-screening requirement for geometry.
+These paths do not imply range-separated auxiliary RI, omega differentiation,
+higher range-separated coordinate products or basis-parameter derivatives.
 
 The focused check is `tests/integrals/test_native_long_range_eri.py`: PySCF
 erf-Coulomb values, ordinary-Coulomb regression, first/second directional finite
@@ -213,7 +240,8 @@ representations. Build the native library before running it.
 
 ## Contraction-coefficient derivatives
 
-For `overlap`, `kinetic`, `nuclear` and `dipole`, integral plans accept raw
+For `overlap`, `kinetic`, `nuclear`, `dipole`, `rinv` and ordinary full-s1 ERIs,
+integral plans accept raw
 coefficient JVP/VJP, forward/reverse Hessians, HVP and batching. JAX retains the
 primitive and contraction normalization in `normalization.py`. The native
 drivers differentiate the normalized coefficients stored in libcint ENV;
@@ -229,13 +257,15 @@ created. ENV coefficient slots must be disjoint from other coefficients,
 exponents and coordinates. Cartesian workspace checks apply to spherical
 output as well, including the larger identity contraction used by VJP.
 
-At fixed geometry/exponents these integral kernels are quadratic in the
-normalized orbital coefficients. Native second products therefore do not
-depend on those coefficients; their coefficient third derivative is exactly
-zero. Raw coefficient derivatives of higher order remain nonzero through the
-JAX normalization chain. Coefficient/geometry mixed second derivatives are
-currently rejected. Dense simultaneous coefficient/coordinate/origin
-**first-order** chain rules are supported.
+One-electron and orbital-3c kernels are quadratic in normalized orbital
+coefficients. Full four-center ERIs instead have four independent orbital legs;
+their second products retain the current primal coefficients and include the
+ordered pairs of differentiated legs. Zero individual coefficients cannot be
+used to prune their response. Raw coefficient derivatives include the JAX
+normalization chain, but this does not establish arbitrary higher-order rules.
+True third full-ERI coefficient products and mixed coefficient/exponent/geometry
+products are explicitly rejected. Simultaneous first-order contributions do
+not establish their mixed second derivatives.
 
 ```python
 from dataclasses import replace
@@ -267,22 +297,26 @@ gradient = jax.jit(jax.grad(lambda c: (factors(c)**2).sum()))(params.coefficient
 The cached RI path supports orbital coefficient JVP/VJP/HVP at fixed auxiliary
 basis and geometry. Auxiliary-parameter and RI geometry AD remain
 explicitly unsupported; a cached host metric cannot stand in for their
-derivatives. Packed four-center ERIs, ECP and shell-direct J/K do not acquire
-coefficient AD through this change. Native FFI remains CPU/float64; GPU SCF
+derivatives. Packed/generic-window ERIs, direct ECP and primitive basis parameters
+of shell-direct J/K retain their explicit basis-AD limits. An explicit projected
+contraction matrix retains JAX dependence without creating missing primitive
+rules. The FFI remains CPU/float64; GPU SCF
 requires an explicit transfer of contracted physical inputs/cotangents.
 
-The coefficient tests compare native products with fourth-order finite
-differences and an independent JAX primitive contraction, using s/p/d general
+The 1e/RI coefficient tests compare libcint products with fourth-order finite
+differences and JAX contraction of fixed libcint primitive values, using s/p/d general
 contractions in Cartesian/spherical representations. End-to-end H2 checks
 compose contracted native S/H/RI directly with implicit SCF and compare its
 energy, coefficient gradient and HVP with the fixed-primitive reference. These
-checks store no complete four-center ERI and do not establish a molecular force
+checks store no complete four-center ERI. Separate full-s1 ERI basis-product
+tests exercise the requested contracted four-index tensor without a complete
+primitive four-index cache. These checks do not establish a molecular force
 Hessian or force-loss support for the new coefficient/geometry combination.
 
 ## Gaussian-exponent derivatives
 
 Plans support first-order orbital exponent JVP/VJP for overlap, kinetic,
-nuclear attraction and dipole integrals, and for packed three-center RI with
+nuclear attraction, dipole, Rinv and ordinary full-s1 ERIs, and for packed three-center RI with
 a fixed auxiliary metric. Exponents are shared across all contraction columns
 of a shell. JAX differentiates primitive/contraction normalization; C++ supplies
 the derivative of the bare Gaussian, `d g / d alpha = -r^2 g`. Both terms are
@@ -293,7 +327,8 @@ each axis, sums the three terms, and then transforms the **original** angular
 shell to spherical AOs. The ratio of libcint's s/p common factors compensates
 for the changed shell convention. Each primitive uses an independent shadow
 shell and each VJP block is reduced immediately, without a full exponent
-Jacobian, primitive ERI cache or four-center ERI tensor. Exponent AD requires
+Jacobian or primitive ERI cache. Full-s1 ERI products retain their requested
+four-index output; 1e/3c paths do not construct one. Exponent AD requires
 orbital `l <= 10` because the raised shell must fit the compiled `l <= 12` limit.
 
 ```python
@@ -307,22 +342,36 @@ gradient = jax.jit(jax.grad(kinetic_from_log_scales))(beta)
 
 Joint first-order exponent/coefficient differentiation is supported. Exponent
 Hessians and mixed exponent/coefficient/geometry derivatives fail explicitly;
-pure coefficient HVP support is unchanged. ECP, four-center and direct J/K
-exponent AD, auxiliary-basis AD and GPU FFI remain unsupported. Tests compare
+pure coefficient HVP support is unchanged. Direct ECP, packed/generic-window ERI
+basis AD, direct-J/K primitive exponent AD, auxiliary-basis AD and GPU-native
+integral FFI remain unsupported. Tests compare
 Cartesian/spherical s-through-g products against finite differences and verify
 the complete log-exponent/coefficient gradient through reconverged implicit
 DF-RHF. A small H2 joint Adam test establishes variational descent, not shared
 MACE training or basis-set accuracy across molecules.
 
+## Scalar ECP boundary
+
+Scalar ECP values use the dedicated vendored C kernel through the same plan
+facade. Preserve the supplied ECP terms, removed-core electron counts and
+effective nuclear charges; an unsupported derivative must not change this to
+an all-electron Hamiltonian. Direct ECP geometry/exponent and native ECP basis
+products are not implemented. The existing NNAO coefficient path computes
+fixed primitive ECP matrices and differentiates their normalized JAX contraction.
+It does not establish ECP force-loss or mixed geometry/basis support.
+
 ## Why these upstream files
 
 PySCF's `pyscf/lib/gto/fill_int2e.c` provides the shell-to-full-tensor ERI
 driver. Its only headers are libcint's `cint.h` and a local build `config.h`.
-One-electron assembly lives in the GradSCF adapter and invokes libcint shell
-kernels directly, avoiding PySCF's unrelated np_helper/BLAS dependencies.
+Gaussian one-electron assembly lives in the GradSCF adapter and invokes libcint
+shell kernels directly. The separate scalar ECP adapter has its own required
+np_helper/BLAS dependencies, recorded below.
 Shared libcint optimizer objects also reference grid and two-/three-center
-environment helpers; those small dependencies are included even though no
-such operator is exposed. Large optional polynomial-fit tables, F12 code,
+environment helpers. The auxiliary RI and grid-Coulomb interfaces use their
+required compiled kernels. Scalar ECP separately needs the vendored ECP C,
+np_helper subset and a platform BLAS provider; these are not redundant
+Gaussian engines. Large optional polynomial-fit tables, F12 code,
 other generated operators, and upstream build/test machinery are excluded.
 The pinned `autocode/grad1.c` and `autocode/grad2.c` provide the one-/two-electron
 first-derivative kernels; their blob and SHA256 hashes are in the manifest.

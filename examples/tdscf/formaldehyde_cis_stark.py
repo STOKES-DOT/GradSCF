@@ -34,7 +34,7 @@ output.mkdir(parents=True, exist_ok=True)
 started = perf_counter()
 coordinates = np.asarray(paired["ground_coordinates_bohr"])
 mol = gto.M(atom=list(zip(paired["symbols"], coordinates)), basis=paired["basis"], unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-11, max_cycle=180).run()
 if not mf.converged:
     raise RuntimeError("The RHF seed did not converge.")

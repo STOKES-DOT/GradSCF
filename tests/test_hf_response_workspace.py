@@ -11,7 +11,7 @@ from gradscf.tddft import response
 @pytest.fixture(scope="module")
 def hf_grid_reference():
     mol = gto.M(atom="H 0 0 0; H 0 0 .8", basis="6-31g", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", jk_backend="direct",
+    mf = scf.RHF(mol, jk_backend="direct",
                  conv_tol=1e-12).run()
     assert mf.converged
     reference = scf.as_reference(mf)

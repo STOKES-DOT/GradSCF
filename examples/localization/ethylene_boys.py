@@ -36,7 +36,7 @@ mol = gto.M(
     unit="Angstrom",
     cart=True,
 )
-mf = dft.RKS(mol, xc="hf", integral_backend="native", conv_tol=1e-12).run()
+mf = dft.RKS(mol, xc="hf", conv_tol=1e-12).run()
 assert mf.converged
 c_occ = jnp.asarray(mf.mo_coeff[:, np.asarray(mf.mo_occ) > 0])
 nocc = c_occ.shape[1]
@@ -44,7 +44,7 @@ nocc = c_occ.shape[1]
 topology, parameters = integrals.prepare_basis(
     mol.atom, mol.basis, unit=mol.unit, cart=mol.cart,
 )
-plan = integrals.make_plan(topology, backend="native")
+plan = integrals.make_plan(topology)
 overlap = plan.evaluate("overlap", parameters)
 dipole_ao = plan.evaluate("dipole", parameters, origin=jnp.zeros(3))
 dipole_mo = jnp.einsum("mp,xmn,nq->xpq", c_occ, dipole_ao, c_occ)

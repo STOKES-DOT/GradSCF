@@ -53,7 +53,7 @@ class ContractionExperiment:
         self.nelectron = sum(self.top.nuclear_charges)
         self.enuc = scf.nuclear_repulsion_energy(self.params.nuclear_coords,
                                                 jnp.asarray(self.top.nuclear_charges))
-        self.plan = integrals.make_plan(self.top, backend="native")
+        self.plan = integrals.make_plan(self.top)
         self.groups, self.shell_groups = [], []
         counts = [0]*len(self.top.nuclear_charges)
         keys = {}
@@ -76,7 +76,7 @@ class ContractionExperiment:
         self.x0 = np.zeros(offset)
         self.primitive_top = replace(self.top, contraction_counts=self.top.primitive_counts)
         primitive_params = replace(self.params, coefficients=tuple(jnp.eye(n) for n in self.top.primitive_counts))
-        pp = integrals.make_plan(self.primitive_top, backend="native")
+        pp = integrals.make_plan(self.primitive_top)
         print(f"AO={self.top.nao}, primitive AO={self.primitive_top.nao}, variables={offset}; "
               f"primitive ERI={self.primitive_top.nao**4*8/1e9:.3f} GB", flush=True)
         started = time.perf_counter()
@@ -250,7 +250,7 @@ def main():
         record(result.x)
     final_fd = check_gradient(experiment, result.x, evaluate(result.x))
     summary = dict(molecule=args.molecule, atom_angstrom=experiment.atom, method="RHF", basis="3-21g",
-                   integral_backend="native", derivative="JAX converged RHF Lagrangian including Pulay overlap term",
+                   integral_backend='libcint', derivative="JAX converged RHF Lagrangian including Pulay overlap term",
                    dtype="float64", jax_version=jax.__version__, devices=[str(d) for d in jax.devices()],
                    optimizer="BFGS", gtol=1e-6, optimizer_success=bool(result.success), message=str(result.message),
                    iterations=int(result.nit), evaluations=len(cache), initial=history[0], final=history[-1],

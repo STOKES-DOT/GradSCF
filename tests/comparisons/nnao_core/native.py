@@ -62,7 +62,7 @@ def make_inputs(row, atom_shells, *, auxbasis='def2-universal-jkfit'):
     # Integral preparation is native CPU work; the solver may run on a GPU.
     with jax.default_device(jax.devices('cpu')[0]):
         topology, parameters, ao_owners = basis_parameters(row, atom_shells)
-        plan = integrals.make_plan(topology, backend='native')
+        plan = integrals.make_plan(topology)
         overlap = plan.evaluate('overlap', parameters)
         kinetic = plan.evaluate('kinetic', parameters)
         hcore = kinetic+plan.evaluate('nuclear', parameters)
@@ -210,7 +210,7 @@ def counterpoise(row, atom_shells, groups, *, auxbasis='def2-universal-jkfit', s
         masked = np.where(kept, charges, 0)
         top = replace(data['topology'], nuclear_charges=tuple(map(int, masked)))
         with jax.default_device(jax.devices('cpu')[0]):
-            h = data['kinetic']+np.asarray(integrals.make_plan(top, backend='native').evaluate('nuclear', data['parameters']))
+            h = data['kinetic']+np.asarray(integrals.make_plan(top).evaluate('nuclear', data['parameters']))
             nuc = float(scf.nuclear_repulsion_energy(data['parameters'].nuclear_coords, jnp.asarray(masked)))
         nelectron = int(masked.sum())
         indices = np.flatnonzero(kept[data['ao_owners']])

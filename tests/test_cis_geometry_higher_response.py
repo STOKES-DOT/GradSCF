@@ -22,7 +22,7 @@ def hydrogen():
     spec.loader.exec_module(reference)
     coordinates = np.array([[0., 0., -.7], [0., 0., .7]])
     mol = gto.M(atom=list(zip(("H", "H"), coordinates)), basis="6-31g*", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(mol, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
     assert mf.converged
     return coordinates, mf, reference.evaluate_cis

@@ -15,7 +15,7 @@ from gradscf import integrals
 
 def _geometry_value(operator):
     top, params = integrals.prepare_basis("H 0 0 0; H .2 .1 .8", basis="sto-3g")
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     coords = jnp.concatenate([params.nuclear_coords, params.centers])
 
     def value(r):

@@ -14,7 +14,7 @@ def test_hybrid_raman_direction_matches_relaxed_differences(xc):
 
     start = perf_counter()
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
-    mf = dft.RKS(mol, xc=xc, grids_level=0, integral_backend="native", max_cycle=200,
+    mf = dft.RKS(mol, xc=xc, grids_level=0, max_cycle=200,
                  conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     energy = MolecularEnergy(mf)
     coordinates, field = energy.coordinates, jnp.array([0., 0., .001])

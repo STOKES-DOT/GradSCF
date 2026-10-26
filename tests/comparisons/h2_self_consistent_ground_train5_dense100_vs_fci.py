@@ -320,11 +320,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="jax",
     )
     p.add_argument(
-        "--integral-backend",
-        choices=("jax", "cpu", "gpu", "libcint"),
-        default="cpu",
-    )
-    p.add_argument(
         "--jk-backend",
         choices=("full", "df"),
         default="full",
@@ -657,7 +652,6 @@ def build_reference_point(
     grids_level: int,
     max_l: int,
     grid_ao_backend: str,
-    integral_backend: str,
     jk_backend: str,
     df_tol: float,
     df_max_rank: int | None,
@@ -735,7 +729,6 @@ def build_reference_point(
                 df_max_rank=df_max_rank,
             ),
             grid_ao_backend="jax",
-            integral_backend=str(integral_backend),
             compute_local_hfx_features=bool(compute_local_hfx_features),
             compute_local_hfx_aux=bool(compute_local_hfx_features),
             compute_local_pt2_features=bool(compute_local_pt2_features),
@@ -860,7 +853,6 @@ def build_reference_curve(
             grids_level=int(args.grids_level),
             max_l=int(args.max_l),
             grid_ao_backend=str(args.grid_ao_backend),
-            integral_backend=str(args.integral_backend),
             jk_backend=str(args.jk_backend),
             df_tol=float(args.df_tol),
             df_max_rank=args.df_max_rank,
@@ -1723,7 +1715,7 @@ def main() -> None:
         f"include_hfx_channel={bool(args.include_hfx_channel)}, "
         f"ground_state_hf_mode={args.ground_state_hf_mode}, "
         f"grid_density_mse_weight={args.grid_density_mse_weight}, "
-        f"grid_ao_backend={args.grid_ao_backend}, integral_backend={args.integral_backend}, "
+        f"grid_ao_backend={args.grid_ao_backend}, integral_backend=libcint, "
         f"jk_backend={args.jk_backend}"
     )
     logger.log("Loading runtime dependencies...")

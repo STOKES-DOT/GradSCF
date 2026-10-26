@@ -32,7 +32,7 @@ struct ExponentTables {
   ExponentTables(ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
                  ffi::BufferR1<ffi::F64> env,int operation,int representation,int split)
       :t(atoms,basis,env,operation==6 ? 4:operation,representation),op(operation),cart(representation) {
-    if (op!=6 && (op<0 || op>3)) throw std::invalid_argument("Unsupported exponent integral operator");
+    if (op!=5 && op!=6 && (op<0 || op>3)) throw std::invalid_argument("Unsupported exponent integral operator");
     if (op==6 ? split<1 || split>=t.nbas : split!=0)
       throw std::invalid_argument("Invalid exponent orbital/auxiliary split");
     original_shells=t.nbas;active=op==6 ? split:t.nbas;
@@ -47,7 +47,7 @@ struct ExponentTables {
     shadow=t.nbas++;coefficient_ptr=int(t.env.size());
     t.bas.resize(size_t(t.nbas)*BAS_SLOTS);t.env.resize(t.env.size()+64);
     Intor functions[]={int1e_ovlp_cart,int1e_kin_cart,int1e_nuc_cart,int1e_r_cart};
-    intor=op==6 ? int3c2e_cart:functions[op];
+    intor=op==5 ? int1e_rinv_cart:op==6 ? int3c2e_cart:functions[op];
   }
   void check_integrals(const ffi::Buffer<ffi::F64>& x) const {
     if (op==6) {

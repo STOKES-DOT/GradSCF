@@ -7,7 +7,7 @@ from typing import Any, Literal
 from jaxtyping import Array
 from gradscf.integrals.basis import CartesianBasis
 
-GeometryGradPolicy = Literal["analytic", "error", "zero"]
+GeometryGradPolicy = Literal["analytic", "error"]
 
 @dataclass(frozen=True)
 class RKSIntegralInputs:
@@ -34,7 +34,7 @@ class RKSIntegralInputs:
     init_mo_energy: Array | None = None
     molecule_charge: int = 0
     geometry_is_traced: bool = False
-    integral_backend: str = "cpu"
+    integral_backend: str = "libcint"
     grid_ao_backend: str = "jax"
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None
@@ -74,10 +74,7 @@ class RKSIntegralInputs:
         if self.direct_basis is not None:
             if hasattr(self.direct_basis,'response_eri_pair_matrix'):
                 return self.direct_basis.response_eri_pair_matrix()
-            # Resolve the shared public/legacy patch point only when needed.
-            from gradscf.scf.inputs.assembly import eri_pair_matrix_packed
-
-            return eri_pair_matrix_packed(self.direct_basis)
+            raise NotImplementedError('This libcint direct provider exposes AO actions or selected blocks, not packed ERIs.')
         return None
 
 
@@ -111,7 +108,7 @@ class UKSIntegralInputs:
     total_electrons: int = 0
     molecule_charge: int = 0
     geometry_is_traced: bool = False
-    integral_backend: str = "cpu"
+    integral_backend: str = "libcint"
     grid_ao_backend: str = "jax"
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None

@@ -71,7 +71,7 @@ def main():
     else:
         basis_name = 'cc-pvdz' if args.case == 'action' else 'sto-3g'
         topology, parameters = integrals.prepare_basis(atom, basis_name)
-    basis = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    basis = NativeDirectBasis(integrals.make_plan(topology), parameters)
     if frame is not None:
         assert c.shape[0] == basis.nao == input_metadata['nao']
     snapshot('input')

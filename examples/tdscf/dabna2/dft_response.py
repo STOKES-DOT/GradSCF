@@ -51,7 +51,7 @@ def run_case(geometry, xc, output_dir, *, nroots=20, max_memory=60000.,
                     charge=0, spin=0)
         save("scf")
         phase_started = perf_counter()
-        mf = dft.RKS(mol, xc=xc, integral_backend="native", jk_backend="direct",
+        mf = dft.RKS(mol, xc=xc, jk_backend="direct",
             execution_device="cpu", grids_level=3, direct_scf_tol=1e-12,
             grid_block_size=0, grid_max_memory=None, max_memory=max_memory,
             direct_scf_workers=workers, conv_tol=1e-9, conv_tol_density=1e-8,

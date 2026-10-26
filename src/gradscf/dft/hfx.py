@@ -41,7 +41,7 @@ class ChunkedHFXNu:
 
         def evaluate(points):
             return jnp.stack([rinv_matrices(basis, points,
-                zeta=None if abs(w) < 1e-14 else w*w, engine="auto",
+                zeta=None if abs(w) < 1e-14 else w*w,
                 grid_chunk_size=max(1, min(chunk_size, points.shape[0]))) for w in omegas])
 
         def chunk(start, stop):
@@ -370,8 +370,7 @@ def _local_hfx_features_from_basis_dm(
                 basis,
                 coords_arr[start:end],
                 zeta=zeta,
-                engine="auto",
-                grid_chunk_size=min(int(chunk_size), max(1, end - start)),
+                                grid_chunk_size=min(int(chunk_size), max(1, end - start)),
             )
             hfx_result = _local_hfx_features_from_nu_cache(
                 ao_arr[start:end],

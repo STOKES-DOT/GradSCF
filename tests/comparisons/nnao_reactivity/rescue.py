@@ -58,7 +58,7 @@ def minao_guess(row, atom_shells, overlap, nuclear_charges, *, nelectron, spin):
         combined.append(shells+minimal)
     with jax.default_device(jax.devices('cpu')[0]):
         topology, parameters, _ = basis_parameters(row, combined)
-        matrix = np.asarray(integrals.make_plan(topology, backend='native').evaluate('overlap', parameters))
+        matrix = np.asarray(integrals.make_plan(topology).evaluate('overlap', parameters))
     s = np.asarray(overlap)
     np.testing.assert_allclose(matrix[np.ix_(target, target)], s, atol=2e-12, rtol=0)
     projected = np.linalg.solve(s, matrix[np.ix_(target, reference)])

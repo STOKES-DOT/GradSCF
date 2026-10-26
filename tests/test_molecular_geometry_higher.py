@@ -9,7 +9,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 
 def test_h2_relaxed_cubic_quartic_against_independent_hessian_differences():
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="6-31g", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
                  conv_tol_density=1e-12, conv_tol_grad=1e-11).run()
     energy = MolecularEnergy(mf, gradient_tolerance=1e-11)
     direction = jnp.array([[0., 0., -.5], [0., 0., .5]])

@@ -46,7 +46,7 @@ def test_oh_pi_zero_mode_does_not_invalidate_first_energy_force():
     atom = "O 0 0 0; H 0 0 1.85"
     mol = gto.M(atom=atom, basis="6-31g*", spin=1, unit="Bohr", cart=True)
     mf = scf.UHF(mol, conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                 max_cycle=250, integral_backend="native").run()
+                 max_cycle=250).run()
     stability = mf.stability(solver="dense", eigensolver_tol=1e-10)
     assert stability.stationary and abs(stability.minimum_curvature) < 1e-8
     energy = MolecularEnergy(mf, gradient_tolerance=1e-10)

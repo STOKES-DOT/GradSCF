@@ -4,10 +4,12 @@ Primal basis data are separate from differentiable coordinates so unsupported
 basis derivatives cannot silently become zero. Coordinate Hessians use native
 shell contractions for bilinear JVPs and their adjoints, without constructing
 an integral-coordinate Jacobian. Cartesian S/T/nuclear/full-Coulomb ERIs also
-have cubic/quartic products; higher orders, spherical and dipole higher
-products, and mixed basis-parameter derivatives remain explicitly unsupported. First/second
-one-electron products on CUDA use the existing bounded CPU host bridge; cubic
-and quartic full-integral products remain CPU-only.
+have cubic/quartic products; higher orders, spherical, dipole and Rinv higher
+products, and mixed basis-parameter derivatives remain explicitly unsupported.
+Packed s4/s8 ERIs retain compact primal and coordinate products through order
+two; static Cartesian ERI windows retain cubic/quartic products too.
+First/second one-electron and packed products on CUDA use the bounded CPU
+host bridge; cubic and quartic products remain CPU-only.
 """
 from functools import lru_cache, partial
 
@@ -19,12 +21,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from ..ffi import (evaluate as evaluate_values, evaluate_eri_slab as evaluate_slab_values,
+                   evaluate_compact,
                    _OPERATORS, _eri_shell_slice, _eri_slab_inputs)
 from .common import batch_product, register_cpu_product
 
 
 @lru_cache(maxsize=64)
-def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=None, slab_shape=None):
+def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=None, slab_shape=None,
+                       compact_layout=None):
     atoms = np.asarray(atoms_key, dtype=np.int32)
     basis = np.asarray(basis_key, dtype=np.int32)
     offsets = atoms[:, 1, None]+np.arange(3)[None, :]
@@ -37,7 +41,13 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
         slice_attrs = {"shell_slice": np.asarray(shell_slice, dtype=np.int32)}
     if slab_shape is not None:
         shape = slab_shape
-    bounded = shell_slice is not None or slab_shape is not None
+    if compact_layout is not None:
+        if operator != "eri" or compact_layout not in (0, 1) or shell_slice is not None or slab_shape is not None:
+            raise ValueError("Packed geometry requires ERI layout 0 or 1 without a shell window")
+        pairs = nao*(nao+1)//2
+        shape = (pairs, pairs) if compact_layout == 0 else (pairs*(pairs+1)//2,)
+        slice_attrs = {"layout": np.int32(compact_layout)}
+    bounded = shell_slice is not None or slab_shape is not None or compact_layout is not None
 
     def register(primitive, call, output_shape):
         if bounded or operator != "eri":
@@ -50,13 +60,16 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
             mlir.register_lowering(primitive, mlir.lower_fun(call, multiple_results=False), platform="cpu")
 
     def target(name):
+        if compact_layout is not None:
+            return name.replace("gradscf_", "gradscf_eri_compact_", 1)
         if slab_shape is not None:
             return name.replace("gradscf_", "gradscf_eri_slab_", 1)
         return name.replace("gradscf_", "gradscf_eri_slice_", 1) if shell_slice is not None else name
 
     def pack(env, coords, origin):
         env = env.at[offsets].set(coords, unique_indices=True)
-        return env.at[1:4].set(origin)
+        origin_start = 4 if operator == "rinv" else 1
+        return env.at[origin_start:origin_start+3].set(origin)
 
     def ffi_product(target, env, vector, output_shape, *bounds):
         call = jax.ffi.ffi_call(target, jax.ShapeDtypeStruct(output_shape, jnp.float64),
@@ -96,11 +109,12 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
         forward = core.Primitive(f"gradscf_geometry_order{order}_jvp_{operator}")
         reverse = core.Primitive(f"gradscf_geometry_order{order}_vjp_{operator}")
 
-        def call(target, env, direction, vector, extra, output_shape):
-            function = jax.ffi.ffi_call(target, jax.ShapeDtypeStruct(output_shape, jnp.float64),
+        def call(target_name, env, direction, vector, extra, output_shape):
+            function = jax.ffi.ffi_call(target(target_name), jax.ShapeDtypeStruct(output_shape, jnp.float64),
                                         vmap_method="sequential")
             return function(jnp.asarray(atoms), jnp.asarray(basis), env, direction, vector, extra,
-                            operator=np.int32(_OPERATORS[operator]), cart=np.int32(cart), order=np.int32(order))
+                            operator=np.int32(_OPERATORS[operator]), cart=np.int32(cart),
+                            order=np.int32(order), **slice_attrs)
 
         def push(env, *vectors):
             return call("gradscf_geometry_higher_jvp_cpu_v1", env, vectors[0], vectors[1],
@@ -119,7 +133,7 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
         mlir.register_lowering(reverse, mlir.lower_fun(pull, multiple_results=False), platform="cpu")
         return forward, reverse
 
-    for order in (() if bounded else (3, 4)):
+    for order in ((3, 4) if not bounded or (shell_slice is not None and cart) else ()):
         products[order], adjoints[order] = higher_primitives(order)
 
     def transpose(other, cotangent, env, vector, *bounds):
@@ -151,12 +165,12 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
         env, *vectors = primals
         denv, *dvectors = tangents
         if not isinstance(denv, ad.Zero):
-            if bounded:
-                raise NotImplementedError("Native ERI shell_slice/slab third geometry derivatives are not supported")
+            if compact_layout is not None or slab_shape is not None:
+                raise NotImplementedError("Native packed ERI/slab third geometry derivatives are not supported")
             if order == 4:
                 raise NotImplementedError("Native fifth geometry derivatives are not supported")
             if not cart or operator not in ("overlap", "kinetic", "nuclear", "eri"):
-                raise NotImplementedError("Native third geometry derivatives require Cartesian S/T/nuclear/full ERIs")
+                raise NotImplementedError("Native third geometry derivatives require Cartesian S/T/nuclear/ERI products")
         family = adjoints if is_adjoint else products
         primitive = family[order]
         primal = primitive.bind(*primals, *bounds)
@@ -209,8 +223,12 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
             batching.primitive_batchers[primitive] = partial(batch_product, primitive)
 
     if bounded:
-        sliced_value = core.Primitive("gradscf_eri_slab_value" if slab_shape is not None else "gradscf_eri_slice_value")
+        name = ("compact" if compact_layout is not None else
+                "slab" if slab_shape is not None else "slice")
+        sliced_value = core.Primitive(f"gradscf_eri_{name}_value")
         def bounded_value(env, *bounds):
+            if compact_layout is not None:
+                return evaluate_compact(atoms, basis, env, shape, layout=compact_layout, cart=cart)
             if slab_shape is not None:
                 return evaluate_slab_values(atoms, basis, env, bounds[0], shape, cart)
             return evaluate_values(operator, atoms, basis, env, nao, cart, shell_slice=shell_slice)
@@ -253,12 +271,20 @@ def _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice=No
     return value
 
 
-def evaluate_geometry(operator, atm, bas, env, coords, origin, nao, cart=True, *, shell_slice=None):
-    """Evaluate with geometry AD; env contains only fixed nongeometry values."""
+def evaluate_geometry(operator, atm, bas, env, coords, origin, nao, cart=True, *, shell_slice=None,
+                       compact_layout=None):
+    """Evaluate with geometry AD; env contains only fixed nongeometry values.
+
+    ``compact_layout=0`` selects s4 and ``1`` selects s8. Primal and first/second
+    coordinate products retain the packed shape, including spherical output.
+    Static Cartesian ``shell_slice`` products also retain ordinary-Coulomb
+    coordinate products through order four without a full ERI intermediate.
+    """
     atoms_key = tuple(tuple(int(x) for x in row) for row in atm)
     basis_key = tuple(tuple(int(x) for x in row) for row in bas)
     shell_slice, _ = _eri_shell_slice(np.asarray(bas), cart, shell_slice)
-    return _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice)(env, coords, origin)
+    return _geometry_function(operator, atoms_key, basis_key, nao, cart, shell_slice,
+                              compact_layout=compact_layout)(env, coords, origin)
 
 
 def evaluate_eri_slab(atm, bas, env, coords, bounds, shape, cart=True):

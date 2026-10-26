@@ -25,14 +25,14 @@ SYSTEMS = {
 }
 
 
-def check_geometry(molecule="h2", *, steps=30, fd_step=1e-4, backend="native"):
+def check_geometry(molecule="h2", *, steps=30, fd_step=1e-4):
     if steps < 1 or fd_step <= 0:
         raise ValueError("steps and fd_step must be positive")
     jax.config.update("jax_enable_x64", True)
     started = time.perf_counter()
     atom, basis = SYSTEMS[molecule]
     topology, params = integrals.prepare_basis(atom=atom, basis=basis, unit="Angstrom")
-    plan = integrals.make_plan(topology, backend=backend)
+    plan = integrals.make_plan(topology)
     shell_atoms = np.argmin(np.linalg.norm(np.asarray(params.centers)[:, None, :]
                                           - np.asarray(params.nuclear_coords)[None, :, :], axis=2), axis=1)
     charges = jnp.asarray(topology.nuclear_charges)
@@ -55,7 +55,7 @@ def check_geometry(molecule="h2", *, steps=30, fd_step=1e-4, backend="native"):
         return result.total_energy, residual
 
     coords = params.nuclear_coords
-    print(f"{molecule} RHF/{basis}, {topology.nao} AOs, {steps} fixed SCF steps; {backend}, float64", flush=True)
+    print(f"{molecule} RHF/{basis}, {topology.nao} AOs, {steps} fixed SCF steps; libcint, float64", flush=True)
     (total, residual), grad = jax.jit(jax.value_and_grad(energy, has_aux=True))(coords)
     grad = np.asarray(grad)
     np.testing.assert_array_equal(np.isfinite(grad), True)
@@ -77,7 +77,7 @@ def check_geometry(molecule="h2", *, steps=30, fd_step=1e-4, backend="native"):
     fd_error = float(np.max(np.abs(grad-fd)))
     translation = np.sum(grad, axis=0)
     torque = np.sum(np.cross(np.asarray(coords)-np.asarray(coords).mean(axis=0), grad), axis=0)
-    summary = dict(molecule=molecule, basis=basis, method="RHF", backend=backend,
+    summary = dict(molecule=molecule, basis=basis, method="RHF", backend="libcint",
                    atom_angstrom=atom, coordinates_bohr=np.asarray(coords).tolist(),
                    gradient_units="Hartree/Bohr", gradient=grad.tolist(), forces=(-grad).tolist(),
                    fd_gradient=fd.tolist(),
@@ -103,12 +103,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--molecule", choices=SYSTEMS, default="h2")
     parser.add_argument("--steps", type=int, default=30)
-    parser.add_argument("--backend", choices=("native", "jax_reference"), default="native")
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/geometry-gradients"))
     args = parser.parse_args()
-    result = check_geometry(args.molecule, steps=args.steps, backend=args.backend)
+    result = check_geometry(args.molecule, steps=args.steps)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir/f"{args.molecule}-{args.backend}.json").write_text(json.dumps(result, indent=2)+"\n")
+    (args.output_dir/f"{args.molecule}-libcint.json").write_text(json.dumps(result, indent=2)+"\n")
 
 
 if __name__ == "__main__":

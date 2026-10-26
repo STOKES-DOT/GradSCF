@@ -90,7 +90,7 @@ if modes.rigid_rank != 6 or not np.all(modes.frequencies_cm1 > 0):
 ground_zpe = float(.5*np.sum(modes.frequencies_cm1)/HARTREE_TO_WAVENUMBER)
 
 mol = gto.M(atom=list(zip(excited["symbols"], coordinates)), basis=excited["basis"], unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
 model = CISGeometry(mf, nroots=excited["nroots"], gradient_tolerance=1e-10)
 state = model.state(coordinates)

@@ -3,12 +3,18 @@
 Current SCF/TDDFT AO grid streaming, memory controls and external-model
 boundaries are documented in [Molecular AO grid streaming](../integrals/grids/STREAMING.md).
 
-The native restricted direct-SCF reference supplies an AO J/K action to
+The libcint restricted direct-SCF reference supplies an AO J/K action to
 CIS, TDA and TDHF without requiring an AO ERI array or complete MO ERIs.
 CPU response operators can reuse exact s8 integrals when the workspace budget
 admits them; otherwise they contract shell-direct. This is a storage change
 to the same single-excitation equations, not density fitting or an orbital-space
 truncation.
+
+`libcint` is the sole public Gaussian integral interface. Ordinary SCF/DFT/TD
+construction does not choose an integral engine; CPU/GPU execution devices and
+JAX grid AO evaluation are separate controls. The dated numerical records below
+belong to their stated frozen snapshots and are not fresh validation of the
+current source tree.
 
 ## Public use
 
@@ -17,7 +23,7 @@ from gradscf import gto, scf, ci, tdscf
 
 mol = gto.M(atom="O 0 0 0; H 0 -.757 .587; H 0 .757 .587",
             basis="6-31g*", unit="Angstrom", cart=True)
-mf = scf.RHF(mol, integral_backend="native", jk_backend="direct").run()
+mf = scf.RHF(mol, jk_backend="direct").run()
 cis = ci.CIS(mf, nroots=5, max_memory=1024.).run()
 tda = tdscf.TDA(mf, nstates=5, max_memory=1024.)
 tda_result = tda.kernel()
@@ -40,8 +46,10 @@ preserve direct providers without requesting pair ERIs.
 
 The reference retains `NativeDirectBasis`: its shell topology is static,
 while coordinates, exponents and coefficients are dynamic PyTree leaves.
-Its two-electron supply is `get_jk(density)`, not an ERI array. The native
-engine traverses shell quartets and contracts their local integrals directly.
+Its two-electron supply is `get_jk(density)`, not an ERI array. The private
+libcint implementation traverses shell quartets and contracts local integrals
+directly. The `NativeDirectBasis` class name identifies that implementation;
+it is not an additional engine selector.
 
 The response path is
 
@@ -167,6 +175,14 @@ coefficient derivatives remain explicitly unsupported. The projected
 provider retains both coordinate and contraction-matrix dependence.
 The raw flat-ENV helper retains its density-only boundary; geometry callers
 use the canonical plan/provider interface.
+
+The ordinary full-s1 plan API separately provides coefficient first/second and
+exponent first products. Those full-ERI rules do not extend the primitive-basis
+contract of shell-direct J/K. Packed, RI and ECP products also have distinct
+limits; see [the integral contract](../integrals/_native/README.md). Unsupported
+mixed basis/geometry products are rejected rather than replaced by a Gaussian
+fallback or zero derivatives. Scalar ECP requires its distinct vendored C
+kernel and explicit ECP Hamiltonian, not an all-electron substitution.
 
 The native geometry action contracts each derivative shell block immediately
 into J/K matrices or a coordinate adjoint. It reuses the existing libcint
@@ -373,7 +389,7 @@ optimized aggregate. Its electronic-structure calculation has not completed.
 
 ## Direct geometry response and TDDFT integration
 
-The focused continuation reuses the existing `native/jk.py` and native
+The focused continuation reuses the private `integrals/backends/native/jk.py` and libcint
 shell-direct forward kernel. It adds coordinate JVP/VJP products and connects
 them through restricted and unrestricted molecular response. It does not add
 a second J/K engine or method-local numerical solver.
@@ -419,11 +435,11 @@ are small independent oracles; the tested direct path does not request them.
 These are first-order relaxed excitation-gradient checks. Integral-level
 mixed/second coordinate response is separately covered; no complete TDDFT
 Hessian, new CUDA geometry pass, large-molecule gradient benchmark, or primitive
-exponent/coefficient AD is claimed.
+exponent/coefficient AD of the shell-direct provider is claimed.
 
 ## Static range-separated direct action
 
-Named molecular RSH references can retain the native provider with empty full
+Named molecular RSH references can retain the libcint provider with empty full
 and LR ERI leaves. The existing direct kernel accepts a static nonnegative
 `omega` in inverse bohr; positive values select `erf(omega*r12)/r12`.
 The shared SCF/response action computes
@@ -459,7 +475,8 @@ functional-family acceptance uses omegaB97X-D, whose factored local expression
 has separate higher-derivative regression coverage.
 
 Geometry AD still requires zero direct screening cutoff. Omega itself and
-primitive exponents/coefficients remain unsupported AD inputs. The external
+primitive exponents/coefficients of the shell-direct provider remain unsupported
+AD inputs. The external
 scalar neural-XC contract is unchanged: an initial RSH label does not silently
 add a separate exact-exchange term to an arbitrary supplied neural energy.
 

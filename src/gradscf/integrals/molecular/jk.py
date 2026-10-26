@@ -1,5 +1,6 @@
-"""DF and packed density contractions, with explicit legacy direct dispatch."""
+"""JAX density contractions and libcint shell-direct products."""
 from functools import partial
+from dataclasses import dataclass
 import math
 import jax
 import jax.numpy as jnp
@@ -9,16 +10,31 @@ from jaxtyping import Array
 from .eri import packed_eri_shape, _metadata_arrays, _pair_metadata
 
 
-def __getattr__(name):
-    # CartesianBasis direct calls remain a reference-backend contract until
-    # their callers migrate to IntegralPlan.get_jk / NativeDirectBasis.
-    if name not in {'DirectJKResult', 'build_direct_jk_from_basis',
-                    'build_direct_jk_incremental', '_DIRECT_PACKED_JK_MAX_NAO'}:
-        raise AttributeError(name)
-    from gradscf.integrals.backends.jax_reference import direct_jk
-    value = getattr(direct_jk, name)
-    globals()[name] = value
-    return value
+@dataclass(frozen=True)
+class DirectJKResult:
+    j: Array
+    k: Array
+
+
+def build_direct_jk_from_basis(basis,density,*,screening_threshold=None,workers=1):
+    from ..libcint import bind_cartesian
+    provider=basis if callable(getattr(basis,'get_jk',None)) else bind_cartesian(basis).direct()
+    density=jnp.asarray(density)
+    density=.5*(density+density.T)
+    j,k=provider.get_jk(density,screening_threshold=0. if screening_threshold is None else screening_threshold,
+                        workers=workers)
+    return DirectJKResult(j,k)
+
+
+def build_direct_jk_incremental(basis,density,*,density_last=None,j_last=None,k_last=None,
+                                 screening_threshold=None,workers=1):
+    if density_last is None:
+        return build_direct_jk_from_basis(basis,density,screening_threshold=screening_threshold,workers=workers)
+    if j_last is None or k_last is None:
+        raise ValueError('Previous J/K are required with a previous density.')
+    result=build_direct_jk_from_basis(basis,density-density_last,
+        screening_threshold=screening_threshold,workers=workers)
+    return DirectJKResult(result.j+j_last,result.k+k_last)
 
 @jax.jit
 def build_jk_from_df(df_factors: Array, density: Array) -> tuple[Array, Array]:

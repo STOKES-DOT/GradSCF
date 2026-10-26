@@ -65,8 +65,7 @@ class _BaseKS:
     level_shift: float = 0.0
     grids_level: int = 0
     max_l: int = 3
-    integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu"
-    geometry_grad_policy: Literal["analytic", "error", "zero"] = "analytic"
+    geometry_grad_policy: Literal["analytic", "error"] = "analytic"
     grid_ao_backend: Literal["jax"] = "jax"
     grid_block_size: int = 0
     grid_max_memory: float | None = None
@@ -97,6 +96,11 @@ class _BaseKS:
         self.max_memory = validate_memory_mb(self.max_memory)
         if self.grid_max_memory is not None:
             self.grid_max_memory = validate_memory_mb(self.grid_max_memory, name="grid_max_memory")
+
+    @property
+    def integral_backend(self):
+        """Read-only provenance; integral engine selection is not a method option."""
+        return "libcint"
 
     def _orbital_signature(self):
         from .reference import _array_signature
@@ -147,7 +151,7 @@ class _BaseKS:
         if initial.ao_laplacian is None and getattr(initial, "grid_ao", None) is None:
             from ..integrals import basis_from_molecule_spec, evaluate_cartesian_ao_with_derivatives
             basis = basis_from_molecule_spec(spec, basis=self.mol.basis,
-                max_l=self.max_l, precompute_eri_groups=False)
+                max_l=self.max_l)
             derivatives = evaluate_cartesian_ao_with_derivatives(basis, initial.grid.coords, deriv=2)[1]
             initial = replace(initial, ao_laplacian=derivatives[4])
         if isinstance(self, RKS):

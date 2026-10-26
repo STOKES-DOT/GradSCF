@@ -54,7 +54,7 @@ def run(case="h2"):
     direction = jnp.asarray(data["direction"])
     mol = gto.M(atom=list(zip(data["symbols"], data["coordinates_bohr"])),
                 basis=data["basis"], cart=True, unit="Bohr")
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
                  conv_tol_density=1e-12, conv_tol_grad=1e-11).run()
     stability = mf.stability(solver="dense", eigensolver_tol=1e-10)
     if stability.stable is not True or not stability.spectrum_certified:

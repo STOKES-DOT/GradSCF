@@ -27,8 +27,6 @@ _EXPORTS = {'DirectJKResult': 'gradscf.integrals.molecular.jk',
  'eri_element': 'gradscf.integrals.molecular.eri',
  'eri_pair_matrix_packed': 'gradscf.integrals.molecular.eri',
  'eri_tensor': 'gradscf.integrals.molecular.eri',
- 'eri_tensor_screened': 'gradscf.integrals.molecular.eri',
- 'precompile_eri_kernels': 'gradscf.integrals.molecular.eri',
  'BasisTopology': 'gradscf.integrals.basis',
  'BasisParameters': 'gradscf.integrals.basis',
  'prepare_basis': 'gradscf.integrals.basis',
@@ -43,6 +41,8 @@ _EXPORTS.update({'CartesianAO': 'gradscf.integrals.basis', 'CartesianBasis': 'gr
 __all__ = list(_EXPORTS)
 
 def __getattr__(name):
+    if name=='libcint':
+        return import_module('.libcint',__name__)
     if name not in _EXPORTS:
         raise AttributeError(name)
     value = getattr(import_module(_EXPORTS[name]), name)

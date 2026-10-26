@@ -48,7 +48,7 @@ class PoolRHF:
                 raise ValueError('Closed-shell RHF requires an even electron count.')
             top, p = active_pool_basis(self.layout)
             self.pool_nao = top.nao
-            self.plan = integrals.make_plan(top, backend='native')
+            self.plan = integrals.make_plan(top)
             at, ap = integrals.prepare_basis(atom, auxbasis, cart=False)
             self.aux = integrals.make_auxiliary_plan(top, at)
             self.metric = self.aux.metric_factor(p, ap)

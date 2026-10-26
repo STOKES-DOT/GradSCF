@@ -39,7 +39,7 @@ bohr_to_angstrom = 0.529177210903
 coords_bohr = data["coords_bohr"]
 coords = coords_bohr * bohr_to_angstrom
 basis = integrals.basis_from_spec(str(data["atom"]), basis=str(data["basis"]),
-                                 unit="Angstrom", precompute_eri_groups=False)
+                                 unit="Angstrom")
 lower, upper = coords_bohr.min(axis=0) - 3.5, coords_bohr.max(axis=0) + 3.5
 axes = [np.linspace(lo, hi, int(np.ceil((hi - lo) / .24)) + 1)
         for lo, hi in zip(lower, upper)]

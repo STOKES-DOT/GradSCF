@@ -47,7 +47,7 @@ def load_modes():
 def reference(data, coordinates):
     mol = gto.M(atom=list(zip(data["symbols"], coordinates)), basis=data["basis"],
                 unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
                  conv_tol_density=1e-12, conv_tol_grad=1e-10, max_cycle=150).run()
     engine = NativeRHF(mol.to_spec(), basis=data["basis"], config=RKSConfig(
         xc_spec="hf", max_cycle=150, conv_tol=1e-13, conv_tol_density=1e-12,

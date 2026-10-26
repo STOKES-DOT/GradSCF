@@ -68,7 +68,7 @@ def main():
     mol = gto.M(atom="O 0 0 0; H 0 1.43 1.11; H 0 -1.43 1.11",
                 basis=report["basis"], unit="Bohr", cart=True)
     mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                 max_cycle=150, integral_backend="native").run()
+                 max_cycle=150).run()
     assert mf.converged
     model = MolecularEnergy(mf, gradient_tolerance=1e-10)
     base = model.coordinates

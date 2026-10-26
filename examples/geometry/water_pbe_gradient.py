@@ -31,7 +31,7 @@ mol = gto.M(
 )
 mf = dft.RKS(mol, xc="pbe", grids_level=grid_level,
              conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-             max_cycle=150, integral_backend="native").run()
+             max_cycle=150).run()
 if not mf.converged:
     raise RuntimeError("The initial PBE calculation did not converge.")
 spec = mol.to_spec()
@@ -45,8 +45,7 @@ def energy(coords):
     """Relax the orbitals after rebuilding all geometry-dependent inputs."""
     inputs = build_rks_integral_inputs(
         atom=replace(spec, coords_bohr=coords), basis=mol.basis,
-        xc_spec="pbe", grids_level=grid_level, cart=True,
-        integral_backend="native", grid_ao_backend="jax",
+        xc_spec="pbe", grids_level=grid_level, cart=True, grid_ao_backend="jax",
         include_dipole_integrals=False,
     )
     result = scf.minimize_roks_from_integrals(
@@ -124,7 +123,7 @@ data = dict(
     warm_value_and_gradient_seconds=warm_seconds,
     scf_energy_tolerance=1e-12, scf_density_tolerance=1e-11,
     scf_gradient_tolerance=1e-10, orbital_gradient_tolerance=1e-9,
-    implicit_tolerance=1e-10, dtype="float64", integral_backend="native",
+    implicit_tolerance=1e-10, dtype="float64", integral_backend='libcint',
     jax_version=jax.__version__, numpy_version=np.__version__,
     python_version=platform.python_version(), hostname=platform.node(),
     machine=platform.machine(), devices=[str(device) for device in jax.devices()],

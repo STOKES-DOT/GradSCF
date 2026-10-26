@@ -32,7 +32,7 @@ def main():
         parser.error('--repeats must be positive')
     geometry = 'O 0 0 0; H 0 -.757 .587; H 0 .757 .587'
     topology, parameters = integrals.prepare_basis(geometry, basis=args.basis, cart=True)
-    basis = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    basis = NativeDirectBasis(integrals.make_plan(topology), parameters)
     rng = np.random.default_rng(6205)
     q, _ = np.linalg.qr(rng.normal(size=(topology.nao, topology.nao)))
     nocc = min(5, topology.nao//2)

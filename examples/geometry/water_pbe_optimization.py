@@ -26,8 +26,7 @@ mol = gto.M(atom="O 0 0 0; H 0 1.43 1.11; H 0 -1.43 1.11",
             basis="6-31g*", unit="Bohr", cart=True)
 seed_start = perf_counter()
 mf = dft.RKS(mol, xc="pbe", grids_level=grid_level, max_cycle=150,
-             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-             integral_backend="native").run()
+             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
 seed_seconds = perf_counter() - seed_start
 energy = MolecularEnergy(mf)
 value_and_gradient = jax.jit(jax.value_and_grad(energy))
@@ -77,7 +76,7 @@ data = dict(
     angle_degrees=float(angle), optimizer_success=bool(minimum.success),
     optimizer_message=str(minimum.message), iterations=int(minimum.nit),
     gradient_tolerance=1e-7, grid_level=grid_level, grid_response=True,
-    integral_backend="native", grid_ao_backend="jax", orbital_gradient_tolerance=1e-9,
+    integral_backend='libcint', grid_ao_backend="jax", orbital_gradient_tolerance=1e-9,
     implicit_tolerance=1e-10, elapsed_seconds=elapsed, seed_scf_seconds=seed_seconds,
     history=history, dtype="float64", jax_version=jax.__version__,
     numpy_version=np.__version__, python_version=platform.python_version(),

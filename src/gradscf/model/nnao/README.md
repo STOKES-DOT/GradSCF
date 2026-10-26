@@ -1,6 +1,6 @@
 # NNAO 模型模块
 
-NNAO 使用 MACE 预测收缩系数，并通过 GradSCF 的基组组装、native 积分和
+NNAO 使用 MACE 预测收缩系数，并通过 GradSCF 的基组组装、libcint 积分和
 implicit SCF 计算变分能量与梯度。此目录包含 GradSCF 的实现；原始 MACE
 项目隔离在 [`vendor/mace-jax/`](vendor/mace-jax/)，由其 `UPSTREAM.json`
 记录版本和逐文件哈希，许可证保留在上游目录。
@@ -80,6 +80,10 @@ from gradscf.model.nnao.integrals import prepare_native_context, native_projecti
 
 ## 积分与微分约定
 
+模型工作流通过 `gradscf.integrals` 隐式使用唯一的生产积分接口 libcint，
+不选择另一套积分引擎。CPU 积分与 GPU 上的 MACE／SCF 之间保留显式数组传输；
+这里的 CPU/GPU 是执行设备，不是积分引擎选项。
+
 固定几何／指数时，缓存 primitive 的 S、h 和 packed DF 因子；JAX 通过
 含归一化的收缩矩阵投影到 contracted AO。DF 投影按辅助指标分块展开，
 但当前实现仍需要完整 packed 输入与完整 contracted 三指标输出，不是磁盘流式算法。
@@ -94,8 +98,21 @@ occupied/virtual DF 分块表达式，不改变稳定性阈值或驻点逃逸策
 native 联合路径直接计算 contracted S、h、三中心积分并求系数／指数 VJP。
 辅助基度量在固定几何和辅助基时复用。不缓存完整四指标 ERI。
 当前 DF 参数 AD 不包含几何／辅助基导数，不能据此宣称完整力训练已受支持。
+该 contracted 联合路径会显式拒绝带 ECP 的 layout，避免漏掉 ECP Hamiltonian。
+`qvszps` 的已有固定 primitive／direct 系数路径继续加入标量 ECP；其指数和
+ECP 几何导数仍未实现。
 指数微调仍使用这条 native 路径；冻结网络输出时，指数相关的收缩归一化导数
 仍由 native 参数规则保留。阶段 C 的融合不会把动态指数作为固定缓存复用。
+
+现有固定指数和联合训练的目标都是 RHF 总能量，`encoder.py` 调用上游 MACE
+时关闭 `compute_force` 和 `compute_stress`。`assemble()` 保留图坐标到 Bohr
+基组中心的映射，但这不代表现有训练入口已经实现力损失；变动几何时仍须重新
+准备积分和辅助度量，不能将固定几何缓存当成完整几何响应。
+
+`tests/nnao/test_libcint_consumers.py` 的两几何验收使用当前小型随机初始化
+MACE 模型，覆盖物理基组投影、系数／log-exponent 差分、能量梯度、一次 Adam
+更新和检查点往返。它不依赖归档训练权重，也不构成真实训练检查点的重新验证。
+2026-10-26 的迁移工作树未提供原始 best975 检查点；相应历史检查仍显式报告缺失或跳过。
 
 本次迁移保留现有数值缓存签名与严格来源检查：旧的已验证缓存不被静默
 解释为新版本训练结果。完整训练源码身份因迁移变化，旧运行目录不得直接

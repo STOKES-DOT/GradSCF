@@ -62,7 +62,7 @@ def prepare_fixed_pool(row, layout, path, *, storage='device',
             if manifest['cache_sha256'] != file_hash(path):
                 raise ValueError('Fixed-pool cache checksum/hash mismatch.')
         else:
-            plan = integrals.make_plan(top, backend='native')
+            plan = integrals.make_plan(top)
             aux = integrals.make_auxiliary_plan(top, at)
             metric = aux.metric_factor(parameters, ap)
             s = plan.evaluate('overlap', parameters)

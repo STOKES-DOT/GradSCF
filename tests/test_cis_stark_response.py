@@ -14,7 +14,7 @@ def test_h2_total_excited_polarizability_matches_independent_finite_fields():
 
     coordinates = np.array([[0., -.4, -.4], [.4, .2, 1.]])
     mol = gto.M(atom=list(zip(("H", "H"), coordinates)), basis="6-31g*", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(mol, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-11).run()
     assert mf.converged
     model = CISGeometry(mf, nroots=2, gradient_tolerance=1e-11,

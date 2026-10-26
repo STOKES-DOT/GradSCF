@@ -29,7 +29,7 @@ def test_nitrogen_direct_mp2_geometry_cpu_cuda(monkeypatch):
         with jax.default_device(device):
             mol = gto.M(atom='N 0 0 -1.04; N 0 0 1.04', basis='sto-3g',
                          unit='Bohr', cart=True)
-            mf = scf.RHF(mol, integral_backend='native', jk_backend='direct',
+            mf = scf.RHF(mol, jk_backend='direct',
                 execution_device=('gpu' if device == gpu else 'cpu'), max_memory=64.,
                 conv_tol=1e-13, conv_tol_density=1e-11, conv_tol_grad=1e-10,
                 max_cycle=250, init_guess=1.4*np.eye(10)).run()

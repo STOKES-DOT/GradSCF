@@ -11,7 +11,7 @@ def hydrogen_energy():
     from gradscf_tools.molecular_response import MolecularEnergy
 
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(mol, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     return MolecularEnergy(mf)
 

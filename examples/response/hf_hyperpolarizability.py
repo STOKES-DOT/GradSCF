@@ -19,8 +19,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 
 
 mol = gto.M(atom="H 0 0 0; F 0 0 1.7328", basis="6-31+g*", unit="Bohr", cart=True)
-mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-             integral_backend="native").run()
+mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11).run()
 energy = MolecularEnergy(mf)
 coordinates = energy.coordinates
 axial_energy = lambda field: energy(coordinates, jnp.array([0., 0., field]))

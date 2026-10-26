@@ -44,7 +44,7 @@ def energy(params, inputs):
 functional = dft.custom_xc(input_fn=make_inputs, energy_fn=energy,
     init_fn=lambda key, x: model.init(key, x['x']))
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
+mf = scf.RHF(mol, grids_level=0).run()
 reference = mf.to_reference()
 params = functional.init_from_molecule(jax.random.PRNGKey(0), reference)
 teacher = jax.tree.map(lambda x: x+.03, params)

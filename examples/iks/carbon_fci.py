@@ -33,7 +33,7 @@ folder = Path('artifacts/iks-carbon-sto3g-20261026')
 folder.mkdir(parents=True, exist_ok=True)
 started = perf_counter()
 mol = gto.M(atom='C 0 0 0', basis='sto-3g', spin=2, charge=0, cart=True)
-common = scf.ROHF(mol, grids_level=1, integral_backend='jax', execution_device='cpu',
+common = scf.ROHF(mol, grids_level=1, execution_device='cpu',
     conv_tol=1e-12, conv_tol_grad=1e-10, max_cycle=100).run()
 solver = fci.FCI(common, solver='dense', nroots=3, conv_tol=1e-11).run()
 if not common.converged or not np.all(solver.converged):
@@ -49,7 +49,7 @@ target_energy = jnp.mean(solver.e_tot)
 
 # The UKS-shaped reference supplies the AO grid and existing model inputs.
 # ROHF.to_reference() is not used: its response adapter is not implemented.
-source = scf.UHF(mol, grids_level=1, integral_backend='jax', execution_device='cpu',
+source = scf.UHF(mol, grids_level=1, execution_device='cpu',
     conv_tol=1e-12, conv_tol_grad=1e-10, max_cycle=100).run()
 if not source.converged: raise RuntimeError('UHF input preparation failed')
 state = source.to_reference()

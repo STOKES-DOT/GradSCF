@@ -22,8 +22,7 @@ def test_streamed_reference_rejects_legacy_full_ao_feature_caches(monkeypatch, u
     config = (uks.UKSConfig if unrestricted else rks.RKSConfig)(
         xc_spec='pbe', grid_block_size=3)
     assemble = build_uks_integral_inputs if unrestricted else build_rks_integral_inputs
-    data = assemble(atom=spec, basis='sto-3g', config=config,
-                    integral_backend='jax', grids_level=0)
+    data = assemble(atom=spec, basis='sto-3g', config=config, grids_level=0)
 
     def reject_unnecessary_scf(**kwargs):
         raise AssertionError('Reject incompatible full-AO feature caches before SCF')
@@ -49,7 +48,7 @@ def inputs(streamed):
                     exponents=jnp.asarray([.7]), coefficients=jnp.asarray([1.])),
         CartesianAO(center=jnp.asarray([.6, .1, -.2]), angular=(0, 0, 0),
                     exponents=jnp.asarray([1.1]), coefficients=jnp.asarray([.8])),
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[.1, .2, .3], [.4, -.3, .2], [-.2, .5, .1]])
     weights = jnp.asarray([.2, .3, .4])
     provider = AOGrid.from_basis(basis, coords, weights, block_size=2)

@@ -425,11 +425,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="jax",
     )
     p.add_argument(
-        "--integral-backend",
-        choices=("jax", "cpu", "gpu", "libcint"),
-        default="cpu",
-    )
-    p.add_argument(
         "--jk-backend",
         choices=("full", "df"),
         default="full",
@@ -1061,7 +1056,6 @@ def _build_reference_curve_for_s1(
             grids_level=int(args.grids_level),
             max_l=int(args.max_l),
             grid_ao_backend=str(args.grid_ao_backend),
-            integral_backend=str(args.integral_backend),
             jk_backend=str(args.jk_backend),
             df_tol=float(args.df_tol),
             df_max_rank=args.df_max_rank,

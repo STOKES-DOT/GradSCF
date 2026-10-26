@@ -64,7 +64,6 @@ def _grid_ao_input_cache_key(
     basis: Any,
     max_l: int,
     grids_level: int,
-    precompute_eri_groups: bool,
     needs_ao_laplacian: bool,
     grid_block_size: int = 0,
     grid_max_memory: float | None = None,
@@ -79,7 +78,6 @@ def _grid_ao_input_cache_key(
         str(basis),
         int(max_l),
         int(grids_level),
-        bool(precompute_eri_groups),
         bool(needs_ao_laplacian),
         int(grid_block_size), grid_max_memory, float(max_memory),
         int(scf_max_cycle), int(scf_history_matrices), int(fixed_workspace_bytes),
@@ -156,7 +154,6 @@ def _build_grid_ao_input_bundle(
     basis: Any,
     max_l: int,
     grids_level: int,
-    precompute_eri_groups: bool,
     needs_ao_laplacian: bool,
     grid_block_size: int = 0,
     grid_max_memory: float | None = None,
@@ -169,7 +166,6 @@ def _build_grid_ao_input_bundle(
         spec,
         basis=basis,
         max_l=max_l,
-        precompute_eri_groups=precompute_eri_groups,
     )
     coords, weights = build_molecular_grid_from_spec(spec, level=grids_level)
     provider = _streamed_grid(basis_cart, coords, weights,
@@ -212,7 +208,6 @@ def _cached_grid_ao_input_bundle(
     basis: Any,
     max_l: int,
     grids_level: int,
-    precompute_eri_groups: bool,
     needs_ao_laplacian: bool,
     grid_block_size: int = 0,
     grid_max_memory: float | None = None,
@@ -226,7 +221,6 @@ def _cached_grid_ao_input_bundle(
         basis=basis,
         max_l=max_l,
         grids_level=grids_level,
-        precompute_eri_groups=precompute_eri_groups,
         needs_ao_laplacian=needs_ao_laplacian,
         grid_block_size=grid_block_size, grid_max_memory=grid_max_memory,
         max_memory=max_memory, scf_max_cycle=scf_max_cycle,
@@ -268,7 +262,6 @@ def _cached_grid_ao_input_bundle(
         basis=basis,
         max_l=max_l,
         grids_level=grids_level,
-        precompute_eri_groups=precompute_eri_groups,
         needs_ao_laplacian=needs_ao_laplacian,
         grid_block_size=grid_block_size, grid_max_memory=grid_max_memory,
         max_memory=max_memory, scf_max_cycle=scf_max_cycle,
@@ -288,7 +281,6 @@ def _prepare_basis_grid_context(
     basis: Any,
     max_l: int,
     grids_level: int,
-    precompute_eri_groups: bool,
     needs_ao_laplacian: bool,
     needs_grid: bool = True,
     grid_block_size: int = 0,
@@ -304,7 +296,6 @@ def _prepare_basis_grid_context(
         # it from this spec instead of reusing charge-insensitive grid data.
         basis_cart = basis_from_molecule_spec(
             spec, basis=basis, max_l=max_l,
-            precompute_eri_groups=precompute_eri_groups,
         )
         dtype = jnp.asarray(spec.coords_bohr).dtype
         bundle = _GridAOInputBundle(
@@ -327,7 +318,6 @@ def _prepare_basis_grid_context(
             spec,
             basis=basis,
             max_l=max_l,
-            precompute_eri_groups=precompute_eri_groups,
         )
         return _BasisGridContext(
             basis=basis_cart,
@@ -353,7 +343,6 @@ def _prepare_basis_grid_context(
             basis=basis,
             max_l=max_l,
             grids_level=grids_level,
-            precompute_eri_groups=precompute_eri_groups,
             needs_ao_laplacian=needs_ao_laplacian,
             grid_block_size=grid_block_size, grid_max_memory=grid_max_memory,
             max_memory=max_memory, scf_max_cycle=scf_max_cycle,

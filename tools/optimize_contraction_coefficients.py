@@ -120,7 +120,10 @@ def optimize_coefficients(*, bond=.74, scf_steps=20, maxiter=40, gtol=1e-8, verb
                               [0, [rows[2]["exponent_bohr_minus2"], 1.]] ]}
     summary = dict(
         molecule="H2", bond_angstrom=bond, basis_origin="3-21g", method="RHF",
-        backend="jax_reference", optimizer="BFGS", parameterization="fixed-norm shared contraction angle",
+        backend="libcint", optimizer="BFGS", parameterization="fixed-norm shared contraction angle",
+        integral_device=experiment['integral_device'], max_memory_mb=experiment['max_memory_mb'],
+        primitive_nao=experiment['primitive_nao'],
+        estimated_array_workspace_bytes=experiment['primitive_workspace_bytes'],
         scf_steps=scf_steps, gtol=gtol, optimizer_success=bool(result.success), optimizer_message=str(result.message),
         iterations=int(result.nit), evaluations=len(evaluations),
         initial_coefficients=np.asarray(initial).tolist(), final_coefficients=final_c.tolist(),

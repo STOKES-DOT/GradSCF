@@ -49,8 +49,8 @@ def test_native_contraction_and_gradient_match_independent_paths():
     from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
     x=jnp.zeros((2,2,2)); p=b.bind(x)
     pt,pp=primitive_basis(b.topology,p)
-    primitive=integrals.make_plan(pt,backend='native')
-    contracted=integrals.make_plan(b.topology,backend='native')
+    primitive=integrals.make_plan(pt)
+    contracted=integrals.make_plan(b.topology)
     tensors={op:primitive.evaluate(op,pp) for op in ('overlap','kinetic','nuclear','dipole','eri')}
     def evaluate(u):
         return contract_integrals(tensors,contraction_matrix(b.topology,b.bind(u)))
@@ -76,7 +76,7 @@ def test_export_matches_independent_native_integrals(symbol,cart):
     labels=['H0',symbol+'1']
     mol=gto.M(atom=list(zip(labels,np.asarray(p.nuclear_coords))),unit='Bohr',
               basis=dict(zip(labels,shells)),cart=cart,verbose=0)
-    native=integrals.make_plan(b.topology,backend='native')
+    native=integrals.make_plan(b.topology)
     for op,name in [('overlap','int1e_ovlp'),('kinetic','int1e_kin'),('nuclear','int1e_nuc')]:
         np.testing.assert_allclose(native.evaluate(op,p),mol.intor(name),atol=1e-9,rtol=1e-12)
     # A bounded ERI reference exercises angular indexing in addition to radial coefficients.

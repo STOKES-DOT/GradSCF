@@ -19,7 +19,7 @@ from gradscf import gto, scf, mp
 
 mol = gto.M(atom="O 0 0 0; H 0 .757 .587; H 0 -.757 .587",
             basis="6-31g*", cart=True)
-mf = scf.RHF(mol, integral_backend="native", jk_backend="direct",
+mf = scf.RHF(mol, jk_backend="direct",
              max_memory=4000., conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
 correlation = mp.MP2(mf).run()  # Inherits 4000 MB.

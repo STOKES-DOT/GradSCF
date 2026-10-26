@@ -168,11 +168,8 @@ def parse_molecule_spec(
         raise ValueError(f"Unsupported unit={unit!r}. Expected 'Angstrom' or 'Bohr'.")
 
     charges_raw = [atomic_number(sym) for sym in symbols]
-    charges = (
-        jnp.asarray(charges_raw, dtype=_real_dtype())
-        if has_jax_coordinate
-        else np.asarray(charges_raw, dtype=np.float64)
-    )
+    # Element identities are topology, even when coordinates are traced.
+    charges = np.asarray(charges_raw, dtype=np.int32)
     return MoleculeSpec(
         symbols=symbols,
         coords_bohr=coords_bohr,

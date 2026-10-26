@@ -23,8 +23,7 @@ def test_native_direct_pbe_full_tddft_streamed_grid_matches_dense(unrestricted, 
     constructor = dft.UKS if unrestricted else dft.RKS
     results = []
     for block_size in (-1, 64):
-        mf = constructor(molecule, xc="pbe", grids_level=0,
-            integral_backend="native", jk_backend="direct",
+        mf = constructor(molecule, xc="pbe", grids_level=0, jk_backend="direct",
             direct_scf_tol=0., direct_scf_workers=1,
             grid_block_size=block_size, grid_max_memory=64.,
             max_cycle=100, conv_tol=1e-11, conv_tol_density=1e-9,

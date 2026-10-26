@@ -45,7 +45,7 @@ def test_rks_kernel_runs_ground_state_without_building_reference(monkeypatch):
         captured.update(kwargs)
         return types.SimpleNamespace(
             geometry_is_traced=False,
-            integral_backend=kwargs["integral_backend"],
+            integral_backend="libcint",
             grid_ao_backend=kwargs["grid_ao_backend"],
             direct_basis=None,
             as_rks_kwargs=lambda: {
@@ -109,7 +109,7 @@ def test_rks_kernel_runs_ground_state_without_building_reference(monkeypatch):
     assert captured["basis"] == "sto-3g"
     assert captured["xc_spec"] == "pbe"
     assert captured["init_guess"] == "hcore"
-    assert captured["integral_backend"] == "cpu"
+    assert captured.get("integral_backend", "libcint") == "libcint"
     assert captured["libcint_geometry_grad_policy"] == "analytic"
     assert captured["config"].jk_backend == "full"
     assert captured["include_dipole_integrals"] is False
@@ -209,7 +209,7 @@ def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
     assert captured["atom"].symbols == ("O",)
     assert captured["basis"] == "sto-3g"
     assert captured["xc_spec"] == "pbe"
-    assert captured["integral_backend"] == "cpu"
+    assert captured.get("integral_backend", "libcint") == "libcint"
     assert captured["libcint_geometry_grad_policy"] == "analytic"
     assert captured["uks_config"].max_cycle == mf.max_cycle
     assert len(cache_calls) == 1
@@ -220,7 +220,7 @@ def test_rks_run_and_backend_helpers(monkeypatch):
         "gradscf.scf.facade.build_rks_integral_inputs",
         lambda **kwargs: types.SimpleNamespace(
             geometry_is_traced=False,
-            integral_backend=kwargs["integral_backend"],
+            integral_backend="libcint",
             grid_ao_backend=kwargs["grid_ao_backend"],
             as_rks_kwargs=lambda: {},
         ),

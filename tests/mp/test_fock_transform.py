@@ -84,7 +84,7 @@ def test_scf_and_correlated_mp2_adapters_supply_symmetric_focks(unrestricted, mo
     atom = ('H 0 0 0; H 0 0 1.5; H 1.4 0 .2' if unrestricted
             else 'O 0 0 0; H 0 -1.4 1.1; H 0 1.4 1.1')
     mol = gto.M(atom=atom, basis='sto-3g', spin=int(unrestricted), unit='Bohr', cart=True)
-    source = (scf.UHF if unrestricted else scf.RHF)(mol, integral_backend='native',
+    source = (scf.UHF if unrestricted else scf.RHF)(mol,
         execution_device='cpu', conv_tol=1e-12, conv_tol_density=1e-11,
         conv_tol_grad=1e-10, max_cycle=250).run()
     assert source.converged

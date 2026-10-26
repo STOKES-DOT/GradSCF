@@ -113,7 +113,7 @@ def main():
 
         IntegralPlan.evaluate = checked_evaluate
     t0 = perf_counter()
-    mf = factory(mol, integral_backend='native', execution_device='cpu',
+    mf = factory(mol, execution_device='cpu',
         jk_backend='direct' if args.mode == 'direct' else 'full', direct_scf_tol=0.,
         direct_scf_workers=args.direct_workers,
         conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,

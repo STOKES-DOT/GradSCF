@@ -13,7 +13,7 @@ from gradscf.scf.reference import reference_from_source
 def source():
     molecule = gto.M(atom='H 0 0 0; H 0 0 1.4; H 1.5 0 .1; H 1.5 0 1.5',
                      basis='sto-3g', unit='Bohr', cart=True)
-    mf = scf.RHF(molecule, integral_backend='native', execution_device='cpu',
+    mf = scf.RHF(molecule, execution_device='cpu',
         max_memory=128., conv_tol=1e-12, conv_tol_density=1e-11,
         conv_tol_grad=1e-10, max_cycle=250).run()
     assert mf.converged
@@ -114,7 +114,7 @@ def test_native_direct_scf_facade_never_materializes_complete_integrals(source, 
             pytest.fail('Direct SCF/CC facade requested complete AO ERIs')
         return original(self, operator, *args, **kwargs)
     monkeypatch.setattr(IntegralPlan, 'evaluate', checked)
-    direct = scf.RHF(source.mol, integral_backend='native', execution_device='cpu',
+    direct = scf.RHF(source.mol, execution_device='cpu',
         jk_backend='direct', direct_scf_tol=0., max_memory=128., conv_tol=1e-12,
         conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=250).run()
     assert direct.converged

@@ -41,7 +41,7 @@ def _reference(parameter, *, streamed, unrestricted=False, adaptive=False):
         for offset, exponent in ((jnp.zeros(3), .8),
                                  (jnp.asarray([.7, -.2, .3]), 1.1),
                                  (jnp.asarray([-.3, .6, .2]), .6))
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[0., 0., 0.], [.2, -.1, .3], [-.4, .5, -.2],
                           [.8, -.7, .1], [.1, .3, -.4], [-.2, -.1, .6],
                           [.5, .2, .1]]) + parameter * jnp.asarray([.03, -.02, .01])

@@ -44,7 +44,7 @@ def test_direct_native_workspace_rejected_before_any_integrals(monkeypatch, unre
     cfg = config_type(xc_spec="pbe", jk_backend="direct", max_memory=10.,
                       grid_block_size=1, direct_scf_workers=1)
     with pytest.raises(ValueError, match="budget|max_memory|workspace"):
-        builder(atom=_spec(), basis="sto-3g", config=cfg, integral_backend="native")
+        builder(atom=_spec(), basis="sto-3g", config=cfg)
 
 
 def test_direct_workspace_is_reserved_in_grid_plan(monkeypatch):
@@ -63,7 +63,7 @@ def test_direct_workspace_is_reserved_in_grid_plan(monkeypatch):
     monkeypatch.setattr(assembly, "_prepare_basis_grid_context", inspect_plan)
     with pytest.raises(ReachedPlanner):
         assembly.build_rks_integral_inputs(atom=_spec(), basis="sto-3g",
-            config=RKSConfig(jk_backend="direct", max_memory=1000.), integral_backend="native")
+            config=RKSConfig(jk_backend="direct", max_memory=1000.))
 
 
 def test_auxiliary_df_rejected_before_metric_or_three_center_allocation(monkeypatch):
@@ -87,7 +87,7 @@ def test_auxiliary_df_rejected_before_metric_or_three_center_allocation(monkeypa
                     max_memory=10., grid_block_size=1)
     with pytest.raises(ValueError, match="budget|max_memory|workspace|DF|auxiliary"):
         assembly.build_rks_integral_inputs(atom=_spec(), basis="sto-3g",
-            config=cfg, integral_backend="native")
+            config=cfg)
     assert prepared_auxiliary == ["oversized-test-aux"]
 
 
@@ -116,7 +116,7 @@ def test_small_auxiliary_metadata_is_prepared_once_and_tolerance_preserved(monke
     cfg = RKSConfig(xc_spec="pbe", jk_backend="df", auxbasis="small-test-aux",
                     df_tol=3e-11, max_memory=64., grid_block_size=1)
     inputs = assembly.build_rks_integral_inputs(atom=_spec(), basis="sto-3g",
-        config=cfg, integral_backend="native", include_dipole_integrals=False)
+        config=cfg, include_dipole_integrals=False)
     assert inputs.df_factors.shape == (2, 2, 2)
     assert auxiliary_calls == ["small-test-aux"]
     assert tolerances == [3e-11]
@@ -138,4 +138,4 @@ def test_pair_factorization_accounts_for_full_rank_output(monkeypatch):
     cfg = RKSConfig(xc_spec="pbe", jk_backend="df", max_memory=500.)
     with pytest.raises(ValueError, match="budget|max_memory|workspace|DF|factors"):
         assembly.build_rks_integral_inputs(atom=_spec(), basis="sto-3g",
-            config=cfg, integral_backend="native")
+            config=cfg)

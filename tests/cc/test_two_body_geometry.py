@@ -22,7 +22,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 def test_water_ccsd_two_body_nuclear_gradient_and_hvp(monkeypatch):
     molecule = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757 .587',
                      basis='sto-3g', unit='Angstrom', cart=True)
-    mf = scf.RHF(molecule, integral_backend='native', jk_backend='direct',
+    mf = scf.RHF(molecule, jk_backend='direct',
         max_memory=256., conv_tol=1e-13, conv_tol_density=1e-11,
         conv_tol_grad=1e-11, max_cycle=250).run()
     assert mf.converged

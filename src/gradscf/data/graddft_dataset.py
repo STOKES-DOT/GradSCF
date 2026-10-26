@@ -263,7 +263,7 @@ def build_graddft_ground_atom_molecule(
     xc_spec: str = "hf",
     grids_level: int = 0,
     max_l: int = 3,
-    integral_backend: str = "cpu",
+    integral_backend: str = "libcint",
     grid_ao_backend: str = "jax",
     init_guess: Any = "hcore",
     scf_max_cycle: int = 80,
@@ -302,7 +302,7 @@ def build_graddft_ground_atom_molecule(
 
             basis_cart = basis_from_spec(
                 record.atom, basis=basis, unit=record.unit, charge=record.charge,
-                spin=record.spin, max_l=max_l, precompute_eri_groups=False,
+                spin=record.spin, max_l=max_l,
             )
             molecule = replace(
                 molecule,

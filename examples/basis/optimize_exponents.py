@@ -33,8 +33,7 @@ LOWER, UPPER = -.7, .7  # log-scale bounds; alpha = alpha0 * exp(theta)
 
 def make_problem():
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis=BASIS, unit="Bohr", cart=True)
-    seed = scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10,
-                   integral_backend="native").run()
+    seed = scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10).run()
     assert seed.converged
     spec = mol.to_spec()
     topology, parameters = integrals.prepare_basis(spec, BASIS, cart=True)

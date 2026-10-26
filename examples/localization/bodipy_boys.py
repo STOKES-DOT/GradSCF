@@ -58,7 +58,7 @@ mol = gto.M(
     cart=True,
 )
 print("BODIPY: GradSCF shell-direct RHF/cc-pVDZ (245 Cartesian AOs)", flush=True)
-mf = dft.RKS(mol, xc="hf", integral_backend="native", conv_tol=1e-11, max_cycle=150)
+mf = dft.RKS(mol, xc="hf", conv_tol=1e-11, max_cycle=150)
 mf = mf.direct_scf().run()
 assert mf.converged
 hf_energy = float(mf.e_tot)
@@ -70,7 +70,7 @@ assert mol.nelectron == 98 and nocc == 49
 topology, parameters = integrals.prepare_basis(
     mol.atom, mol.basis, unit=mol.unit, cart=mol.cart,
 )
-plan = integrals.make_plan(topology, backend="native")
+plan = integrals.make_plan(topology)
 overlap = plan.evaluate("overlap", parameters)
 dipole_ao = plan.evaluate("dipole", parameters, origin=jnp.zeros(3))
 dipole_mo = jnp.einsum("mp,xmn,nq->xpq", c_occ, dipole_ao, c_occ)

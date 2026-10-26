@@ -77,7 +77,7 @@ class NativeRHF:
                                           conv_tol_grad=1e-9)
         if self.config.xc_spec.lower() != "hf" or self.config.jk_backend != "full":
             raise ValueError("NativeRHF requires xc_spec='hf' and jk_backend='full'.")
-        self.plan = integrals.make_plan(self.topology, backend="native")
+        self.plan = integrals.make_plan(self.topology)
         self._integrals = jax.jit(self._evaluate_integrals)
         self._scf = jax.jit(self._run_scf)
         self._gradient = jax.jit(jax.grad(self._lagrangian, argnums=0))
@@ -85,7 +85,7 @@ class NativeRHF:
             self.topology.angular_momenta * 2, self.topology.primitive_counts * 2,
             self.topology.contraction_counts * 2, self.topology.nuclear_charges,
             self.topology.cart)
-        self.cross_plan = integrals.make_plan(doubled, backend="native")
+        self.cross_plan = integrals.make_plan(doubled)
         self._cross_overlap = jax.jit(self._evaluate_cross_overlap)
 
     def _parameters_at(self, coordinates):

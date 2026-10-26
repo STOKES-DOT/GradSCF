@@ -135,10 +135,9 @@ def eri_to_df_factors_from_basis(
     *,
     tol: float = 1e-10,
     max_rank: int | None = None,
-    engine: str = "auto",
 ) -> Array:
     from gradscf.integrals.molecular.eri import eri_pair_matrix_packed
-    pair = eri_pair_matrix_packed(basis, engine=engine)
+    pair = eri_pair_matrix_packed(basis)
     return eri_pair_matrix_to_df_factors(
         pair,
         nao=basis.nao,

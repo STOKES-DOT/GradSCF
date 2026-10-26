@@ -427,7 +427,6 @@ def restricted_reference_from_pyscf_with_jax_rks(
     basis = basis_from_pyscf_mol_cart(
         mol_cart,
         max_l=max_l,
-        precompute_eri_groups=True,
     )
     s, h1e = _overlap_hcore_for_jax_rks_reference(basis, cfg)
     eri_pair_matrix = None

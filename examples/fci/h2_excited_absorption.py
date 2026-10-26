@@ -39,7 +39,7 @@ def make_problem():
     mol = gto.M(atom=list(zip(["H", "H"], np.asarray(coordinates(BOND)))),
                 basis=BASIS, unit="Bohr", cart=True)
     topology, parameters = integrals.prepare_basis(mol.to_spec(), mol.basis)
-    plan = integrals.make_plan(topology, backend="native")
+    plan = integrals.make_plan(topology)
     owners = np.argmin(np.linalg.norm(np.asarray(parameters.centers)[:, None]
                                      - np.asarray(parameters.nuclear_coords)[None], axis=-1), axis=1)
     space = fci.make_fci_space(topology.nao, (1, 1))

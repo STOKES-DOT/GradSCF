@@ -25,7 +25,7 @@ def test_canonical_water_cis_d_nuclear_gradient_and_hvp():
     # Same fixed geometry as test_direct_cis.water_direct_hf; no optimization.
     molecule = gto.M(atom='O 0 0 0; H 0 .757 .587; H 0 -.757 .587',
                      basis='sto-3g', unit='Angstrom', cart=True)
-    mf = scf.RHF(molecule, integral_backend='native', jk_backend='direct',
+    mf = scf.RHF(molecule, jk_backend='direct',
         max_memory=256., conv_tol=1e-13, conv_tol_density=1e-11,
         conv_tol_grad=1e-11, max_cycle=250).run()
     assert mf.converged

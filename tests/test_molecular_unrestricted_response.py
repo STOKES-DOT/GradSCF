@@ -12,7 +12,7 @@ def test_unrestricted_geometry_gradient_and_longitudinal_dipole(method):
 
     mol = gto.M(atom="N 0 0 0; H 0 0 1.95", spin=2, basis="sto-3g", unit="Bohr", cart=True)
     controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                    max_cycle=200, integral_backend="native")
+                    max_cycle=200)
     mf = (scf.UHF(mol, **controls) if method == "HF"
           else dft.UKS(mol, xc="pbe", grids_level=0, **controls)).run()
     energy = MolecularEnergy(mf, gradient_tolerance=1e-10)

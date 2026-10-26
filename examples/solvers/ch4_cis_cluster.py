@@ -34,7 +34,7 @@ DIRECTION /= np.linalg.norm(DIRECTION)
 
 def _rhf():
     molecule = gto.M(atom=list(zip(SYMBOLS, COORDINATES)), unit="Bohr", basis=BASIS, cart=True)
-    return scf.RHF(molecule, integral_backend="native", conv_tol=1e-12,
+    return scf.RHF(molecule, conv_tol=1e-12,
         conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
 
 

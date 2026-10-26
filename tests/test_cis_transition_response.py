@@ -14,7 +14,7 @@ def hydrogen():
     pytest.importorskip("pyscf")
     coordinates = np.array([[.2, -.1, -.7], [.2, -.1, .7]])
     molecule = gto.M(atom=list(zip(("H", "H"), coordinates)), basis="6-31g*", unit="Bohr", cart=True)
-    mf = scf.RHF(molecule, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(molecule, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     assert mf.converged
     return coordinates, mf

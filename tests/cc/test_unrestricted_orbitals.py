@@ -115,7 +115,7 @@ def _native_problem(projected=False):
     from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
 
     topology, parameters = integrals.prepare_basis('H 0 0 0; H .2 -.1 .8', basis='3-21g')
-    primitive = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    primitive = NativeDirectBasis(integrals.make_plan(topology), parameters)
     transform = jnp.eye(4)+jnp.asarray(np.random.default_rng(6512).normal(scale=.03, size=(4, 4)))
     basis = ProjectedNativeDirectBasis(primitive, transform) if projected else primitive
     cs, fs, energy, _, _, _ = _problem()

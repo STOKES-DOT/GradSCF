@@ -17,7 +17,7 @@ from gradscf_tools.correlated_response import CorrelatedEnergy
 mol = gto.M(atom='N 0 0 -1.04; N 0 0 1.04', basis='sto-3g', unit='Bohr', cart=True)
 # The ten STO-3G AOs give Tr[D S]=14 for this symmetric density seed,
 # selecting the usual closed-shell branch rather than a broken-symmetry root.
-mf = scf.RHF(mol, integral_backend='native', jk_backend='direct', direct_scf_tol=0.,
+mf = scf.RHF(mol, jk_backend='direct', direct_scf_tol=0.,
     init_guess=1.4*np.eye(10), max_memory=128., max_cycle=250,
     conv_tol=1e-13, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
 assert mf.converged

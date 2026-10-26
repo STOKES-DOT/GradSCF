@@ -53,3 +53,20 @@ void parallel_vjp(Driver& driver,double* output,Apply apply) {
   for (const auto& values:partial)
     for (size_t p=0;p<driver.count;++p) output[p]+=values[p];
 }
+
+// Coordinate adjoints reduce only ENV-sized vectors. The contracted integral
+// cotangent is shared read-only; no worker allocates a packed/full ERI tensor.
+template<class Tables,class Apply>
+void parallel_shell_vjp(Tables& tables,double* output,Apply apply) {
+  const int active=int(tables.ao.size())-1;
+  if (native_threads(active)==1) {apply(tables,output,0,active);return;}
+  struct Driver {
+    Tables t;
+    int active,first_shell=0,shell_stride=1;
+    size_t count;
+  } driver{tables,active,0,1,tables.env.size()};
+  parallel_vjp(driver,output,[&](auto& local,double* out) {
+    for (int first=local.first_shell;first<local.active;first+=local.shell_stride)
+      apply(local.t,out,first,first+1);
+  });
+}

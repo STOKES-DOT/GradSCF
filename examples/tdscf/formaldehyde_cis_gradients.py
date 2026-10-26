@@ -34,7 +34,7 @@ output = Path("reproducibility/ad_showcase/X02_formaldehyde_cis_gradients")
 output.mkdir(parents=True, exist_ok=True)
 started = perf_counter()
 mol = gto.M(atom=atom, basis=basis, unit="Angstrom", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
 if not mf.converged:
     raise RuntimeError("The initial RHF reference did not converge.")
@@ -120,7 +120,7 @@ report = dict(
     initial_match=initial_match, displaced_tracking=tracking,
     scf_energy_tolerance=1e-12, orbital_gradient_tolerance=1e-10,
     implicit_tolerance=1e-10, ci_tolerance=1e-10, independent_gradient_tolerance=1e-6,
-    dtype="float64", integral_backend="native", scf_response="implicit orbital stationarity",
+    dtype="float64", integral_backend='libcint', scf_response="implicit orbital stationarity",
     ci_solver="shared dense Hermitian; first-order eigenvalue response",
     source_revision=revision, source_python_sha256=source.hexdigest(),
     script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),

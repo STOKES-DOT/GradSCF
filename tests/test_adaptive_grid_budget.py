@@ -152,8 +152,7 @@ def test_grid_planning_resolves_a_legacy_callable_device(monkeypatch):
 def test_grid_cache_key_tracks_total_and_optional_grid_budgets(monkeypatch):
     monkeypatch.setattr(grid, "_active_device_cache_key", lambda: ("cpu", 0))
     spec = SimpleNamespace(symbols=("H",), coords_bohr=np.zeros((1, 3)))
-    options = dict(spec=spec, basis="sto-3g", max_l=3, grids_level=3,
-                   precompute_eri_groups=False, needs_ao_laplacian=False,
+    options = dict(spec=spec, basis="sto-3g", max_l=3, grids_level=3, needs_ao_laplacian=False,
                    grid_max_memory=None)
     small = grid._grid_ao_input_cache_key(**options, max_memory=128.)
     large = grid._grid_ao_input_cache_key(**options, max_memory=60000.)
@@ -183,8 +182,7 @@ def test_grid_cache_hit_replans_blocks_without_rebuilding_grid_arrays(monkeypatc
     options = dict(basis_from_molecule_spec=lambda *args, **kwargs: basis,
         build_molecular_grid_from_spec=lambda *args, **kwargs: (coords, weights),
         evaluate_cartesian_ao_with_derivatives=reject_dense_ao,
-        spec=spec, basis="sto-3g", max_l=3, grids_level=3,
-        precompute_eri_groups=False, needs_ao_laplacian=False, max_memory=128.)
+        spec=spec, basis="sto-3g", max_l=3, grids_level=3, needs_ao_laplacian=False, max_memory=128.)
     first = grid._cached_grid_ao_input_bundle(**options)
     assert grid._cached_grid_ao_input_bundle(**options) is first
     capacity[0] = 5_000_000

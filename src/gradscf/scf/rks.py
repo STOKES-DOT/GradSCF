@@ -14,10 +14,7 @@ from gradscf.integrals.basis import CartesianBasis
 from gradscf.integrals import (
     build_j_from_eri_pair_matrix,
     build_jk_from_eri_pair_matrix,
-    build_direct_jk_incremental,
-    eri_pair_matrix_packed,
 )
-from gradscf.integrals.molecular.jk import _DIRECT_PACKED_JK_MAX_NAO
 from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df, build_jk_from_df_orbitals
 from gradscf.integrals.molecular.factorization import eri_to_df_factors
 from ..tools.features import (
@@ -320,57 +317,7 @@ def _make_jk_builder(
                 if density_last is not None:j,k=j+j_last,k+k_last
                 return j,k if with_k else jnp.zeros_like(density)
             return _native_direct
-        if threshold <= 0.0 and int(direct_basis.nao) <= _DIRECT_PACKED_JK_MAX_NAO:
-            pair_arr = jnp.asarray(eri_pair_matrix_packed(direct_basis))
-
-            def _direct_packed_jk(
-                density: Array,
-                mo_coeff: Array | None = None,
-                mo_occ: Array | None = None,
-                density_last: Array | None = None,
-                j_last: Array | None = None,
-                k_last: Array | None = None,
-            ):
-                del mo_coeff, mo_occ
-                density_arg = density
-                base_j = None
-                base_k = None
-                if density_last is not None:
-                    density_arg = jnp.asarray(density) - jnp.asarray(density_last)
-                    base_j = jnp.asarray(j_last)
-                    base_k = jnp.asarray(k_last)
-                result_j, result_k = build_jk_from_eri_pair_matrix(pair_arr, density_arg)
-                if base_j is not None and base_k is not None:
-                    result_j = base_j + result_j
-                    result_k = base_k + result_k
-                if with_k:
-                    return result_j, result_k
-                return result_j, jnp.zeros_like(density)
-
-            return _direct_packed_jk
-
-        def _direct_jk(
-            density: Array,
-            mo_coeff: Array | None = None,
-            mo_occ: Array | None = None,
-            density_last: Array | None = None,
-            j_last: Array | None = None,
-            k_last: Array | None = None,
-        ):
-            del mo_coeff, mo_occ
-            result = build_direct_jk_incremental(
-                direct_basis,
-                density,
-                density_last=density_last,
-                j_last=j_last,
-                k_last=k_last,
-                screening_threshold=threshold,
-            )
-            if with_k:
-                return result.j, result.k
-            return result.j, jnp.zeros_like(density)
-
-        return _direct_jk
+        raise TypeError('Direct SCF requires a libcint AO provider; use the molecular direct() interface.')
 
     if cfg.jk_backend == "full":
         pair_arr = None if eri_pair_matrix is None else jnp.asarray(eri_pair_matrix)

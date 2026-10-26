@@ -149,7 +149,6 @@ def build_reference_point(
             potential_clip=float(args.reference_scf_potential_clip),
         ),
         grid_ao_backend="jax",
-        integral_backend=str(args.integral_backend),
         compute_local_hfx_features=(
             str(args.input_feature_mode) == "canonical"
             or bool(getattr(args, "include_hfx_channel", False))
@@ -190,7 +189,7 @@ def _reference_cache_key(r_angstrom: float, args: argparse.Namespace) -> str:
     feature_mode = "canonical" if str(args.input_feature_mode) == "dm21_original" else str(args.input_feature_mode)
     return (
         f"h2plus/basis={basis}/xc={xc}/grid={int(args.grids_level)}/"
-        f"max_l={int(args.max_l)}/integral={str(args.integral_backend)}/"
+        f"max_l={int(args.max_l)}/integral=libcint/"
         f"features={feature_mode}/uks={_JAX_UKS_CACHE_VERSION}/r={float(r_angstrom):.10f}"
     )
 
@@ -724,7 +723,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--coefficient-prior-weight", type=float, default=0.0)
     p.add_argument("--grids-level", type=int, default=2)
     p.add_argument("--max-l", type=int, default=3)
-    p.add_argument("--integral-backend", choices=("jax", "cpu", "gpu", "libcint"), default="gpu")
     p.add_argument("--reference-scf-device", choices=("cpu", "gpu"), default="gpu")
     p.add_argument("--reference-scf-max-cycle", type=int, default=160)
     p.add_argument("--reference-scf-conv-tol", type=float, default=1e-10)
@@ -766,7 +764,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "Config: H2+ "
         f"basis={args.basis} grid={args.grids_level} R=[{args.r_min},{args.r_max}] "
         f"train_points={args.train_points} dense_points={args.dense_points} steps={args.steps} "
-        f"reference_method=fci_one_electron integral_backend={args.integral_backend}"
+        f"reference_method=fci_one_electron integral_backend=libcint"
     )
     train_r = np.linspace(float(args.r_min), float(args.r_max), int(args.train_points))
     dense_r = np.linspace(float(args.r_min), float(args.r_max), int(args.dense_points))
@@ -817,7 +815,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
             "grid_level": int(args.grids_level),
             "steps": int(args.steps),
             "grid_density_mse_weight": float(args.grid_density_mse_weight),
-            "integral_backend": str(args.integral_backend),
+            "integral_backend": "libcint",
             "include_hfx_channel": bool(args.include_hfx_channel),
             "ground_state_hf_mode": str(args.ground_state_hf_mode),
         },
@@ -835,7 +833,7 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
         "lr_decay_every": int(args.lr_decay_every),
         "lr_decay_factor": float(args.lr_decay_factor),
         "grid_density_mse_weight": float(args.grid_density_mse_weight),
-        "integral_backend": str(args.integral_backend),
+        "integral_backend": "libcint",
         "include_hfx_channel": bool(args.include_hfx_channel),
         "ground_state_hf_mode": str(args.ground_state_hf_mode),
         "elapsed_s": float(training["elapsed_s"]),

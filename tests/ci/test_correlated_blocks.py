@@ -32,7 +32,7 @@ def source(request):
     molecule = gto.M(atom=atoms[kind], basis='6-31g' if kind == 'h2' else 'sto-3g',
                      spin=int(kind == 'h3'), unit='Bohr', cart=True)
     cls = scf.UHF if kind == 'h3' else scf.RHF
-    mf = cls(molecule, integral_backend='native', execution_device='cpu',
+    mf = cls(molecule, execution_device='cpu',
         conv_tol=1e-13, conv_tol_grad=1e-11, conv_tol_density=1e-11,
         max_cycle=250).run()
     assert mf.converged

@@ -18,7 +18,7 @@ from .coefficients import coefficient_products
 from .exponents import exponent_products
 
 
-_OPERATORS = {"overlap": 0, "kinetic": 1, "nuclear": 2, "dipole": 3,
+_OPERATORS = {"overlap": 0, "kinetic": 1, "nuclear": 2, "dipole": 3, "rinv": 5,
               "three_center": 6}
 
 
@@ -44,7 +44,8 @@ def _integral_function(operator, atoms_key, basis_key, nao, cart, split):
     active_exponents = np.concatenate([
         np.arange(int(b[5]), int(b[5])+int(b[2])) for b in active
     ])
-    geometry_offsets = np.concatenate((offsets.ravel(), np.arange(1, 4)))
+    origin_start = 4 if operator == "rinv" else 1
+    geometry_offsets = np.concatenate((offsets.ravel(), np.arange(origin_start, origin_start+3)))
     # Shadow contractions assume independent active coefficient slots. A
     # shared PTR_COEFF would make the raw primal overwrite another shell or
     # fixed auxiliary data, while the products use independent shell copies.
@@ -74,7 +75,7 @@ def _integral_function(operator, atoms_key, basis_key, nao, cart, split):
 
     def pack_geometry(env, coords, origin):
         env = env.at[offsets].set(coords, unique_indices=True)
-        return env.at[1:4].set(origin)
+        return env.at[origin_start:origin_start+3].set(origin)
 
     linear, adjoint, second, second_adjoint = coefficient_products(
         operator, atoms, basis, ncoeff, shape, cart, split, _OPERATORS[operator])

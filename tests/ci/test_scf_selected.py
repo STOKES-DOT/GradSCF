@@ -18,7 +18,7 @@ def source(request):
                           'H 0 0 0; H 0 0 1.6; H 1.8 .2 .1'),
                      basis='sto-3g', spin=0 if closed else 1, unit='Bohr', cart=True)
     cls = {'rhf': scf.RHF, 'uhf': scf.UHF, 'rohf': scf.ROHF}[request.param]
-    mf = cls(molecule, integral_backend='native', execution_device='cpu',
+    mf = cls(molecule, execution_device='cpu',
              conv_tol=1e-12, conv_tol_grad=1e-10, conv_tol_density=1e-11,
              max_cycle=250, max_memory=64.).run()
     assert mf.converged

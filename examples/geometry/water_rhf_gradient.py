@@ -30,12 +30,12 @@ mol = gto.M(
     basis="6-31g*", unit="Bohr", cart=True,
 )
 mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-             max_cycle=150, integral_backend="native").run()
+             max_cycle=150).run()
 if not mf.converged:
     raise RuntimeError("The initial RHF calculation did not converge.")
 
 topology, parameters = integrals.prepare_basis(mol.to_spec(), mol.basis)
-plan = integrals.make_plan(topology, backend="native")
+plan = integrals.make_plan(topology)
 coordinates = jnp.asarray(parameters.nuclear_coords)
 charges = jnp.asarray(topology.nuclear_charges)
 # Map each shell center to its nucleus once, outside the AD calculation.
@@ -122,7 +122,7 @@ data = dict(
     cold_value_and_gradient_seconds=cold_seconds,
     warm_value_and_gradient_seconds=warm_seconds,
     scf_energy_tolerance=1e-12, orbital_gradient_tolerance=1e-9,
-    implicit_tolerance=1e-10, dtype="float64", integral_backend="native",
+    implicit_tolerance=1e-10, dtype="float64", integral_backend='libcint',
     jax_version=jax.__version__, numpy_version=np.__version__,
     python_version=platform.python_version(), hostname=platform.node(),
     machine=platform.machine(), devices=[str(device) for device in jax.devices()],

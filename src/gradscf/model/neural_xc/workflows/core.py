@@ -276,15 +276,12 @@ def run_molecule_from_spec(
                 max_l=simulation.jax_basis_max_l,
                 rks_config=rks_config,
                 grid_ao_backend=simulation.jax_grid_ao_backend,
-                integral_backend=simulation.jax_integral_backend,
                 libcint_geometry_grad_policy=simulation.jax_libcint_geometry_grad_policy,
                 compute_local_hfx_features=compute_local_hfx_features,
                 compute_local_hfx_aux=compute_local_hfx_aux,
                 compute_local_pt2_features=compute_local_pt2_features,
                 hfx_omega_values=hfx_omega_values,
                 hfx_chunk_size=hfx_chunk_size,
-                precompile_eri=simulation.jax_precompile_eri,
-                precompile_eri_chunk_size=simulation.jax_precompile_eri_chunk_size,
                 verbose=spec.verbose,
             )
             reference = _build_restricted_reference(**molecule_kwargs)
@@ -312,15 +309,12 @@ def run_molecule_from_spec(
                 max_l=simulation.jax_basis_max_l,
                 uks_config=uks_config,
                 grid_ao_backend=simulation.jax_grid_ao_backend,
-                integral_backend=simulation.jax_integral_backend,
                 libcint_geometry_grad_policy=simulation.jax_libcint_geometry_grad_policy,
                 compute_local_hfx_features=compute_local_hfx_features,
                 compute_local_hfx_aux=compute_local_hfx_aux,
                 compute_local_pt2_features=compute_local_pt2_features,
                 hfx_omega_values=hfx_omega_values,
                 hfx_chunk_size=hfx_chunk_size,
-                precompile_eri=simulation.jax_precompile_eri,
-                precompile_eri_chunk_size=simulation.jax_precompile_eri_chunk_size,
                 verbose=spec.verbose,
             )
             xc_label = uks_xc

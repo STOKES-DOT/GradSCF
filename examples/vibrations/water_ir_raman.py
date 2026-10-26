@@ -39,12 +39,11 @@ def run(method, output=None):
     mol = gto.M(atom=list(zip(harmonic["symbols"], harmonic["coordinates_bohr"])),
                 basis=harmonic["basis"], unit="Bohr", cart=True)
     if method == "HF":
-        mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-                     integral_backend="native").run()
+        mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11).run()
     else:
         mf = dft.RKS(mol, xc="pbe", grids_level=harmonic["grid_level"],
                      conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                     max_cycle=150, integral_backend="native").run()
+                     max_cycle=150).run()
     energy = MolecularEnergy(mf)
     output = OUTPUTS[method] if output is None else Path(output)
     return calculate_spectrum(energy, harmonic, output,

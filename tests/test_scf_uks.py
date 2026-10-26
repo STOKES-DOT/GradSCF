@@ -209,7 +209,6 @@ def test_h2plus_uks_b3lyp_matches_pyscf_reference_energy():
         max_l=3,
         config=cfg,
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
     result = run_uks_from_integrals(**inputs.as_uks_kwargs(), config=cfg)
 

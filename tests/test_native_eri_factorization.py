@@ -15,7 +15,7 @@ def test_native_water_spectral_factors_reconstruct_eri_and_jk():
         basis="sto-3g",
         unit="Angstrom",
     )
-    eri = np.asarray(make_plan(topology, backend="native").evaluate("eri", parameters))
+    eri = np.asarray(make_plan(topology).evaluate("eri", parameters))
     factors = eri_to_df_factors(eri, tol=1e-12)
     reconstructed = np.einsum("Qpq,Qrs->pqrs", factors, factors)
     np.testing.assert_allclose(reconstructed, eri, atol=2e-12, rtol=0)

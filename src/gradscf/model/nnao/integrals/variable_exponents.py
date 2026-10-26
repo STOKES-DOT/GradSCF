@@ -7,6 +7,10 @@ def native_projection(context, exponent_keys):
     from gradscf.integrals.molecular.density_fitting import unpack_factors
 
     layout = context['layout']
+    if any(ecp is not None for ecp in getattr(layout, 'ecps', ())):
+        raise NotImplementedError(
+            'Contracted DF parameter projection does not support ECP Hamiltonians; '
+            'use the fixed-primitive direct ECP coefficient path.')
     indices = {key: exponent_keys.index(key) for key in layout.exponent_scale_keys}
 
     def physical(outputs, beta):

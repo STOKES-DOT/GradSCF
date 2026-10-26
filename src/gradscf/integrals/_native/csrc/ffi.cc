@@ -22,16 +22,16 @@ static ffi::Error Integrals(ffi::BufferR2<ffi::S32> atoms,
     auto& ao=tables.ao;
     const int n = ao.back(), components = op == 3 ? 3 : 1;
     const int rank = op == 4 ? 4 : (op == 3 ? 3 : 2);
-    if (op < 0 || op > 4 || (cart != 0 && cart != 1) || n < 1 ||
+    if (op < 0 || op > 5 || (cart != 0 && cart != 1) || n < 1 ||
         result->dimensions().size() != rank)
       return ffi::Error::InvalidArgument("Invalid native integral output shape or operator");
     for (int i = 0; i < rank; ++i)
       if (result->dimensions()[i] != (op == 3 && i == 0 ? 3 : n))
         return ffi::Error::InvalidArgument("AO count does not match basis table");
     Intor cart_funcs[] = {int1e_ovlp_cart, int1e_kin_cart, int1e_nuc_cart,
-                          int1e_r_cart, int2e_cart};
+                          int1e_r_cart, int2e_cart, int1e_rinv_cart};
     Intor sph_funcs[] = {int1e_ovlp_sph, int1e_kin_sph, int1e_nuc_sph,
-                         int1e_r_sph, int2e_sph};
+                         int1e_r_sph, int2e_sph, int1e_rinv_sph};
     Intor intor = cart ? cart_funcs[op] : sph_funcs[op];
     double* output = result->typed_data();
     std::fill(output, output + result->element_count(), 0.);

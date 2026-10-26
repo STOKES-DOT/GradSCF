@@ -35,7 +35,7 @@ def setup():
     np.testing.assert_allclose(metric, np.eye(2), atol=1e-12, rtol=0)
     mol = gto.M(atom=list(zip(source["symbols"], np.array(coordinates))),
                 basis=source["basis"], cart=True, unit="Bohr")
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
                  conv_tol_density=1e-12, conv_tol_grad=1e-11).run()
     energy = MolecularEnergy(mf, gradient_tolerance=1e-11)
     geometry = lambda q: coordinates+jnp.einsum("axi,i->ax", directions, q)

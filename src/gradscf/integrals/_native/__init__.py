@@ -15,7 +15,7 @@ def register_integrals():
     library = Path(__file__).parent / "lib" / ("libgradscf_integrals" + suffix)
     if not library.is_file():
         raise RuntimeError(
-            "GradSCF native CPU integrals are not built. Run "
+            "The GradSCF libcint extension is not built. Run "
             "`python -m gradscf.integrals._native.build` (requires CMake and a C/C++ compiler)."
         )
     handle = ctypes.CDLL(str(library), mode=ctypes.RTLD_LOCAL)
@@ -25,6 +25,8 @@ def register_integrals():
                "gradscf_eri_slice_geometry_vjp_cpu_v1": "GradSCFERISliceGeometryVJP",
                "gradscf_eri_slice_geometry_hessian_jvp_cpu_v1": "GradSCFERISliceGeometryHessianJVP",
                "gradscf_eri_slice_geometry_hessian_vjp_cpu_v1": "GradSCFERISliceGeometryHessianVJP",
+               "gradscf_eri_slice_geometry_higher_jvp_cpu_v1": "GradSCFERISliceGeometryHigherJVP",
+               "gradscf_eri_slice_geometry_higher_vjp_cpu_v1": "GradSCFERISliceGeometryHigherVJP",
                "gradscf_eri_slab_cpu_v1": "GradSCFERISlab",
                "gradscf_eri_slab_geometry_jvp_cpu_v1": "GradSCFERISlabGeometryJVP",
                "gradscf_eri_slab_geometry_vjp_cpu_v1": "GradSCFERISlabGeometryVJP",
@@ -34,6 +36,10 @@ def register_integrals():
                "gradscf_geometry_vjp_cpu_v1": "GradSCFGeometryVJP",
                "gradscf_geometry_hessian_jvp_cpu_v1": "GradSCFGeometryHessianJVP",
                "gradscf_geometry_hessian_vjp_cpu_v1": "GradSCFGeometryHessianVJP",
+               "gradscf_eri_compact_geometry_jvp_cpu_v1": "GradSCFERICompactGeometryJVP",
+               "gradscf_eri_compact_geometry_vjp_cpu_v1": "GradSCFERICompactGeometryVJP",
+               "gradscf_eri_compact_geometry_hessian_jvp_cpu_v1": "GradSCFERICompactGeometryHessianJVP",
+               "gradscf_eri_compact_geometry_hessian_vjp_cpu_v1": "GradSCFERICompactGeometryHessianVJP",
                "gradscf_geometry_higher_jvp_cpu_v1": "GradSCFGeometryHigherJVP",
                "gradscf_geometry_higher_vjp_cpu_v1": "GradSCFGeometryHigherVJP",
                "gradscf_coefficient_jvp_cpu_v1": "GradSCFCoefficientJVP",
@@ -48,6 +54,18 @@ def register_integrals():
                "gradscf_packed_jk_cpu_v1": "GradSCFPackedJK"}
     targets.update({"gradscf_exponent_jvp_cpu_v1": "GradSCFExponentJVP",
                     "gradscf_exponent_vjp_cpu_v1": "GradSCFExponentVJP"})
+    targets.update({"gradscf_eri_coefficient_jvp_cpu_v1": "GradSCFERICoefficientJVP",
+                    "gradscf_eri_coefficient_vjp_cpu_v1": "GradSCFERICoefficientVJP",
+                    "gradscf_eri_coefficient_hessian_jvp_cpu_v1": "GradSCFERICoefficientHessianJVP",
+                    "gradscf_eri_coefficient_hessian_vjp_cpu_v1": "GradSCFERICoefficientHessianVJP",
+                    "gradscf_eri_exponent_jvp_cpu_v1": "GradSCFERIExponentJVP",
+                    "gradscf_eri_exponent_vjp_cpu_v1": "GradSCFERIExponentVJP"})
+    targets.update({"gradscf_eri_slice_coefficient_jvp_cpu_v1": "GradSCFERISliceCoefficientJVP",
+                    "gradscf_eri_slice_coefficient_vjp_cpu_v1": "GradSCFERISliceCoefficientVJP",
+                    "gradscf_eri_slice_coefficient_hessian_jvp_cpu_v1": "GradSCFERISliceCoefficientHessianJVP",
+                    "gradscf_eri_slice_coefficient_hessian_vjp_cpu_v1": "GradSCFERISliceCoefficientHessianVJP",
+                    "gradscf_eri_slice_exponent_jvp_cpu_v1": "GradSCFERISliceExponentJVP",
+                    "gradscf_eri_slice_exponent_vjp_cpu_v1": "GradSCFERISliceExponentVJP"})
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
             raise RuntimeError("Native integral library is stale; rebuild with "

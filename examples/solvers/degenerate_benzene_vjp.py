@@ -74,7 +74,7 @@ def _compute(args, report, save):
     save()
     mol = gto.M(atom=atoms, unit="Angstrom", basis=args.basis, cart=True)
     started = perf_counter()
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12, conv_tol_density=1e-11,
+    mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
                  conv_tol_grad=1e-10, max_cycle=200, execution_device="cpu").run()
     report["scf"] = dict(converged=bool(mf.converged), energy_hartree=float(mf.e_tot),
         cycles=int(mf.cycles), seconds=perf_counter()-started, stability_test_performed=False)
@@ -255,7 +255,7 @@ def run(basis="6-31g*", method="davidson", *, max_subspace=80, maxiter=200, clus
         raise ValueError("Require positive cluster tolerance/maxiter and max_subspace >= 5")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     report = dict(complete=False, passed=False, preparation_complete=False, method=args.method,
-        basis=args.basis, cart=True, frozen=None, integral_backend="native",
+        basis=args.basis, cart=True, frozen=None, integral_backend='libcint',
         settings={key: value for key, value in vars(args).items() if key != "output"},
         source_python_sha256=source_hash(), script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         hostname=platform.node(), process_id=os.getpid(), started_utc=datetime.now(timezone.utc).isoformat(),

@@ -60,8 +60,7 @@ def _assemble(spec, distance, unrestricted, xc_spec, direct, *, basis="sto-3g", 
     build = build_uks_integral_inputs if unrestricted else build_rks_integral_inputs
     controls = {} if unrestricted else {"include_dipole_integrals": False}
     inputs = build(atom=replace(spec, coords_bohr=coordinates), basis=basis,
-        config=config, xc_spec=xc_spec, grids_level=0, cart=True,
-        integral_backend="native", libcint_geometry_grad_policy="analytic", **controls)
+        config=config, xc_spec=xc_spec, grids_level=0, cart=True, libcint_geometry_grad_policy="analytic", **controls)
     if direct:
         assert inputs.direct_basis is not None
         assert inputs.eri is None or inputs.eri.size == 0

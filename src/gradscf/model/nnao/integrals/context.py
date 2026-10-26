@@ -34,7 +34,7 @@ def prepare_fixed_context(layout, symbols, coords, *, basis_family, jk_backend,
             raise ValueError('Integral caches currently support jk_backend="df" only.')
         overlap, hcore, factors = read_fixed_cache(integral_cache, signature, cache_storage)
     else:
-        plan = integrals.make_plan(topology, backend='native')
+        plan = integrals.make_plan(topology)
         if jk_backend == 'direct':
             direct_basis = NativeDirectBasis(plan, parameters)
         overlap = plan.evaluate('overlap', parameters)
@@ -56,6 +56,6 @@ def prepare_native_context(layout, atom, auxbasis):
     auxiliary_topology, auxiliary_parameters = integrals.prepare_basis(
         atom, auxbasis, unit='Angstrom', cart=layout.topology.cart)
     auxiliary = make_auxiliary_plan(layout.topology, auxiliary_topology)
-    return dict(layout=layout, plan=integrals.make_plan(layout.topology, backend='native'),
+    return dict(layout=layout, plan=integrals.make_plan(layout.topology),
                 aux=auxiliary, ap=auxiliary_parameters,
                 metric=auxiliary.metric_factor(layout.parameters, auxiliary_parameters))

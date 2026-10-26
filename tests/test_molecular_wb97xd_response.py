@@ -15,7 +15,7 @@ def test_complete_wb97xd_energy_geometry_and_dipole(unrestricted):
     cls = dft.UKS if unrestricted else dft.RKS
     mf = cls(mol, xc="wb97xd", grids_level=0, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10,
-             max_cycle=200, integral_backend="native").run()
+             max_cycle=200).run()
     energy = MolecularEnergy(mf, gradient_tolerance=1e-10)
     r = energy.coordinates
     inputs = energy.inputs(r)

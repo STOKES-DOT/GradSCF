@@ -71,7 +71,7 @@ def test_reference_rejects_unsolved_or_invalid_target_source():
 def test_actual_gks_snapshot_keeps_spinor_overlap_and_detects_changed_xc():
     module = api()
     mol = gto.M(atom='H 0 0 0; H 0 0 1.4', basis='sto-3g', unit='Bohr', cart=True)
-    mf = dft.GKS(mol, xc='hf', integral_backend='jax', execution_device='cpu',
+    mf = dft.GKS(mol, xc='hf', execution_device='cpu',
                  conv_tol=1e-11, conv_tol_grad=1e-9, max_cycle=80).run()
     assert mf.converged
     ref = module.Reference.from_source(mf)

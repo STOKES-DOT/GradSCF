@@ -15,7 +15,7 @@ from gradscf.scf.orbital_optimization import minimize_uks_from_integrals
 def test_h2_native_coordinate_backward_matches_finite_difference(mode):
     from scipy.linalg import eigh
     topology, parameters = integrals.prepare_basis('H 0 0 0; H 0 0 .74', basis='3-21g')
-    plan = integrals.make_plan(topology, backend='native')
+    plan = integrals.make_plan(topology)
     owners = np.argmin(np.linalg.norm(np.asarray(parameters.centers)[:,None,:]
         -np.asarray(parameters.nuclear_coords)[None,:,:],axis=2),axis=1)
     s = plan.evaluate('overlap',parameters)

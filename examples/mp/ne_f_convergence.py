@@ -35,7 +35,7 @@ for symbol,charge in (("Ne",0),("F",-1)):
     # Native spherical integrals use the integral-level SCF entry point because
     # the grid-bearing molecular facade currently requires Cartesian AOs.
     top,params = prepare_basis(symbol+" 0 0 0","aug-cc-pvdz",charge=charge,cart=False)
-    plan = make_plan(top,backend="native")
+    plan = make_plan(top)
     s = plan.evaluate("overlap",params)
     h = plan.evaluate("kinetic",params)+plan.evaluate("nuclear",params)
     g = plan.evaluate("eri",params)

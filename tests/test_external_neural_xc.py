@@ -59,7 +59,7 @@ def training_molecule(request):
                     jnp.asarray([.8]), jnp.asarray([1.])),
         CartesianAO(jnp.asarray([.7, 0., 0.]), (0, 0, 0),
                     jnp.asarray([.9]), jnp.asarray([1.])),
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[-.5, .1, 0.], [.3, .2, -.1], [.7, -.2, .3]])
     grid = QuadratureGrid(state.grid.weights, coords)
     provider = AOGrid.from_basis(basis, coords, grid.weights, block_size=2)

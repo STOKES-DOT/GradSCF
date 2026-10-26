@@ -65,16 +65,16 @@ void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
       size_t size=size_t(di)*dj;
       for (int atom=0; atom<(op==2 ? t.natm : 1); ++atom) {
         double factor=1.;
-        int nucleus=-1;
+        int nucleus=op==5 ? PTR_RINV_ORIG:-1;
         if (op==2) {
           factor=-t.atm[atom*ATM_SLOTS+CHARGE_OF];
           if (factor==0.) continue;
           nucleus=t.atm[atom*ATM_SLOTS+PTR_COORD];
           for (int x=0; x<3; ++x) t.env[PTR_RINV_ORIG+x]=t.env[nucleus+x];
         }
-        // For each nuclear potential, translation invariance replaces an AO
-        // coordinate derivative by (d/d R_AO - d/d R_nucleus). Expanding both
-        // factors includes all operator/basis and operator/operator terms.
+        // A nuclear potential or explicit Rinv depends on AO-center minus
+        // potential-origin vectors. Expanding both relative derivatives
+        // includes all operator/basis and operator/operator terms.
         auto add_relative=[&](size_t index,int a,int b,int x,int y,double value,bool both) {
           auto entry=[&](int first,int second,double v) {
             if (both) cross(index,first,second,v); else add(index,first,second,v);
@@ -87,8 +87,9 @@ void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
           }
         };
         for (int kind=0; kind<2; ++kind) {
-          Intor kernel=kind==0 ? (cart ? same_cart[op] : same_sph[op])
-                               : (cart ? mixed_cart[op] : mixed_sph[op]);
+          const int kernel_op=op==5 ? 2:op;
+          Intor kernel=kind==0 ? (cart ? same_cart[kernel_op] : same_sph[kernel_op])
+                               : (cart ? mixed_cart[kernel_op] : mixed_sph[kernel_op]);
           evaluate(kernel,shells,9*components*size,block,cache,nucleus);
           for (int c=0; c<components; ++c) for (int x=0; x<3; ++x) for (int y=0; y<3; ++y)
             for (int q=0; q<dj; ++q) for (int p=0; p<di; ++p) {
@@ -124,11 +125,12 @@ template<bool transpose, class Evaluate>
 void contract_geometry_hessian(IntegralTables& t, int op, int cart,
                                 const double* u, const double* input,
                                 double* output, Evaluate&& evaluate,
-                                const ERIWindow* window=nullptr) {
+                                const ERIWindow* window=nullptr,
+                                int first_shell=0,int last_shell=-1) {
   auto add=[&](size_t index,int a,int b,double value) {
     if (index==ERIWindow::outside) return;
     if constexpr (transpose) output[a]+=value*u[b]*input[index];
     else output[index]+=value*u[a]*input[b];
   };
-  for_each_geometry_hessian_entry(t,op,cart,evaluate,add,window);
+  for_each_geometry_hessian_entry(t,op,cart,evaluate,add,window,first_shell,last_shell);
 }

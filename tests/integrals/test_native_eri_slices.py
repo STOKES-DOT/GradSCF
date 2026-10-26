@@ -31,7 +31,7 @@ def _ao_slices(topology, shell_slice):
 def _problem(cart=True, omega=0., shell_slice=GENERAL, basis=None):
     top, params = integrals.prepare_basis(ATOM, basis=BASIS if basis is None else basis,
                                           cart=cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     nnuc = len(top.nuclear_charges)
     # The AO centers float independently of both nuclei and other shells.
     centers = params.centers + jnp.arange(params.centers.size).reshape(-1, 3) * .003
@@ -260,11 +260,10 @@ def test_native_shell_slice_rejects_packed_layouts(aosym):
         plan.evaluate("eri", params, shell_slice=GENERAL, aosym=aosym)
 
 
-def test_shell_slice_reference_backend_is_explicitly_unsupported():
+def test_shell_slice_retired_reference_backend_is_rejected():
     top, params, _, _, _, _, _ = _problem()
-    plan = integrals.make_plan(top, backend="jax_reference")
-    with pytest.raises(NotImplementedError, match="(?i)(shell.?slice|native)"):
-        plan.evaluate("eri", params, shell_slice=GENERAL)
+    with pytest.raises(ValueError, match="(?i)(libcint|backend|retired)"):
+        integrals.make_plan(top, backend="jax_reference")
 
 
 def test_native_shell_slice_retains_static_nonnegative_omega_validation():
@@ -279,7 +278,7 @@ def test_native_shell_slice_retains_static_nonnegative_omega_validation():
 
 
 @pytest.mark.parametrize("zero_direction", [False, True])
-def test_native_shell_slice_basis_and_third_geometry_ad_remain_unsupported(zero_direction):
+def test_native_shell_slice_basis_and_fifth_geometry_ad_remain_unsupported(zero_direction):
     _, params, plan, coords, _, value, _ = _problem(basis="3-21g")
     for field in ("exponents", "coefficients"):
         values = getattr(params, field)
@@ -290,6 +289,8 @@ def test_native_shell_slice_basis_and_third_geometry_ad_remain_unsupported(zero_
     direction = jnp.linspace(-.2, .3, coords.size).reshape(coords.shape)
     first = lambda r: jax.jvp(value, (r,), (direction,))[1]
     second = lambda r: jax.jvp(first, (r,), (direction,))[1]
-    third_direction = jnp.zeros_like(coords) if zero_direction else direction
-    with pytest.raises(NotImplementedError, match="(?i)third.*geometry"):
-        jax.jvp(second, (coords,), (third_direction,))
+    third = lambda r: jax.jvp(second, (r,), (direction,))[1]
+    fourth = lambda r: jax.jvp(third, (r,), (direction,))[1]
+    fifth_direction = jnp.zeros_like(coords) if zero_direction else direction
+    with pytest.raises(NotImplementedError, match="(?i)fifth.*geometry"):
+        jax.jvp(fourth, (coords,), (fifth_direction,))

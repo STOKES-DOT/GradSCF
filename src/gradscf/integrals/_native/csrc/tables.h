@@ -38,7 +38,7 @@ struct IntegralTables {
                  ffi::BufferR1<ffi::F64> environment, int op, int cart,
                  bool allow_long_range=false) {
     if (atoms.dimensions()[1] != ATM_SLOTS || basis.dimensions()[1] != BAS_SLOTS ||
-        environment.element_count() < 20 || op < 0 || op > 4 || (cart != 0 && cart != 1))
+        environment.element_count() < 20 || op < 0 || op > 5 || (cart != 0 && cart != 1))
       throw std::invalid_argument("Invalid libcint table dimensions or operator");
     natm = atoms.dimensions()[0]; nbas = basis.dimensions()[0];
     atm.assign(atoms.typed_data(), atoms.typed_data()+atoms.element_count());
@@ -46,6 +46,8 @@ struct IntegralTables {
     env.assign(environment.typed_data(), environment.typed_data()+environment.element_count());
     for (double v : env)
       if (!std::isfinite(v)) throw std::invalid_argument("Native integral env must be finite");
+    if (op==5 && env[PTR_RINV_ZETA]<0.)
+      throw std::invalid_argument("Rinv Gaussian zeta must be nonnegative");
     if (env[PTR_RANGE_OMEGA] > std::sqrt(std::numeric_limits<double>::max()) / 2.)
       throw std::invalid_argument("omega exceeds the safe float64 squared range");
     if (env[PTR_RANGE_OMEGA] != 0. &&

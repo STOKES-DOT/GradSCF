@@ -36,7 +36,7 @@ coordinates = np.asarray(input_data["coordinates_bohr"])
 symbols, basis = input_data["symbols"], input_data["basis"]
 root, nroots = 0, 6
 mol = gto.M(atom=list(zip(symbols, coordinates)), basis=basis, unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
 if not mf.converged:
     raise RuntimeError("The RHF seed did not converge.")

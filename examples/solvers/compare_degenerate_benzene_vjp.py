@@ -56,7 +56,7 @@ def compare(args, native, report, save):
     from pyscf import gto, scf, tdscf
     from scipy.linalg import eigh
 
-    if not native.get("preparation_complete") or native.get("integral_backend") != "native":
+    if not native.get("preparation_complete") or native.get("integral_backend") != "libcint":
         raise RuntimeError("Require a successfully prepared native GradSCF report")
     if not args.prepare_only and (not native.get("complete") or not native.get("passed")):
         raise RuntimeError("Full independent response comparison requires a complete passing native report")

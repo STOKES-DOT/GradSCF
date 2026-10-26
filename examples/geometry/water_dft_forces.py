@@ -30,8 +30,7 @@ mol = gto.M(atom=list(zip(common["symbols"], coordinates)), basis="6-31g*",
 records = []
 for method in METHODS:
     mf = dft.RKS(mol, xc=method, grids_level=3, conv_tol=1e-12,
-                 conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=150,
-                 integral_backend="native").run()
+                 conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=150).run()
     energy = MolecularEnergy(mf)
     value_and_grad = jax.jit(jax.value_and_grad(energy))
     start = perf_counter()
@@ -64,7 +63,7 @@ for method in METHODS:
                 complete=len(records) == len(METHODS), requested_methods=list(METHODS),
                 b3lyp_convention="VWN-RPA (Gaussian B3LYP)",
                 source_input=str(output / "gradscf.json"), dtype="float64",
-                integral_backend="native", grid_ao_backend="jax",
+                integral_backend='libcint', grid_ao_backend="jax",
                 scf_energy_tolerance=1e-12, scf_density_tolerance=1e-11,
                 scf_orbital_tolerance=1e-10, orbital_gradient_tolerance=1e-9,
                 implicit_tolerance=1e-10, jax_version=jax.__version__,

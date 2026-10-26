@@ -57,7 +57,7 @@ def calculate(name,trained,max_eri_gib=2.):
     eri_gib=8*npair*(npair+1)/2/2**30
     if eri_gib>max_eri_gib:
         raise MemoryError(f'{name} contracted ERI alone requires {eri_gib:.2f} GiB in s8; limit is {max_eri_gib:.2f} GiB.')
-    plan=integrals.make_plan(top,backend='native')
+    plan=integrals.make_plan(top)
     overlap=plan.evaluate('overlap',params)
     hcore=plan.evaluate('kinetic',params)+plan.evaluate('nuclear',params)
     eri=plan.evaluate('eri',params,aosym='s8');eri.block_until_ready()
@@ -108,7 +108,7 @@ def compare(summary,output,bases=None,max_eri_gib=2.):
         anchor=next(r['energy_hartree'] for r in results if r['basis']=='cc-pvtz')
         for r in results:r['above_cc_pvtz_millihartree']=1000*(r['energy_hartree']-anchor)
     cpuinfo=Path('/proc/cpuinfo')
-    report=dict(method='RHF',backend='GradSCF native CPU integrals + JAX SCF',cartesian=False,
+    report=dict(method='RHF',backend='GradSCF libcint CPU integrals + JAX SCF',cartesian=False,
         molecule=trained.get('molecule','CH4'),geometry_metadata=trained.get('geometry_metadata'),
         symbols=trained['symbols'],coords_angstrom=trained['coords_angstrom'],bond_angstrom=trained.get('bond_angstrom'),
         charge=0,spin=0,dtype='float64',energy_reference='cc-pVTZ finite basis, not CBS',

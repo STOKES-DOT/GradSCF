@@ -69,7 +69,7 @@ def _nitrogen_model():
 
     mol = gto.M(atom=list(zip(("N", "N"), COORDINATES)), basis="sto-3g",
                 unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", init_guess=1.4 * np.eye(10),
+    mf = scf.RHF(mol, init_guess=1.4 * np.eye(10),
                  conv_tol=1e-13, conv_tol_density=1e-11, conv_tol_grad=1e-10,
                  max_cycle=250).run()
     assert mf.converged

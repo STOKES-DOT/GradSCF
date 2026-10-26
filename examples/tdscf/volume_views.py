@@ -29,7 +29,7 @@ def sample_ao_grid(symbols, coordinates, basis_name, *, padding=8., spacing=.25)
         raise ValueError("This example caps its visualization grid at one million points.")
     points = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
     basis = integrals.basis_from_spec(list(zip(symbols, coordinates)), basis=basis_name,
-                                      unit="Bohr", precompute_eri_groups=False)
+                                      unit="Bohr")
     ao = np.asarray(integrals.evaluate_cartesian_ao(basis, jnp.asarray(points), chunk_size=2048))
     if not np.isfinite(ao).all():
         raise RuntimeError("AO field sampling returned nonfinite values.")
