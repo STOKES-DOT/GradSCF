@@ -24,7 +24,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 output = Path("reproducibility/ad_showcase/X14_h2_eom_dyson")
 output.mkdir(parents=True, exist_ok=True)
 mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+mf = scf.RHF(mol, conv_tol=1e-13,
              conv_tol_density=1e-12).run()
 reference = MolecularEnergy(mf, gradient_tolerance=1e-11)
 coordinates = reference.coordinates

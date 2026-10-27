@@ -40,7 +40,6 @@ def _build_restricted_pair():
         cart=True,
         grids_level=2,
         rks_config=RKSConfig(xc_spec="b3lyp", **_matched_scf_controls(mf)),
-        integral_backend="cpu",
         verbose=0,
     )
     np.testing.assert_allclose(molecule.mf_energy, mf.e_tot, atol=1e-9, rtol=0.0)
@@ -73,7 +72,6 @@ def _build_unrestricted_pair():
         cart=True,
         grids_level=2,
         uks_config=UKSConfig(xc_spec="b3lyp", **_matched_scf_controls(mf)),
-        integral_backend="cpu",
         verbose=0,
     )
     np.testing.assert_allclose(molecule.mf_energy, mf.e_tot, atol=1e-9, rtol=0.0)

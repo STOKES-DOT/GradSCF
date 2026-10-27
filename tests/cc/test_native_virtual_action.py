@@ -27,7 +27,7 @@ def _action(c, basis, **kwargs):
 def _problem(projected=False):
     topology, parameters = integrals.prepare_basis(
         'H 0 0 0; H .2 -.1 .8', basis='3-21g')
-    primitive = NativeDirectBasis(integrals.make_plan(topology, backend='native'), parameters)
+    primitive = NativeDirectBasis(integrals.make_plan(topology), parameters)
     rng = np.random.default_rng(6410)
     transform = jnp.asarray(np.eye(topology.nao)+rng.normal(scale=.04, size=(topology.nao,)*2))
     basis = ProjectedNativeDirectBasis(primitive, transform) if projected else primitive

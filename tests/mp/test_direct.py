@@ -17,7 +17,7 @@ def direct_reference(request):
     basis = "3-21g" if open_shell else "sto-3g"
     molecule = gto.M(atom=atom, basis=basis, spin=int(open_shell), cart=True)
     factory = scf.UHF if unrestricted else scf.RHF
-    options = dict(integral_backend="native", execution_device="cpu",
+    options = dict(execution_device="cpu",
                    max_memory=128., conv_tol=1e-13, conv_tol_grad=1e-10,
                    conv_tol_density=1e-11, max_cycle=200)
     full = factory(molecule, **options).run()
@@ -142,45 +142,3 @@ def test_direct_mp2_matches_independent_pyscf_energy(direct_reference):
     actual = mp.MP2(data["source"], with_t2=False).run()
     np.testing.assert_allclose(actual.e_corr, reference.e_corr, atol=2e-9, rtol=0)
     np.testing.assert_allclose(actual.e_tot, reference.e_tot, atol=2e-9, rtol=0)
-
-
-@pytest.fixture(scope="module")
-def legacy_jax_direct_rhf():
-    from gradscf import gto, scf
-
-    molecule = gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True)
-    options = dict(integral_backend="jax", execution_device="cpu",
-                   conv_tol=1e-12, conv_tol_grad=1e-10, conv_tol_density=1e-11,
-                   max_memory=128.)
-    full = scf.RHF(molecule, **options).run()
-    direct = scf.RHF(molecule, jk_backend="direct", direct_scf_tol=0., **options).run()
-    assert full.converged and direct.converged
-    return direct, full
-
-
-def test_legacy_jax_direct_rhf_mp2_matches_full(legacy_jax_direct_rhf):
-    from gradscf import mp
-    from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
-
-    direct, full = legacy_jax_direct_rhf
-    assert not isinstance(direct._scf_inputs.direct_basis,
-                          (NativeDirectBasis, ProjectedNativeDirectBasis))
-    expected, actual = mp.MP2(full).run(), mp.MP2(direct).run()
-    np.testing.assert_allclose(actual.e_corr, expected.e_corr, atol=2e-11, rtol=0)
-    np.testing.assert_allclose(actual.e_tot, expected.e_tot, atol=2e-10, rtol=0)
-    np.testing.assert_allclose(actual.t2, expected.t2, atol=2e-9, rtol=0)
-
-
-def test_legacy_jax_direct_rhf_budget_precedes_packed_materialization(
-        legacy_jax_direct_rhf, monkeypatch):
-    from gradscf import mp
-    from gradscf.scf.inputs.types import RKSIntegralInputs
-
-    direct, _ = legacy_jax_direct_rhf
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("An insufficient MP budget reached legacy packed AO ERI materialization")
-
-    monkeypatch.setattr(RKSIntegralInputs, "response_eri_pair_matrix", forbidden)
-    with pytest.raises(ValueError, match="(?i)(budget|memory|resident|minimum)"):
-        mp.MP2(direct, max_memory=.0001).run()

@@ -12,9 +12,9 @@ from jaxtyping import Array
 from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_TOL,
-    PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    TD_DAVIDSON_MAX_CYCLE,
+    TD_DAVIDSON_TOL,
+    TD_POSITIVE_EIG_THRESHOLD,
 )
 from ..solvers.eigen.davidson import _davidson_search_nroots, _solver_dtype
 from ..solvers.eigen.response import EigenGradientMode
@@ -86,9 +86,9 @@ def solve_casida_from_tdhf_operator(
     tdhf_vind_rows: Callable,
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
     matrix_eps: float = 1e-10,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
+    davidson_tol: float = TD_DAVIDSON_TOL,
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     davidson_initial_guess_count: int | None = None,
@@ -135,10 +135,10 @@ class RestrictedCasidaTDDFT:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     matrix_eps: float = 1e-10
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
+    davidson_tol: float = TD_DAVIDSON_TOL
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     davidson_initial_guess_count: int | None = None
@@ -231,6 +231,10 @@ class RestrictedCasidaTDDFT:
         )
 
     def tda(self, nstates: int | None = None) -> TDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_tda_impl')
+
+    def _tda_impl(self, nstates: int | None = None) -> TDAResult:
         memory = self._memory_plan(nstates)
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
@@ -281,6 +285,10 @@ class RestrictedCasidaTDDFT:
         )
 
     def kernel(self, nstates: int | None = None) -> TDDFTResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> TDDFTResult:
         memory = self._memory_plan(nstates, rpa=True)
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:

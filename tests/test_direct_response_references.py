@@ -21,7 +21,7 @@ def water():
     atoms = [(a[0], a[1:]) for a in gold["geometry_angstrom"]]
     started = perf_counter()
     mol = gto.M(atom=atoms, basis="sto-3g", unit="Angstrom", cart=True)
-    actual = scf.RHF(mol, integral_backend="native", jk_backend="direct", grids_level=0,
+    actual = scf.RHF(mol, jk_backend="direct", grids_level=0,
                      conv_tol=1e-13, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     actual_seconds = perf_counter() - started
     started = perf_counter()

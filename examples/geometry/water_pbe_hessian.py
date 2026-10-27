@@ -28,8 +28,7 @@ coordinates = jnp.asarray(geometry["coordinates_bohr"])
 mol = gto.M(atom=list(zip(geometry["symbols"], np.asarray(coordinates))),
             basis=geometry["basis"], unit="Bohr", cart=True)
 mf = dft.RKS(mol, xc="pbe", grids_level=geometry["grid_level"], max_cycle=150,
-             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-             integral_backend="native").run()
+             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
 energy = MolecularEnergy(mf)
 gradient = jax.jit(jax.grad(energy))
 derivative = np.asarray(gradient(coordinates))
@@ -105,7 +104,7 @@ data = dict(
     raw_rotation_residual_hartree_per_bohr=rotation_residual,
     finite_difference_direction=direction.tolist(), finite_difference_checks=checks,
     isotopes=isotopes, hessian_seconds_including_compilation=seconds,
-    hessian_column_seconds=column_seconds, integral_backend="native", dtype="float64",
+    hessian_column_seconds=column_seconds, integral_backend='libcint', dtype="float64",
     orbital_gradient_tolerance=1e-9, implicit_tolerance=1e-10,
     amu_to_electron_mass=AMU_TO_ELECTRON_MASS, hartree_to_wavenumber=HARTREE_TO_WAVENUMBER,
     jax_version=jax.__version__, numpy_version=np.__version__,

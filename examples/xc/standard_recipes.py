@@ -18,8 +18,7 @@ functional = dft.custom_xc('.25*HF + .75*gga_x_pbe + gga_c_pbe',
 print('Exact-exchange coefficient:', functional.recipe.exact_exchange.full_range)
 print('Local terms:', functional.recipe.semilocal)
 
-mf = dft.RKS(mol, xc=functional, grids_level=1,
-             integral_backend='native', conv_tol=1e-11).run()
+mf = dft.RKS(mol, xc=functional, grids_level=1, conv_tol=1e-11).run()
 if not mf.converged:
     raise RuntimeError('PBE0 SCF did not converge.')
 print('PBE0 total energy / Eh:', float(mf.e_tot))

@@ -43,7 +43,7 @@ if __name__ == '__main__':
     # GradSCF supplies integrals and an HF initial density. Learned SCF then uses
     # only the MLP for XC; the HF exchange energy is not retained as a baseline.
     mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-    mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
+    mf = scf.RHF(mol, grids_level=0).run()
     reference = mf.to_reference()
     dm = mf.make_rdm1()
     params = model.init(jax.random.PRNGKey(0), dm)

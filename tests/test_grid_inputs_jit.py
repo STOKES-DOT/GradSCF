@@ -14,7 +14,7 @@ def test_constant_geometry_grid_cache_inside_jit(monkeypatch):
 
     def integral(scale):
         data = build_rks_integral_inputs(atom=spec, basis="sto-3g", xc_spec="pbe",
-                                         grids_level=0, integral_backend="native")
+                                         grids_level=0)
         return scale*jnp.sum(data.grid_weights*jnp.sum(data.ao**2, axis=1))
 
     expected = jax.jit(jax.grad(integral))(1.)

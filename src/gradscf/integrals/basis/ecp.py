@@ -31,7 +31,7 @@ class AtomicECP:
 
 
 def evaluate_ecp(plan,parameters,ecps):
-    if plan.backend!='native':raise NotImplementedError('ECP integrals require the native backend.')
+    if plan.backend!='libcint':raise NotImplementedError('ECP requires the libcint integral interface.')
     if ecps is None or len(ecps)!=len(plan.topology.nuclear_charges):
         raise ValueError('Provide one AtomicECP or None per nucleus.')
     if max(plan.topology.angular_momenta)>3:raise NotImplementedError('Scalar ECP supports orbital l<=3.')

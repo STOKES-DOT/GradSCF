@@ -22,7 +22,7 @@ def _reference(*, unrestricted, streamed=True):
                     exponents=jnp.asarray([.7, 1.8]), coefficients=jnp.asarray([.6, .4])),
         CartesianAO(center=jnp.asarray([.4, -.2, .1]), angular=(1, 0, 0),
                     exponents=jnp.asarray([.9]), coefficients=jnp.asarray([.8])),
-    ), precompute_eri_groups=False)
+    ))
     coords = jnp.asarray([[0., 0., 0.], [.2, -.1, .3], [-.4, .5, -.2],
                           [.8, -.7, .1], [.1, .3, -.4], [-.2, -.1, .6], [.5, .2, .1]])
     weights = jnp.asarray([.2, .4, .1, .3, .15, .25, .35])

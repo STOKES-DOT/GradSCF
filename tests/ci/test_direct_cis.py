@@ -10,7 +10,7 @@ def water_direct_hf():
 
     mol = gto.M(atom="O 0 0 0; H 0 .757 .587; H 0 -.757 .587",
                 basis="sto-3g", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", jk_backend="direct",
+    mf = scf.RHF(mol, jk_backend="direct",
                  conv_tol=1e-13, conv_tol_grad=1e-10,
                  conv_tol_density=1e-11).run()
     assert mf.converged

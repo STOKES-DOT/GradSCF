@@ -21,7 +21,7 @@ def main():
     report = {"platform": platform.platform(), "machine": platform.machine(),
               "jax_version": jax.__version__, "devices": [str(d) for d in jax.devices()],
               "dtype": "float64", "molecule": "H3 doublet", "basis": "STO-3G",
-              "z_angstrom": [0., .85, 1.9], "integral_backend": "cpu",
+              "z_angstrom": [0., .85, 1.9], "integral_backend": "libcint",
               "energy_unit": "Hartree", "scf_conv_tol": 1e-11,
               "cc_residual_tol": 1e-11, "ci_conv_tol": 1e-11}
     for kind in ("UHF", "ROHF"):

@@ -2,6 +2,7 @@ from pyscf_data_reference import true_df_factors_from_libcint_mol
 import numpy as np
 import pytest
 
+from gradscf import integrals
 from gradscf.integrals import basis_from_pyscf_spec, evaluate_cartesian_ao
 from gradscf.integrals import build_hcore, eri_pair_matrix_packed, eri_tensor, overlap_matrix
 from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df, build_jk_from_df_orbitals
@@ -9,7 +10,6 @@ from gradscf.integrals.molecular.factorization import eri_to_df_factors
 from gradscf.scf import RKSConfig, run_rks_from_integrals
 from gradscf.scf.builders import _build_restricted_reference
 from reference_scf_features import _restricted_response_eri_slices_from_mo_tensor
-from gradscf.integrals.backends.jax_reference.direct_jk import build_direct_jk_from_basis, build_direct_jk_incremental
 from gradscf.integrals.molecular.jk import build_jk_from_eri_pair_matrix
 from gradscf.ao2mo import eri_pair_matrix_to_mo_eri_slices
 from gradscf.tddft import RestrictedCasidaTDDFT
@@ -39,6 +39,13 @@ def _water_mol():
         charge=0,
         verbose=0,
     )
+
+
+def _direct_provider(mol):
+    from gradscf.integrals.backends.native.jk import NativeDirectBasis
+    topology, parameters = integrals.prepare_basis(mol.atom, mol.basis, unit=mol.unit,
+                                                   cart=True, spin=mol.spin, charge=mol.charge)
+    return NativeDirectBasis(integrals.make_plan(topology), parameters)
 
 
 def test_df_jk_matches_dense_eri_contractions_for_water():
@@ -207,104 +214,16 @@ def test_direct_no_df_jk_matches_dense_eri_contractions_for_water():
 
     j_ref = np.einsum("pqrs,rs->pq", eri, density, optimize=True)
     k_ref = np.einsum("prqs,rs->pq", eri, density, optimize=True)
-    direct_jk = build_direct_jk_from_basis(basis, density, screening_threshold=0.0)
+    direct_j, direct_k = _direct_provider(mol).get_jk(density, screening_threshold=0.0)
 
-    assert np.allclose(np.asarray(direct_jk.j), j_ref, atol=2e-5, rtol=2e-5)
-    assert np.allclose(np.asarray(direct_jk.k), k_ref, atol=2e-5, rtol=2e-5)
-
-
-def test_direct_no_df_without_screening_uses_packed_jk_path(monkeypatch):
-    _pyscf_or_skip()
-    mol = _water_mol()
-    basis = basis_from_pyscf_spec(
-        mol.atom,
-        basis="sto-3g",
-        unit="Angstrom",
-        cart=True,
-        spin=0,
-        charge=0,
-        max_l=3,
-    )
-    rng = np.random.default_rng(11)
-    density = rng.normal(size=(mol.nao_nr(), mol.nao_nr()))
-    density = 0.5 * (density + density.T)
-
-    import gradscf.integrals.backends.jax_reference.direct_jk as direct_jk_mod
-
-    def _fail_kernel(*args, **kwargs):
-        raise AssertionError("unscreened direct J/K should reuse the packed ERI path")
-
-    monkeypatch.setattr(direct_jk_mod, "_run_quartet_kernel_chunked", _fail_kernel)
-    direct_jk = build_direct_jk_from_basis(basis, density, screening_threshold=0.0)
-    pair_j, pair_k = build_jk_from_eri_pair_matrix(eri_pair_matrix_packed(basis), density)
-
-    assert np.allclose(np.asarray(direct_jk.j), np.asarray(pair_j), atol=1e-10, rtol=1e-10)
-    assert np.allclose(np.asarray(direct_jk.k), np.asarray(pair_k), atol=1e-10, rtol=1e-10)
+    assert np.allclose(np.asarray(direct_j), j_ref, atol=2e-5, rtol=2e-5)
+    assert np.allclose(np.asarray(direct_k), k_ref, atol=2e-5, rtol=2e-5)
 
 
-def test_direct_no_df_incremental_update_matches_rebuild_for_water():
-    _pyscf_or_skip()
-    mol = _water_mol()
-    basis = basis_from_pyscf_spec(
-        mol.atom,
-        basis="sto-3g",
-        unit="Angstrom",
-        cart=True,
-        spin=0,
-        charge=0,
-        max_l=3,
-    )
-    rng = np.random.default_rng(8)
-    density0 = rng.normal(size=(mol.nao_nr(), mol.nao_nr()))
-    density0 = 0.5 * (density0 + density0.T)
-    density1 = density0 + 0.03 * rng.normal(size=(mol.nao_nr(), mol.nao_nr()))
-    density1 = 0.5 * (density1 + density1.T)
-
-    jk0 = build_direct_jk_from_basis(basis, density0, screening_threshold=0.0)
-    jk1_ref = build_direct_jk_from_basis(basis, density1, screening_threshold=0.0)
-    jk1_inc = build_direct_jk_incremental(
-        basis,
-        density1,
-        density_last=density0,
-        j_last=jk0.j,
-        k_last=jk0.k,
-        screening_threshold=0.0,
-    )
-
-    assert np.allclose(np.asarray(jk1_inc.j), np.asarray(jk1_ref.j), atol=2e-5, rtol=2e-5)
-    assert np.allclose(np.asarray(jk1_inc.k), np.asarray(jk1_ref.k), atol=2e-5, rtol=2e-5)
 
 
-def test_direct_no_df_shell_screening_skips_screened_quartets(monkeypatch):
-    _pyscf_or_skip()
-    mol = _water_mol()
-    basis = basis_from_pyscf_spec(
-        mol.atom,
-        basis="sto-3g",
-        unit="Angstrom",
-        cart=True,
-        spin=0,
-        charge=0,
-        max_l=3,
-    )
-    density = np.eye(mol.nao_nr())
 
-    def _fail_kernel(*args, **kwargs):
-        raise AssertionError("screened shell quartets should not run the ERI kernel")
 
-    import gradscf.integrals.backends.jax_reference.direct_jk as direct_jk_mod
-
-    monkeypatch.setattr(direct_jk_mod, "_run_quartet_kernel_chunked", _fail_kernel)
-    shell_pair_bounds = np.zeros((len(basis.shells), len(basis.shells)))
-    direct_jk = build_direct_jk_from_basis(
-        basis,
-        density,
-        screening_threshold=1e-12,
-        shell_pair_schwarz_bounds=shell_pair_bounds,
-    )
-
-    assert np.allclose(np.asarray(direct_jk.j), 0.0, atol=0.0)
-    assert np.allclose(np.asarray(direct_jk.k), 0.0, atol=0.0)
 
 
 def test_rks_full_backend_accepts_packed_no_df_eri_for_water():
@@ -408,7 +327,7 @@ def test_rks_direct_backend_accepts_basis_without_prebuilt_eri_for_water():
         overlap=s,
         hcore=h,
         eri=None,
-        direct_basis=basis,
+        direct_basis=_direct_provider(mol),
         nelectron=mol.nelectron,
         nuclear_repulsion=float(mol.energy_nuc()),
         ao=ao,
@@ -465,7 +384,7 @@ def test_rks_direct_backend_matches_pyscf_for_water():
         overlap=s,
         hcore=h,
         eri=None,
-        direct_basis=basis,
+        direct_basis=_direct_provider(mol),
         nelectron=mol.nelectron,
         nuclear_repulsion=float(mol.energy_nuc()),
         ao=ao,
@@ -653,7 +572,6 @@ def test_native_spectral_df_reference_matches_full_eri_reference():
             df_tol=1e-10,
         ),
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
 
     assert ref.df_factors is not None
@@ -689,7 +607,6 @@ def test_native_spectral_df_reference_preserves_backend_when_xc_overrides_config
             df_tol=1e-10,
         ),
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
 
     assert ref.df_factors is not None
@@ -719,7 +636,6 @@ def test_df_reference_lazy_slices_support_tda():
             df_tol=1e-10,
         ),
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
 
     assert ref.df_factors is not None

@@ -278,7 +278,7 @@ def test_n2_sto3g_cisd_matches_pyscf():
     mf = pyscf.scf.RHF(molecule).run(conv_tol=1e-13, conv_tol_grad=1e-11)
     reference = mf.CISD().run(conv_tol=1e-11)
     native_molecule = gto.M(atom=atom, basis="sto-3g", unit="Bohr", cart=True)
-    native = scf.RHF(native_molecule, integral_backend="native", conv_tol=1e-13,
+    native = scf.RHF(native_molecule, conv_tol=1e-13,
         conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=250,
         init_guess=1.4*np.eye(10)).run()
     assert native.converged

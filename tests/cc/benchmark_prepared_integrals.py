@@ -68,7 +68,7 @@ def main():
         top, parameters = integrals.prepare_basis(atom, basis=data['basis'], unit='Bohr', cart=True)
         np.testing.assert_allclose(parameters.nuclear_coords, saved['coordinates_bohr'],
                                    atol=2e-14, rtol=0)
-    basis = NativeDirectBasis(integrals.make_plan(top, backend='native'), parameters)
+    basis = NativeDirectBasis(integrals.make_plan(top), parameters)
     nocc = data['nocc']
 
     def function(coefficients):

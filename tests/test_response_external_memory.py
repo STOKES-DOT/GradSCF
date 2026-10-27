@@ -245,7 +245,7 @@ def test_external_network_scf_facade_does_not_force_direct_reference_to_pair(mon
 
     molecule = gto.M(atom="H 0 0 0; H 0 0 .8", basis="sto-3g", cart=True)
     model, params = _functional(True), _parameters()
-    options = dict(xc=model, params=params, integral_backend="native", grids_level=0,
+    options = dict(xc=model, params=params, grids_level=0,
                    conv_tol=1e-11, conv_tol_density=1e-10, conv_tol_grad=1e-8, max_cycle=60)
     expected = dft.RKS(molecule, jk_backend="full", **options).run()
     assert expected.converged

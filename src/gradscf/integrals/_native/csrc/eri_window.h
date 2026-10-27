@@ -7,9 +7,15 @@ struct ERIWindow {
   std::array<int,8> shells;
   std::array<int,4> starts,shape;
   std::array<int64_t,4> storage;
+  int compact_layout;
+  size_t pairs=0;
 
-  ERIWindow(const IntegralTables& t,const int32_t* slice=nullptr,size_t count=0) {
+  ERIWindow(const IntegralTables& t,const int32_t* slice=nullptr,size_t count=0,
+            int layout=-1):compact_layout(layout) {
     const int nshell=int(t.ao.size())-1;
+    if (layout < -1 || layout > 1 || (layout>=0 && slice))
+      throw std::invalid_argument("Invalid packed ERI geometry layout");
+    if (layout>=0) pairs=size_t(t.n)*(t.n+1)/2;
     if (slice && count!=8) throw std::invalid_argument("shell_slice must have eight endpoints");
     for (int a=0;a<4;++a) {
       int first=slice ? slice[2*a] : 0,last=slice ? slice[2*a+1] : nshell;
@@ -26,6 +32,14 @@ struct ERIWindow {
   }
 
   void check_shape(const ffi::Buffer<ffi::F64>& buffer) const {
+    if (compact_layout>=0) {
+      const auto dims=buffer.dimensions();
+      const bool valid=compact_layout==0 ?
+        dims.size()==2 && dims[0]==pairs && dims[1]==pairs :
+        dims.size()==1 && dims[0]==pairs*(pairs+1)/2;
+      if (!valid) throw std::invalid_argument("Invalid packed ERI geometry shape");
+      return;
+    }
     if (buffer.dimensions().size()!=4)
       throw std::invalid_argument("Invalid ERI shell_slice tensor rank");
     for (int a=0;a<4;++a) if (buffer.dimensions()[a]!=shape[a])
@@ -43,6 +57,15 @@ struct ERIWindow {
   }
 
   size_t index(int i,int j,int k,int l) const {
+    if (compact_layout>=0) {
+      // Select exactly the full-tensor entries gathered by tril_indices.
+      // Folding every symmetric emission into a packed index would count
+      // distinct full entries repeatedly, particularly diagonal AO pairs.
+      if (i<j || k<l) return outside;
+      const size_t ij=size_t(i)*(i+1)/2+j,kl=size_t(k)*(k+1)/2+l;
+      if (compact_layout==0) return ij*pairs+kl;
+      return ij>=kl ? ij*(ij+1)/2+kl:outside;
+    }
     const int ao[]={i,j,k,l};
     size_t result=0;
     for (int a=0;a<4;++a) {
@@ -53,53 +76,4 @@ struct ERIWindow {
     return result;
   }
 
-  template<class Consume>
-  void for_each_shell(Consume&& consume) const {
-    // Every existing derivative emission is one of these ERI permutations.
-    // Their inverse boxes cover all contributing base quartets. Earlier boxes
-    // own overlaps; emissions themselves retain their original multiplicity.
-    constexpr int permutations[8][4]={{0,1,2,3},{1,0,2,3},{0,1,3,2},{1,0,3,2},
-                                      {2,3,0,1},{3,2,0,1},{2,3,1,0},{3,2,1,0}};
-    std::vector<std::array<int,8>> boxes;
-    for (const auto& permutation:permutations) {
-      std::array<int,8> box;
-      for (int a=0;a<4;++a) {
-        box[2*permutation[a]]=shells[2*a];
-        box[2*permutation[a]+1]=shells[2*a+1];
-      }
-      if (std::find(boxes.begin(),boxes.end(),box)==boxes.end()) boxes.push_back(box);
-    }
-    for (size_t b=0;b<boxes.size();++b) {
-      const auto& box=boxes[b];
-      for (int i=box[0];i<box[1];++i) for (int j=box[2];j<box[3];++j)
-        for (int k=box[4];k<box[5];++k) for (int l=box[6];l<box[7];++l) {
-          const int quartet[]={i,j,k,l};
-          bool owned=false;
-          for (size_t earlier=0;earlier<b && !owned;++earlier) {
-            bool inside=true;
-            for (int a=0;a<4;++a)
-              inside=inside && boxes[earlier][2*a]<=quartet[a] && quartet[a]<boxes[earlier][2*a+1];
-            owned=inside;
-          }
-          if (!owned) consume(i,j,k,l);
-        }
-    }
-  }
 };
-
-template<class Consume>
-void for_each_eri_shell(const IntegralTables& t,const ERIWindow* window,Consume&& consume,
-                        int first_shell=0,int last_shell=-1) {
-  const int nshell=int(t.ao.size())-1;
-  if (last_shell<0) last_shell=nshell;
-  if (first_shell<0 || first_shell>last_shell || last_shell>nshell)
-    throw std::invalid_argument("Invalid ERI first-shell range");
-  if (window) {
-    if (first_shell==0 && last_shell==nshell) return window->for_each_shell(consume);
-    return window->for_each_shell([&](int i,int j,int k,int l) {
-      if (first_shell<=i && i<last_shell) consume(i,j,k,l);
-    });
-  }
-  for (int i=first_shell;i<last_shell;++i) for (int j=0;j<nshell;++j)
-    for (int k=0;k<nshell;++k) for (int l=0;l<nshell;++l) consume(i,j,k,l);
-}

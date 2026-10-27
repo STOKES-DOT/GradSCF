@@ -1,8 +1,16 @@
 # Integral module ownership
 
-The public entry points remain `prepare_basis`, `make_plan`,
-`make_auxiliary_plan` and `backend_capabilities`. Static plans bind current
-JAX parameter arrays; they must not cache stale exponents or coefficients.
+`libcint` is the sole production Gaussian integral interface. The public entry
+points are `prepare_basis`, `make_plan`, `make_auxiliary_plan` and
+`backend_capabilities`. Ordinary SCF/DFT constructors and examples do not select
+an integral engine. The former `cpu`, `native`, `jax` and `jax_reference` engine
+names are rejected; CPU/GPU execution devices and JAX grid AO evaluation are
+separate controls.
+
+Static plans bind current JAX parameter arrays; they must not cache stale
+exponents, coefficients or coordinates. The pure-JAX Gaussian recurrence
+backend has been removed. JAX still owns normalization, AO/grid evaluation,
+linear algebra, SCF response, and periodic FFT/GTH operations.
 
 ## Directory map
 
@@ -10,11 +18,11 @@ JAX parameter arrays; they must not cache stale exponents or coefficients.
 |---|---|
 | `basis/types.py` | Static shell topology, differentiable raw parameters and backend-independent shape validation |
 | `basis/library.py`, `basis/data/` | Named/raw basis construction and complete bundled resources |
-| `basis/cartesian.py` | Cartesian AO/shell views and grouping used by grids and reference kernels |
+| `basis/cartesian.py` | Cartesian AO/shell views and padded grid payloads; no retired ERI quartet grouping |
 | `basis/normalization.py`, `basis/contraction.py` | JAX normalization and primitive-to-contracted basis transforms |
 | `basis/ecp.py`, `basis/auxiliary.py` | ECP data/adapter and auxiliary-basis specifications |
 | `molecular/one_electron.py`, `molecular/eri.py` | Existing Cartesian operator entry points and packed AO-pair metadata |
-| `molecular/jk.py` | DF, packed and dense-reference density contractions; legacy direct dispatch |
+| `molecular/jk.py` | JAX density contractions and libcint shell-direct products |
 | `molecular/density_fitting.py` | Native auxiliary 2c/3c plans, fixed metric caches, whitening and projections |
 | `molecular/factorization.py` | Spectral ERI factorization, distinct from auxiliary-basis DF |
 | `grids/`, `periodic/` | Molecular grids/AO evaluation and periodic FFT/Coulomb/pseudopotential operations |
@@ -33,45 +41,59 @@ and its derivative primitives remain in `gradscf.integrals`.
 
 SCF configuration, XC/grid input assembly and RKS/UKS input payloads are owned
 by `gradscf.scf.inputs`. Its grid cache lives with the grid implementation;
-electron-count validation lives in `scf.core`. SCF implicit/unrolled response
+electron-count validation lives in `scf.core`. SCF implicit/explicit response
 belongs to SCF/solver modules, not the integral backend. Existing public
 integrals-level SCF-builder re-exports remain lazy and contain no implementation.
 
-## Native execution and differentiation
+## Libcint execution and differentiation
 
 `IntegralPlan` dispatches to native packing and mathematical derivative rules,
 which call FFI and C++ kernels. Raw coefficients are normalized in JAX. C++
 derivatives act on the normalized native coefficients and bare Gaussians; JAX
 adds the normalization chain. Fixed auxiliary metric whitening is also JAX.
 
-The C++ compact ABI dispatcher delegates packed ERI, auxiliary DF, direct J/K
-and packed J/K to separate translation units. Shared Coulomb shell traversal
-is in `coulomb_shells.h`; library exports and vendor bytes are unchanged.
+The C++ dispatcher delegates packed ERI, auxiliary DF, direct J/K and packed
+J/K to separate translation units. Shared Coulomb shell traversal is in
+`coulomb_shells.h`. Private paths such as `backends/native` identify implementation
+ownership; they are not additional public engine choices.
 
-Current AD limits remain explicit: geometry first/second derivatives for the
-existing dense operators; coefficient first/second products for one-electron
-and fixed-auxiliary 3c integrals; exponent first-order products for those same
-basis-parameter paths. Exponent and coefficient/geometry mixed second rules,
-RI geometry/auxiliary AD and direct-J/K basis AD are not supplied by moving files.
+Implemented product families have separate limits:
+
+| Product family | Implemented AD boundary |
+|---|---|
+| Full Cartesian overlap, kinetic, nuclear attraction and ordinary Coulomb ERI | Coordinate products and adjoints through order four |
+| Spherical overlap/kinetic/nuclear/ERI; dipole and grid-Coulomb `rinv` | First/second coordinate products; dipole/Rinv origin response is explicit |
+| Packed s4/s8 ERIs and bounded slabs | First/second coordinate products without a full-ERI gather |
+| Static ordinary Cartesian shell windows | Coordinate products through order four; spherical/range-separated higher products are separate unsupported cases |
+| One-electron matrices and ordinary full-s1 ERIs | Raw coefficient first/second products and exponent first products, including the JAX normalization chain |
+| Fixed-auxiliary RI | Orbital coefficient first/second and exponent first products with a precomputed, signature-checked metric |
+| Shell-direct J/K | Density response and first/second coordinate response; coordinate AD requires zero screening cutoff |
+
+Exponent Hessians, true higher coefficient products beyond the implemented
+families, mixed coefficient/exponent/geometry derivatives, RI geometry/auxiliary
+AD, and primitive basis-parameter AD of the direct J/K provider remain explicit
+limitations. A projected contraction matrix keeps its own JAX dependence; it
+does not create missing primitive-basis rules. Limits also depend on layout,
+angular momentum and range parameter. No arbitrary-order claim follows from
+the maximum order of one family.
 See [_native/README.md](_native/README.md) for the exact numerical contract.
 
-## Remaining production migrations
+## Scalar ECP and storage boundaries
 
-This reorganization preserves calculations. The following dependencies prevent
-moving every JAX molecular kernel into tests or removing every dense ERI API:
+Gaussian/Coulomb operators use libcint. Scalar ECP values additionally require
+the pinned PySCF ECP C subset in `_native/vendor/libcint/extensions/ecp`; this distinct special
+kernel is compiled into the private library, with its own license/provenance.
+It is not a PySCF Python runtime or an alternative Gaussian engine. ECP metadata
+and effective core charges must be preserved; unsupported ECP derivatives must
+not be replaced by an all-electron Hamiltonian. Fixed-primitive ECP values plus
+JAX contraction provide the existing coefficient path.
 
-| Current consumer | Required replacement before removal |
-|---|---|
-| `dft.hfx` grid `rinv_matrices`, including range separation | Native batched grid-Coulomb operator and matching parameter/geometry AD |
-| Native SCF assembly with traced geometry | Packed/block geometry JVP/VJP and second products; current path forms dense ERI before packing |
-| CartesianBasis RHF/UHF/ROHF/GHF entry points | Native plan/packed input migration with the same derivative contracts |
-| Post-HF full MO and spin-orbital transformations | Consumer-by-consumer block/DF interfaces in MP/CC/CI/FCI |
-
-`backends/jax_reference` is retained only where the existing interfaces still
-need these kernels or for explicit reference comparisons. Shared basis types
-and primitive normalization have been removed from that backend; native plans
-and periodic AO normalization no longer import it. Complete basis resources,
-angular momenta, contraction columns and representations are preserved.
+Full-s1 APIs explicitly materialize their requested four-index output. Packed,
+shell-window, slab and direct paths retain their corresponding bounded storage;
+their derivative limits must be checked independently. Fixed-primitive
+four-index tensors are restricted to budgeted small-system validation, not a
+general NNAO training cache. Working-array budgets do not constitute process-RSS
+limits or account automatically for arbitrary external-model internals.
 
 ## Validation
 
@@ -84,7 +106,7 @@ JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 PYTHONPATH=src python -m pytest -q \
   tests/nnao/test_joint_native_training.py
 ```
 
-Build native code with `python -m gradscf.integrals._native.build` before native
+Build the private library with `python -m gradscf.integrals._native.build` before integral
 tests. Basis resources and native sources must also be checked in a built
 wheel. Remote experiments use their own frozen source/native snapshots; do not
 overwrite those snapshots to apply a local module reorganization.

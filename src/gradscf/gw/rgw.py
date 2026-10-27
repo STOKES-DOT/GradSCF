@@ -21,13 +21,41 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import replace
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
-from .g0w0 import g0w0_cd_restricted, _mo_factors
+from .g0w0 import g0w0_cd_restricted, _mo_factors, _requested_orbitals, _window_indices
 from .evgw import evgw_cd_restricted
 from ..scf.reference import reference_state_signature, _array_signature
+
+
+# Cache executables by orbital layout and solver policy. All spectra, factors,
+# mean-field matrices and broadening remain numerical arguments; no GW/SCF
+# facade or frequency-dependent screening value enters the static cache key.
+_run_g0w0_numerics = jax.jit(g0w0_cd_restricted, static_argnames=(
+    "nocc", "nw", "orbs", "diff_mode", "qp_solver", "linearized", "evaluate_only",
+    "g_orbitals", "screening_occupied", "screening_virtual", "resolvent_expansion", "qp_tol",
+))
+
+
+def _use_cpu_resolvent(arrays, *, nmo, transitions):
+    """Reuse exact RPA factors only for bounded, explicitly CPU data."""
+    if not (0 < transitions <= 256 and transitions*nmo*nmo <= 20_000_000):
+        return False
+    default = jax.config.jax_default_device
+    if default is not None and getattr(default, "platform", None) != "cpu":
+        return False
+    for value in jax.tree.leaves(arrays):
+        # NumPy inputs can be moved by the caller's default JAX placement.
+        # Require actual array devices, including C/B/F/h/D as well as e.
+        if not isinstance(value, jax.Array):
+            return False
+        devices = value.devices()
+        if not devices or any(device.platform != "cpu" for device in devices):
+            return False
+    return True
 
 
 class GW:
@@ -275,8 +303,19 @@ class GW:
             self._ao_factors, self._source_key = factors, signature
             self._dipole_ao = None
             return self.mo_energy
-        driver = g0w0_cd_restricted if self.method == "g0w0" else evgw_cd_restricted
-        controls = dict(qp_solver=self.qp_solver) if self.method == "g0w0" else dict(
+        driver = _run_g0w0_numerics if self.method == "g0w0" else evgw_cd_restricted
+        g_window, occupied_window, virtual_window = (
+            self.g_orbitals, self.screening_occupied, self.screening_virtual)
+        if self.method == "g0w0":
+            nmo = result.mo_energy.shape[0]
+            orbs = _requested_orbitals(orbs, nmo)
+            g_window = _window_indices(g_window, range(nmo), "g_orbitals")
+            occupied_window = _window_indices(occupied_window, range(nocc), "screening_occupied")
+            virtual_window = _window_indices(virtual_window, range(nocc, nmo), "screening_virtual")
+        controls = dict(qp_solver=self.qp_solver,
+            resolvent_expansion=_use_cpu_resolvent((result.mo_energy, result.mo_coeff,
+                factors, result.fock_matrix, result.hcore_matrix, result.density_matrix),
+                nmo=nmo, transitions=len(occupied_window)*len(virtual_window))) if self.method == "g0w0" else dict(
             max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
             update_w=self.method == "evgw")
         res = driver(
@@ -290,9 +329,9 @@ class GW:
             nw=self.nw,
             eta=self.eta,
             orbs=orbs,
-            g_orbitals=self.g_orbitals,
-            screening_occupied=self.screening_occupied,
-            screening_virtual=self.screening_virtual,
+            g_orbitals=g_window,
+            screening_occupied=occupied_window,
+            screening_virtual=virtual_window,
             **controls,
         )
         self.result = res

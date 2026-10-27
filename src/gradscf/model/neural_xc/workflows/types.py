@@ -87,8 +87,6 @@ class SimulationConfig:
     jax_rks_jk_backend: Literal["full", "df", "direct"] = "full"
     jax_rks_df_tol: float = 1e-10
     jax_rks_df_max_rank: int | None = None
-    jax_precompile_eri: bool = False
-    jax_precompile_eri_chunk_size: int = 512
     jax_compilation_cache_dir: str | None = None
     jax_persistent_cache_min_compile_time_secs: float = (
         DEFAULT_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS
@@ -105,8 +103,7 @@ class SimulationConfig:
     jax_uks_potential_clip: float = 20.0
     execution_device: Literal["auto", "cpu", "gpu"] = "auto"
     move_reference_to_device: bool = True
-    jax_integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu"
-    jax_libcint_geometry_grad_policy: Literal["analytic", "error", "zero"] = "analytic"
+    jax_libcint_geometry_grad_policy: Literal["analytic", "error"] = "analytic"
     jit_tddft: bool = True
     jit_spectrum: bool = True
 

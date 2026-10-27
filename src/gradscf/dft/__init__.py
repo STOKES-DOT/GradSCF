@@ -48,7 +48,7 @@ _EXPORTS = {
     "xc_type": "dft.xc",
 }
 
-_SUBMODULES = ("xc", "functional", "derivatives", "hfx", "pt2", "dispersion")
+_SUBMODULES = ("xc", "functional", "derivatives", "hfx", "pt2", "dispersion", "iks")
 
 
 def __getattr__(name: str):

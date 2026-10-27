@@ -18,8 +18,7 @@ def hf_source(request):
             else 'H 0 0 0; H 0 0 1.5')
     molecule = gto.M(atom=atom, basis='sto-3g' if request.param else '3-21g',
                      spin=int(request.param), unit='Bohr', cart=True)
-    source = (scf.UHF if request.param else scf.RHF)(molecule,
-        integral_backend='native', execution_device='cpu', max_memory=128.,
+    source = (scf.UHF if request.param else scf.RHF)(molecule, execution_device='cpu', max_memory=128.,
         conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
         max_cycle=250).run()
     assert source.converged
@@ -90,7 +89,7 @@ def test_direct_mp2_nitrogen_internal_degeneracy_has_finite_geometry_response(mo
     from gradscf import gto, scf
     from gradscf_tools.correlated_response import CorrelatedEnergy
     mol = gto.M(atom='N 0 0 -1.04; N 0 0 1.04', basis='sto-3g', unit='Bohr', cart=True)
-    mf = scf.RHF(mol, integral_backend='native', conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
         conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=250,
         init_guess=1.4*np.eye(10)).run()
     assert mf.converged

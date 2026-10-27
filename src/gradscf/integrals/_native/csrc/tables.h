@@ -3,10 +3,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <vector>
+#include "diagnostics.h"
 #include "xla/ffi/api/ffi.h"
 extern "C" {
 #include "cint.h"
@@ -21,24 +23,32 @@ using Intor = int (*)(double*, int*, int*, int*, int, int*, int,
 
 // Explicit scalar comparison also supports older compilers with newer SDK headers.
 struct ShellShapeLess {
-  bool operator()(const std::array<int,13>& a,const std::array<int,13>& b) const {
+  bool operator()(const std::array<int,17>& a,const std::array<int,17>& b) const {
     for (size_t i=0;i<a.size();++i) if (a[i]!=b[i]) return a[i]<b[i];
     return false;
   }
 };
 
+using ShellCacheKey=std::pair<Intor,std::array<int,17>>;
+struct ShellCacheLess {
+  bool operator()(const ShellCacheKey& a,const ShellCacheKey& b) const {
+    if (a.first!=b.first) return std::less<Intor>{}(a.first,b.first);
+    return ShellShapeLess{}(a.second,b.second);
+  }
+};
+
 // Owned libcint buffers shared by value and derivative drivers.
 struct IntegralTables {
-  int natm, nbas, n;
+  int natm, nbas, n, operator_code;
   std::vector<int> atm, bas, ao;
   std::vector<double> env;
-  Intor cached_intor=nullptr;
-  std::map<std::array<int,13>,int,ShellShapeLess> cache_sizes;
+  std::map<ShellCacheKey,int,ShellCacheLess> cache_sizes;
   IntegralTables(ffi::BufferR2<ffi::S32> atoms, ffi::BufferR2<ffi::S32> basis,
                  ffi::BufferR1<ffi::F64> environment, int op, int cart,
                  bool allow_long_range=false) {
+    operator_code=op;
     if (atoms.dimensions()[1] != ATM_SLOTS || basis.dimensions()[1] != BAS_SLOTS ||
-        environment.element_count() < 20 || op < 0 || op > 4 || (cart != 0 && cart != 1))
+        environment.element_count() < 20 || op < 0 || op > 5 || (cart != 0 && cart != 1))
       throw std::invalid_argument("Invalid libcint table dimensions or operator");
     natm = atoms.dimensions()[0]; nbas = basis.dimensions()[0];
     atm.assign(atoms.typed_data(), atoms.typed_data()+atoms.element_count());
@@ -46,6 +56,8 @@ struct IntegralTables {
     env.assign(environment.typed_data(), environment.typed_data()+environment.element_count());
     for (double v : env)
       if (!std::isfinite(v)) throw std::invalid_argument("Native integral env must be finite");
+    if (op==5 && env[PTR_RINV_ZETA]<0.)
+      throw std::invalid_argument("Rinv Gaussian zeta must be nonnegative");
     if (env[PTR_RANGE_OMEGA] > std::sqrt(std::numeric_limits<double>::max()) / 2.)
       throw std::invalid_argument("omega exceeds the safe float64 squared range");
     if (env[PTR_RANGE_OMEGA] != 0. &&
@@ -86,14 +98,14 @@ struct IntegralTables {
              std::vector<double>& cache, int legs=0) {
     if (size>size_t(std::numeric_limits<int>::max()))
       throw std::invalid_argument("Derivative shell workspace exceeds int32 indexing");
-    // Opt in only for real 1e/3c parameter products. With fixed global ENV
-    // controls, libcint scratch size depends on the intor and shell shapes,
-    // not on coordinates, exponents, coefficients, or their storage pointers.
-    // Other derivative drivers retain their original per-call size query.
-    std::array<int,13> key{};
+    // Four-center derivatives and opt-in 1e/3c parameter products reuse only
+    // scratch sizes. Actual shadow-shell angular momentum and contraction
+    // counts are part of the key; numerical integrals are always recomputed.
+    // Global ENV controls are fixed during one driver invocation.
+    if (!legs && operator_code==4) legs=4;
+    std::array<int,17> key{};
     if (legs) {
-      if (legs!=2 && legs!=3) throw std::invalid_argument("Invalid cached shell rank");
-      if (cached_intor!=intor) {cache_sizes.clear();cached_intor=intor;}
+      if (legs<2 || legs>4) throw std::invalid_argument("Invalid cached shell rank");
       key[0]=legs;
       for (int a=0;a<legs;++a) {
         const int* row=bas.data()+shells[a]*BAS_SLOTS;
@@ -101,12 +113,17 @@ struct IntegralTables {
         key[3+4*a]=row[NCTR_OF];key[4+4*a]=row[KAPPA_OF];
       }
     }
-    auto found=cache_sizes.find(key);
+    const ShellCacheKey cache_key{intor,key};
+    auto found=cache_sizes.find(cache_key);
+    const int family=legs==3 ? libcint_diagnostics::ri3c :
+                     operator_code==4 ? libcint_diagnostics::eri4c:libcint_diagnostics::one_electron;
     int nc=legs && found!=cache_sizes.end() ? found->second
-      : intor(nullptr,nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,nullptr);
+      : libcint_diagnostics::invoke(family,intor,nullptr,nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,nullptr);
     if (nc<=0) throw std::invalid_argument("libcint derivative cache query failed or exceeded int32 indexing");
-    if (legs) cache_sizes.emplace(key,nc);
+    // Bounded per-driver metadata, not an O(nshell^4) retained quartet table.
+    // An uncached shape remains valid and simply repeats its size query.
+    if (legs && cache_sizes.size()<4096) cache_sizes.emplace(cache_key,nc);
     block.assign(size,0.); cache.resize(nc);
-    intor(block.data(),nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,cache.data());
+    libcint_diagnostics::invoke(family,intor,block.data(),nullptr,shells,atm.data(),natm,bas.data(),nbas,env.data(),nullptr,cache.data());
   }
 };

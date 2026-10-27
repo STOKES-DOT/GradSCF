@@ -23,9 +23,9 @@ from ._unrestricted_semilocal_response import (
 from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_TOL,
-    PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    TD_DAVIDSON_MAX_CYCLE,
+    TD_DAVIDSON_TOL,
+    TD_POSITIVE_EIG_THRESHOLD,
 )
 from ..solvers.eigen.davidson import (
     _davidson_search_nroots, _solver_dtype,
@@ -278,17 +278,19 @@ def _unrestricted_project_response(
     )
 
 
-def _jk_from_full_eri(eri: Array, density: Array) -> tuple[Array, Array]:
+def _jk_from_full_eri(eri: Array, density: Array, *, max_memory=None) -> tuple[Array, Array]:
     if eri.ndim in (1,2):
         from gradscf.integrals.molecular.jk import build_jk_from_packed
-        return build_jk_from_packed(eri,density)
+        return build_jk_from_packed(eri,density,max_memory=max_memory)
     j_mat = jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     k_mat = jnp.einsum("prqs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     return j_mat, k_mat
 
 
-def _j_from_full_eri(eri: Array, density: Array) -> Array:
-    if eri.ndim in (1,2):return _jk_from_full_eri(eri,density)[0]
+def _j_from_full_eri(eri: Array, density: Array, *, max_memory=None) -> Array:
+    if eri.ndim in (1,2):
+        from gradscf.integrals.molecular.jk import build_jk_from_packed
+        return build_jk_from_packed(eri,density,with_k=False,max_memory=max_memory)[0]
     return jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
 
 
@@ -300,6 +302,7 @@ def _unrestricted_ao_response_action(
     dtype: Any,
     response_options: ResponseKernelOptions | None = None,
     eri_cache_bytes: int = 0,
+    packed_max_memory: float | None = None,
 ) -> Callable[[Array, Array], tuple[Array, Array]]:
     response_options = normalize_response_kernel_options(
         response_options,
@@ -354,8 +357,8 @@ def _unrestricted_ao_response_action(
         if source is None or not int(jnp.asarray(source).size):
             raise ValueError("Unrestricted response requires direct_basis or AO ERIs.")
         source = jnp.asarray(source, dtype=dtype)
-        jk_fn = lambda density: _jk_from_full_eri(source, density)
-        j_fn = lambda density: _j_from_full_eri(source, density)
+        jk_fn = lambda density: _jk_from_full_eri(source, density, max_memory=packed_max_memory)
+        j_fn = lambda density: _j_from_full_eri(source, density, max_memory=packed_max_memory)
 
     def action(density_alpha: Array, density_beta: Array) -> tuple[Array, Array]:
         density_alpha = jnp.asarray(density_alpha, dtype=dtype)
@@ -369,8 +372,8 @@ def _unrestricted_ao_response_action(
         j_total = j_alpha + j_beta
         exchange_a, exchange_b = alpha*k_alpha, alpha*k_beta
         if eri_lr is not None:
-            exchange_a = exchange_a+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_alpha)[1]
-            exchange_b = exchange_b+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_beta)[1]
+            exchange_a = exchange_a+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_alpha, max_memory=packed_max_memory)[1]
+            exchange_b = exchange_b+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_beta, max_memory=packed_max_memory)[1]
         return j_total-exchange_a, j_total-exchange_b
 
     return action
@@ -580,6 +583,8 @@ def _build_unrestricted_response_operator_data(
         dtype=jnp.result_type(de_a, de_b),
         response_options=response_options,
         eri_cache_bytes=memory_plan.eri_cache_bytes,
+        packed_max_memory=(memory_plan.packed_jk_workspace_bytes / 1_000_000
+                           if memory_plan.packed_jk_workspace_bytes else None),
     )
     df_factors = getattr(molecule, "df_factors", None)
     ao_mo_response_action_fn = None
@@ -1040,9 +1045,9 @@ def solve_unrestricted_tda_from_operator(
     diagonal: Array,
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
-    davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
+    davidson_tol: float = TD_DAVIDSON_TOL,
+    davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only",
     eigenvector_adjoint_tol: float = 1e-6,
@@ -1147,9 +1152,9 @@ def solve_unrestricted_casida_from_tdhf_operator(
     tdhf_vind_rows: Callable[[Array], Array],
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
     matrix_eps: float = 1e-10,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
+    davidson_tol: float = TD_DAVIDSON_TOL,
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
 ) -> UnrestrictedTDDFTResult:
@@ -1206,10 +1211,10 @@ class UnrestrictedTDA:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
-    davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE
+    davidson_tol: float = TD_DAVIDSON_TOL
+    davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
     eigenvector_adjoint_tol: float = 1e-6
@@ -1271,6 +1276,10 @@ class UnrestrictedTDA:
         )
 
     def kernel(self, nstates: int | None = None) -> UnrestrictedTDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> UnrestrictedTDAResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(
@@ -1309,10 +1318,10 @@ class UnrestrictedCasidaTDDFT:
     xc_functional: Any | None = None
     xc_params: Any | None = None
     occupation_tolerance: float = 1e-8
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD
     matrix_eps: float = 1e-10
     eigensolver: Literal["auto", "davidson"] = "auto"
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL
+    davidson_tol: float = TD_DAVIDSON_TOL
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE
     davidson_max_subspace: int | None = None
     tda_gradient_mode: EigenGradientMode = "eigenvalue_only"
@@ -1321,6 +1330,10 @@ class UnrestrictedCasidaTDDFT:
     response_kernel_options: ResponseKernelOptions | dict[str, Any] | None = None
 
     def tda(self, nstates: int | None = None) -> UnrestrictedTDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_tda_impl')
+
+    def _tda_impl(self, nstates: int | None = None) -> UnrestrictedTDAResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(
@@ -1423,6 +1436,10 @@ class UnrestrictedCasidaTDDFT:
         )
 
     def kernel(self, nstates: int | None = None) -> UnrestrictedTDDFTResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> UnrestrictedTDDFTResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(

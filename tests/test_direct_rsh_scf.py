@@ -79,7 +79,7 @@ def test_rsh_native_direct_assembly_never_evaluates_eri(monkeypatch, unrestricte
     controls = {} if unrestricted else {"include_dipole_integrals": False}
     inputs = build(atom="H 0 0 0; H 0 0 1.6", basis="sto-3g", unit="Bohr", cart=True,
         charge=int(unrestricted), spin=int(unrestricted), config=config,
-        xc_spec="lc-wpbe", integral_backend="native", grids_level=0, **controls)
+        xc_spec="lc-wpbe", grids_level=0, **controls)
     assert type(inputs.direct_basis) is NativeDirectBasis
     assert inputs.eri is None or inputs.eri.size == 0
     assert inputs.eri_lr is None or inputs.eri_lr.size == 0

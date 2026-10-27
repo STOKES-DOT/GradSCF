@@ -12,7 +12,7 @@ from gradscf.model.neural_xc.training import energy_and_forces, make_force_loss_
 @pytest.mark.parametrize('mode',['implicit','unrolled'])
 def test_native_orbital_force_loss_parameter_gradient(mode):
     topology,p=integrals.prepare_basis('H 0 0 0; H 0 0 .8',basis='sto-3g')
-    plan=integrals.make_plan(topology,backend='native')
+    plan=integrals.make_plan(topology)
     s=np.asarray(plan.evaluate('overlap',p))
     seed=np.linalg.inv(np.linalg.cholesky(s).T)
     occ=np.array([[1.,0.],[1.,0.]])

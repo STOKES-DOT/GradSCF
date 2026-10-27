@@ -111,7 +111,7 @@ def main():
     with jax.default_device(jax.devices('cpu')[0]):
         for distance in DISTANCES:
             mol = gto.M(atom=f'H 0 0 0; H 0 0 {distance}', basis=BASIS, unit='Angstrom')
-            mf = scf.RHF(mol, grids_level=GRID_LEVEL, integral_backend='native').run()
+            mf = scf.RHF(mol, grids_level=GRID_LEVEL).run()
             if not mf.converged:
                 raise RuntimeError(f'Initial HF did not converge at R={distance} Angstrom.')
             solver = fci.FCI(mf, solver='dense', conv_tol=1e-12).run()

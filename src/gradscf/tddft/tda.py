@@ -12,9 +12,9 @@ from collections.abc import Callable
 
 import jax.numpy as jnp
 
-from .defaults import PYSCF_TD_DAVIDSON_MAX_CYCLE
-from .defaults import PYSCF_TD_DAVIDSON_TOL
-from .defaults import PYSCF_TD_POSITIVE_EIG_THRESHOLD
+from .defaults import TD_DAVIDSON_MAX_CYCLE
+from .defaults import TD_DAVIDSON_TOL
+from .defaults import TD_POSITIVE_EIG_THRESHOLD
 from ..solvers.eigen.response import (
     EigenGradientMode,
 )
@@ -51,9 +51,9 @@ def solve_tda_from_operator(
     diagonal,
     *,
     nstates: int | None = None,
-    excitation_threshold: float = PYSCF_TD_POSITIVE_EIG_THRESHOLD,
-    davidson_tol: float = PYSCF_TD_DAVIDSON_TOL,
-    davidson_max_iter: int = PYSCF_TD_DAVIDSON_MAX_CYCLE,
+    excitation_threshold: float = TD_POSITIVE_EIG_THRESHOLD,
+    davidson_tol: float = TD_DAVIDSON_TOL,
+    davidson_max_iter: int = TD_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     davidson_initial_guess_count: int | None = None,
     davidson_max_trial_vectors: int | None = None,

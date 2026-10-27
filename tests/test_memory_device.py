@@ -101,7 +101,7 @@ def test_ao2mo_preflight_uses_declared_target_before_contraction(monkeypatch, re
     if representation == "native":
         topology, parameters = integrals.prepare_basis("H 0 0 0; H 0 0 .8", basis="sto-3g")
         options = dict(direct_basis=NativeDirectBasis(
-            integrals.make_plan(topology, backend="native"), parameters))
+            integrals.make_plan(topology), parameters))
     else:
         options = ({"eri": jnp.ones((2,) * 4)} if representation == "dense"
                    else {"df_factors": jnp.ones((3, 2, 2))})

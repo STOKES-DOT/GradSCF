@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gradscf.integrals import precompile_eri_kernels
 from gradscf.scf.inputs.types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
 from ..dft.xc import hybrid_coeff, parse_xc
@@ -69,13 +68,9 @@ def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True):
     """Add a missing dipole tensor without recomputing S/H/ERI/grid or SCF."""
     if inputs.dipole_integrals is not None:
         return inputs
-    if inputs.integral_backend in {'native','cpu','libcint'}:
-        from ..integrals import prepare_basis, make_plan
-        topology, parameters = prepare_basis(spec,basis,cart=cart)
-        dipole = make_plan(topology,backend='native').evaluate('dipole',parameters)
-    else:
-        from ..integrals import dipole_matrix
-        dipole = dipole_matrix(inputs.basis)
+    from ..integrals import prepare_basis, make_plan
+    topology, parameters = prepare_basis(spec,basis,cart=cart)
+    dipole = make_plan(topology).evaluate('dipole',parameters)
     return replace(inputs,dipole_integrals=dipole)
 
 
@@ -92,7 +87,7 @@ def _build_restricted_reference(
     max_l: int = 3,
     rks_config: RKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu",
+    integral_backend: str = "libcint",
     libcint_geometry_grad_policy: GeometryGradPolicy = "analytic",
     energy_target: float | None = None,
     compute_local_hfx_features: bool = False,
@@ -105,8 +100,6 @@ def _build_restricted_reference(
     chkfile: str | None = None,
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
-    precompile_eri: bool = False,
-    precompile_eri_chunk_size: int = 512,
     verbose: int = 0,
     scf_inputs: Any | None = None,
     scf_result: Any | None = None,
@@ -146,9 +139,6 @@ def _build_restricted_reference(
             chkfile=chkfile,
             init_guess_sap_basis=init_guess_sap_basis,
             init_guess_chkfile_project=init_guess_chkfile_project,
-            precompile_eri=precompile_eri,
-            precompile_eri_chunk_size=precompile_eri_chunk_size,
-            _precompile_eri_kernels=precompile_eri_kernels,
             verbose=verbose,
             **mol_kwargs,
         )
@@ -436,7 +426,7 @@ def _build_unrestricted_reference(
     max_l: int = 3,
     uks_config: UKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
-    integral_backend: Literal["native", "jax", "cpu", "libcint"] = "cpu",
+    integral_backend: str = "libcint",
     libcint_geometry_grad_policy: GeometryGradPolicy = "error",
     energy_target: float | None = None,
     compute_local_hfx_features: bool = False,
@@ -448,8 +438,6 @@ def _build_unrestricted_reference(
     chkfile: str | None = None,
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
-    precompile_eri: bool = False,
-    precompile_eri_chunk_size: int = 512,
     verbose: int = 0,
     **mol_kwargs: Any,
 ) -> UnrestrictedMolecule:
@@ -475,9 +463,6 @@ def _build_unrestricted_reference(
         grid_ao_backend=grid_ao_backend,
         integral_backend=integral_backend,
         libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-        precompile_eri=precompile_eri,
-        precompile_eri_chunk_size=precompile_eri_chunk_size,
-        _precompile_eri_kernels=precompile_eri_kernels,
         init_guess=init_guess,
         chkfile=chkfile,
         init_guess_sap_basis=init_guess_sap_basis,

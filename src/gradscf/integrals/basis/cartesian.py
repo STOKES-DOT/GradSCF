@@ -72,53 +72,6 @@ class ShellPairBatchGroup:
     signature: tuple[tuple[tuple[int, int, int], ...], tuple[tuple[int, int, int], ...], int, int]
     row_idx: Array
     col_idx: Array
-
-
-@dataclass(frozen=True)
-class QuartetBatchGroup:
-    """Unique lower-triangle AO quartet batch sharing the same ERI signature."""
-
-    signature: tuple[
-        tuple[int, int, int],
-        tuple[int, int, int],
-        tuple[int, int, int],
-        tuple[int, int, int],
-        int,
-        int,
-        int,
-        int,
-    ]
-    idx_i: Array
-    idx_j: Array
-    idx_k: Array
-    idx_l: Array
-
-
-@dataclass(frozen=True)
-class ShellQuartetBatchGroup:
-    """Unique lower-triangle shell quartet batch sharing the same ERI shell signature."""
-
-    signature: tuple[
-        tuple[tuple[int, int, int], ...],
-        tuple[tuple[int, int, int], ...],
-        tuple[tuple[int, int, int], ...],
-        tuple[tuple[int, int, int], ...],
-        int,
-        int,
-        int,
-        int,
-    ]
-    idx_i: Array
-    idx_j: Array
-    idx_k: Array
-    idx_l: Array
-    scatter_i: Array | None = None
-    scatter_j: Array | None = None
-    scatter_k: Array | None = None
-    scatter_l: Array | None = None
-    batch_inputs: tuple[Array, ...] | None = None
-
-
 @dataclass(frozen=True)
 class ContractedShell:
     """One contracted Cartesian shell block sharing exponents/coefficients/center."""
@@ -135,7 +88,6 @@ class CartesianBasis:
     """Cartesian AO basis and optional nuclear data."""
 
     aos: tuple[CartesianAO, ...]
-    precompute_eri_groups: bool = True
     atom_coords: Array | None = None
     atom_charges: Array | None = None
     ao_centers: Array | None = None
@@ -154,8 +106,6 @@ class CartesianBasis:
     shell_pair_groups: tuple[ShellPairBatchGroup, ...] = field(default_factory=tuple)
     shell_ao_indices_padded: Array | None = None
     shell_ao_sizes: Array | None = None
-    quartet_groups: tuple[QuartetBatchGroup, ...] = field(default_factory=tuple)
-    shell_quartet_groups: tuple[ShellQuartetBatchGroup, ...] = field(default_factory=tuple)
 
     @property
     def nao(self) -> int:
@@ -351,215 +301,8 @@ class CartesianBasis:
                 ao_idx_pad = ao_idx_pad_np
             object.__setattr__(self, "shell_ao_indices_padded", ao_idx_pad)
 
-        if self.precompute_eri_groups and nao and not self.quartet_groups:
-            ao_quartets: dict[
-                tuple[
-                    tuple[int, int, int],
-                    tuple[int, int, int],
-                    tuple[int, int, int],
-                    tuple[int, int, int],
-                    int,
-                    int,
-                    int,
-                    int,
-                ],
-                dict[str, list[int]],
-            ] = {}
-            ao_pairs = tuple((i, j) for i in range(nao) for j in range(i + 1))
-            angulars = self.ao_angulars
-            nprims = self.ao_nprims_tuple
-            for ij_pos, (i, j) in enumerate(ao_pairs):
-                for kl_pos in range(ij_pos + 1):
-                    k, l = ao_pairs[kl_pos]
-                    signature = (
-                        angulars[i],
-                        angulars[j],
-                        angulars[k],
-                        angulars[l],
-                        nprims[i],
-                        nprims[j],
-                        nprims[k],
-                        nprims[l],
-                    )
-                    bucket = ao_quartets.setdefault(
-                        signature,
-                        {"i": [], "j": [], "k": [], "l": []},
-                    )
-                    bucket["i"].append(i)
-                    bucket["j"].append(j)
-                    bucket["k"].append(k)
-                    bucket["l"].append(l)
-            object.__setattr__(
-                self,
-                "quartet_groups",
-                tuple(
-                    QuartetBatchGroup(
-                        signature=signature,
-                        idx_i=np.asarray(bucket["i"], dtype=np.int32),
-                        idx_j=np.asarray(bucket["j"], dtype=np.int32),
-                        idx_k=np.asarray(bucket["k"], dtype=np.int32),
-                        idx_l=np.asarray(bucket["l"], dtype=np.int32),
-                    )
-                    for signature, bucket in ao_quartets.items()
-                ),
-            )
 
-        if self.precompute_eri_groups and nshell and not self.shell_quartet_groups:
-            shell_quartets: dict[
-                tuple[
-                    tuple[tuple[int, int, int], ...],
-                    tuple[tuple[int, int, int], ...],
-                    tuple[tuple[int, int, int], ...],
-                    tuple[tuple[int, int, int], ...],
-                    int,
-                    int,
-                    int,
-                    int,
-                ],
-                dict[str, list[int]],
-            ] = {}
-            shell_pairs = tuple((i, j) for i in range(nshell) for j in range(i + 1))
-            for ij_pos, (i, j) in enumerate(shell_pairs):
-                shell_i = self.shells[i]
-                shell_j = self.shells[j]
-                for kl_pos in range(ij_pos + 1):
-                    k, l = shell_pairs[kl_pos]
-                    shell_k = self.shells[k]
-                    shell_l = self.shells[l]
-                    signature = (
-                        shell_i.angulars,
-                        shell_j.angulars,
-                        shell_k.angulars,
-                        shell_l.angulars,
-                        self.shell_nprims_tuple[i],
-                        self.shell_nprims_tuple[j],
-                        self.shell_nprims_tuple[k],
-                        self.shell_nprims_tuple[l],
-                    )
-                    bucket = shell_quartets.setdefault(
-                        signature,
-                        {"i": [], "j": [], "k": [], "l": []},
-                    )
-                    bucket["i"].append(i)
-                    bucket["j"].append(j)
-                    bucket["k"].append(k)
-                    bucket["l"].append(l)
-            object.__setattr__(
-                self,
-                "shell_quartet_groups",
-                tuple(
-                    self._build_shell_quartet_group(
-                        signature,
-                        bucket,
-                        geometry_is_traced=geometry_is_traced,
-                    )
-                    for signature, bucket in shell_quartets.items()
-                ),
-            )
 
-    def _build_shell_quartet_group(
-        self,
-        signature,
-        bucket: dict[str, list[int]],
-        *,
-        geometry_is_traced: bool,
-    ) -> ShellQuartetBatchGroup:
-        idx_i = np.asarray(bucket["i"], dtype=np.int32)
-        idx_j = np.asarray(bucket["j"], dtype=np.int32)
-        idx_k = np.asarray(bucket["k"], dtype=np.int32)
-        idx_l = np.asarray(bucket["l"], dtype=np.int32)
-        ni = len(signature[0])
-        nj = len(signature[1])
-        nk = len(signature[2])
-        nl = len(signature[3])
-        ao_i = np.asarray(self.shell_ao_indices_padded[idx_i, :ni], dtype=np.int32)
-        ao_j = np.asarray(self.shell_ao_indices_padded[idx_j, :nj], dtype=np.int32)
-        ao_k = np.asarray(self.shell_ao_indices_padded[idx_k, :nk], dtype=np.int32)
-        ao_l = np.asarray(self.shell_ao_indices_padded[idx_l, :nl], dtype=np.int32)
-
-        def flatten_group(ai, aj, ak, al):
-            block_shape = (ai.shape[0], ai.shape[1], aj.shape[1], ak.shape[1], al.shape[1])
-            ii = np.broadcast_to(ai[:, :, None, None, None], block_shape).reshape(-1)
-            jj = np.broadcast_to(aj[:, None, :, None, None], block_shape).reshape(-1)
-            kk = np.broadcast_to(ak[:, None, None, :, None], block_shape).reshape(-1)
-            ll = np.broadcast_to(al[:, None, None, None, :], block_shape).reshape(-1)
-            return ii, jj, kk, ll
-
-        groups = (
-            flatten_group(ao_i, ao_j, ao_k, ao_l),
-            flatten_group(ao_j, ao_i, ao_k, ao_l),
-            flatten_group(ao_i, ao_j, ao_l, ao_k),
-            flatten_group(ao_j, ao_i, ao_l, ao_k),
-            flatten_group(ao_k, ao_l, ao_i, ao_j),
-            flatten_group(ao_l, ao_k, ao_i, ao_j),
-            flatten_group(ao_k, ao_l, ao_j, ao_i),
-            flatten_group(ao_l, ao_k, ao_j, ao_i),
-        )
-        scatter_i = np.concatenate([group[0] for group in groups], axis=0).astype(np.int32)
-        scatter_j = np.concatenate([group[1] for group in groups], axis=0).astype(np.int32)
-        scatter_k = np.concatenate([group[2] for group in groups], axis=0).astype(np.int32)
-        scatter_l = np.concatenate([group[3] for group in groups], axis=0).astype(np.int32)
-        if geometry_is_traced:
-            idx_i_jax = jnp.asarray(idx_i, dtype=jnp.int32)
-            idx_j_jax = jnp.asarray(idx_j, dtype=jnp.int32)
-            idx_k_jax = jnp.asarray(idx_k, dtype=jnp.int32)
-            idx_l_jax = jnp.asarray(idx_l, dtype=jnp.int32)
-            shell_exp = jnp.asarray(self.shell_exponents_padded)
-            shell_coeff = jnp.asarray(self.shell_coefficients_padded)
-            shell_centers = jnp.asarray(self.shell_centers)
-            exp_i = shell_exp[idx_i_jax, : signature[4]]
-            coeff_i = shell_coeff[idx_i_jax, : signature[4]]
-            center_i = shell_centers[idx_i_jax]
-            exp_j = shell_exp[idx_j_jax, : signature[5]]
-            coeff_j = shell_coeff[idx_j_jax, : signature[5]]
-            center_j = shell_centers[idx_j_jax]
-            exp_k = shell_exp[idx_k_jax, : signature[6]]
-            coeff_k = shell_coeff[idx_k_jax, : signature[6]]
-            center_k = shell_centers[idx_k_jax]
-            exp_l = shell_exp[idx_l_jax, : signature[7]]
-            coeff_l = shell_coeff[idx_l_jax, : signature[7]]
-            center_l = shell_centers[idx_l_jax]
-        else:
-            shell_exp = np.asarray(self.shell_exponents_padded)
-            shell_coeff = np.asarray(self.shell_coefficients_padded)
-            shell_centers = np.asarray(self.shell_centers)
-            exp_i = shell_exp[idx_i, : signature[4]]
-            coeff_i = shell_coeff[idx_i, : signature[4]]
-            center_i = shell_centers[idx_i]
-            exp_j = shell_exp[idx_j, : signature[5]]
-            coeff_j = shell_coeff[idx_j, : signature[5]]
-            center_j = shell_centers[idx_j]
-            exp_k = shell_exp[idx_k, : signature[6]]
-            coeff_k = shell_coeff[idx_k, : signature[6]]
-            center_k = shell_centers[idx_k]
-            exp_l = shell_exp[idx_l, : signature[7]]
-            coeff_l = shell_coeff[idx_l, : signature[7]]
-            center_l = shell_centers[idx_l]
-        return ShellQuartetBatchGroup(
-            signature=signature,
-            idx_i=idx_i,
-            idx_j=idx_j,
-            idx_k=idx_k,
-            idx_l=idx_l,
-            scatter_i=scatter_i,
-            scatter_j=scatter_j,
-            scatter_k=scatter_k,
-            scatter_l=scatter_l,
-            batch_inputs=(
-                exp_i,
-                coeff_i,
-                center_i,
-                exp_j,
-                coeff_j,
-                center_j,
-                exp_k,
-                coeff_k,
-                center_k,
-                exp_l,
-                coeff_l,
-                center_l,
-            ),
-        )
 
 
 
@@ -597,7 +340,6 @@ def basis_from_spec(
     charge: int = 0,
     spin: int = 0,
     max_l: int = 3,
-    precompute_eri_groups: bool = True,
 ) -> CartesianBasis:
     """Build a cartesian basis from bundled basis data without PySCF.
 
@@ -608,7 +350,6 @@ def basis_from_spec(
         spec,
         basis=basis,
         max_l=max_l,
-        precompute_eri_groups=precompute_eri_groups,
     )
 
 
@@ -617,7 +358,6 @@ def basis_from_molecule_spec(
     *,
     basis: Any,
     max_l: int = 3,
-    precompute_eri_groups: bool = True,
 ) -> CartesianBasis:
     """Build Cartesian AOs from named or static raw shells and traced coordinates.
 
@@ -667,8 +407,7 @@ def basis_from_molecule_spec(
 
     return CartesianBasis(
         aos=tuple(aos),
-        precompute_eri_groups=bool(precompute_eri_groups),
         atom_coords=jnp.asarray(spec.coords_bohr),
-        atom_charges=jnp.asarray(spec.charges),
+        atom_charges=np.asarray(spec.charges,dtype=np.int32),
         shells=tuple(shells),
     )

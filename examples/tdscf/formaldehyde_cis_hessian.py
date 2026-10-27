@@ -33,7 +33,7 @@ output.mkdir(parents=True, exist_ok=True)
 started = perf_counter()
 coordinates = np.asarray(native["coordinates_bohr"])
 mol = gto.M(atom=list(zip(native["symbols"], coordinates)), basis=native["basis"], unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
 if not mf.converged:
     raise RuntimeError("Initial RHF failed to converge.")

@@ -34,7 +34,7 @@ def _native_direct_mp2_gpu_case(monkeypatch, *, atom, basis, direction,
     cpu = jax.devices('cpu')[0]
     with jax.default_device(cpu):
         molecule = gto.M(atom=atom, basis=basis, unit='Bohr', cart=True)
-        source = scf.RHF(molecule, integral_backend='native', execution_device='cpu',
+        source = scf.RHF(molecule, execution_device='cpu',
             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
         assert source.converged
         dense = CorrelatedEnergy(source, 'mp2')
@@ -96,7 +96,7 @@ def test_one_electron_gpu_geometry_products_match_cpu(operator):
         molecule = gto.M(atom='H 0 0 0; He .2 .1 1.5', basis='sto-3g',
                          spin=1, unit='Bohr', cart=True)
         topology, parameters = integrals.prepare_basis(molecule.to_spec(), molecule.basis, cart=True)
-        plan = integrals.make_plan(topology, backend='native')
+        plan = integrals.make_plan(topology)
         coordinates = jnp.asarray(parameters.centers)
         direction = jnp.full_like(coordinates, .01).at[0, 2].set(.04)
         def value(r):

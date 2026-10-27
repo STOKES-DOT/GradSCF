@@ -17,9 +17,8 @@ from gradscf.scf.init_guess import restricted_initial_guess, unrestricted_initia
 ATOM = "H 0 0 0; H 0 0 .74"
 
 
-@pytest.mark.parametrize("backend", ["native", "cpu", "libcint", "jax"])
-def test_restricted_inputs_use_standalone_integrals(backend):
-    data = build_rks_integral_inputs(atom=ATOM,basis="3-21g",xc_spec="hf",integral_backend=backend)
+def test_restricted_inputs_use_standalone_integrals():
+    data = build_rks_integral_inputs(atom=ATOM,basis="3-21g",xc_spec="hf")
     assert data.nelectron == 2
     assert data.overlap.shape == (4,4)
     assert data.eri_pair_matrix.shape == (10,10)
@@ -49,7 +48,7 @@ def test_native_spectral_df_preserves_full_jk():
     from gradscf.integrals.molecular.jk import build_jk_from_df
     data=build_rks_integral_inputs(atom=ATOM,basis="3-21g",config=RKSConfig(xc_spec="hf",jk_backend="df",df_tol=1e-12))
     top,p=integrals.prepare_basis(ATOM,"3-21g")
-    eri=integrals.make_plan(top,backend="native").evaluate("eri",p)
+    eri=integrals.make_plan(top).evaluate("eri",p)
     dm=jnp.eye(4)
     j,k=build_jk_from_df(data.df_factors,dm)
     np.testing.assert_allclose(j,jnp.einsum("pqrs,rs->pq",eri,dm),atol=1e-10)
@@ -76,6 +75,18 @@ def test_initial_density_inputs_are_validated_and_symmetrized():
     ({"chkfile":"old.chk"},NotImplementedError),({"ecp":"lanl2dz"},TypeError)])
 def test_unsupported_external_options_are_not_silently_ignored(options,error):
     with pytest.raises(error):build_rks_integral_inputs(atom=ATOM,basis="3-21g",xc_spec="hf",**options)
+
+
+def test_error_geometry_policy_rejects_coordinate_ad():
+    from dataclasses import replace
+    from gradscf.data.molecule import parse_molecule_spec
+    spec = parse_molecule_spec(ATOM)
+    def overlap(coords):
+        inputs = build_rks_integral_inputs(atom=replace(spec, coords_bohr=coords),
+            basis='sto-3g', xc_spec='hf', libcint_geometry_grad_policy='error')
+        return jnp.sum(inputs.overlap)
+    with pytest.raises(NotImplementedError, match='(?i)(disabled|geometry)'):
+        jax.grad(overlap)(spec.coords_bohr)
 
 
 def test_default_facades_run_without_external_chemistry_imports():

@@ -28,7 +28,7 @@ for symbol, radius in (("C", 1.397), ("H", 2.480)):
 mol = gto.M(atom=atoms, basis="6-31g*", unit="Angstrom", cart=True)
 
 started = perf_counter()
-mf = scf.RHF(mol, integral_backend="native", jk_backend="direct", grids_level=0,
+mf = scf.RHF(mol, jk_backend="direct", grids_level=0,
              conv_tol=1e-12, conv_tol_density=1e-10, conv_tol_grad=1e-9,
              max_cycle=200).run()
 scf_seconds = perf_counter() - started

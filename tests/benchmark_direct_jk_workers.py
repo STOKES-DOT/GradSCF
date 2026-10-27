@@ -32,7 +32,7 @@ def main():
     molecule = gto.M(atom=atom, basis='6-31g*', unit='Angstrom', cart=True,
                     charge=data['charge'], spin=data['spin'])
     topology, parameters = integrals.prepare_basis(molecule.to_spec(), molecule.basis, cart=True)
-    plan = integrals.make_plan(topology, backend='native')
+    plan = integrals.make_plan(topology)
     coordinates = jnp.asarray(molecule.to_spec().coords_bohr)
     owners = np.argmin(np.linalg.norm(np.asarray(parameters.centers)[:, None]
                        - np.asarray(coordinates)[None], axis=-1), axis=1)

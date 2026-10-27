@@ -54,7 +54,7 @@ def test_halogen_hydride_scf_agrees(symbol,bond,xc):
     from gradscf import gto,scf
     atom=f'H 0 0 0; {symbol} 0 0 {bond}'
     mol=gto.M(atom=atom,basis='3-21g',cart=True)
-    ours=scf.RKS(mol,xc=xc,integral_backend='native',max_cycle=120,grids_level=1).run()
+    ours=scf.RKS(mol,xc=xc,max_cycle=120,grids_level=1).run()
     refmol=pgto.M(atom=atom,basis='3-21g',cart=True,verbose=0)
     reference=pscf.RHF(refmol) if xc=='hf' else pdft.RKS(refmol)
     if xc!='hf':reference.xc=xc;reference.grids.level=1

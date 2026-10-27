@@ -4,18 +4,30 @@ import numpy as np
 import jax.numpy as jnp
 from jaxtyping import Array
 
-_REFERENCE_EXPORTS = {'eri_element', 'eri_tensor', 'eri_pair_matrix_packed',
-                      'eri_tensor_screened', 'precompile_eri_kernels'}
-__all__ = ['packed_eri_shape', *sorted(_REFERENCE_EXPORTS)]
+__all__ = ['packed_eri_shape','eri_element','eri_tensor','eri_pair_matrix_packed']
 
 
-def __getattr__(name):
-    if name not in _REFERENCE_EXPORTS:
-        raise AttributeError(name)
-    from gradscf.integrals.backends.jax_reference import two_electron
-    value = getattr(two_electron, name)
-    globals()[name] = value
-    return value
+def eri_tensor(basis):
+    from ..libcint import bind_cartesian
+    return bind_cartesian(basis).evaluate('eri')
+
+
+def eri_pair_matrix_packed(basis):
+    from ..libcint import bind_cartesian
+    return bind_cartesian(basis).evaluate('eri',aosym='s4')
+
+
+def eri_element(basis,i,j,k,l):
+    from ..libcint import bind_cartesian
+    binding=bind_cartesian(basis)
+    sizes=[(a+1)*(a+2)//2*n for a,n in zip(binding.plan.topology.angular_momenta,
+                                         binding.plan.topology.contraction_counts)]
+    offsets=np.r_[0,np.cumsum(sizes)]
+    indices=[binding.selection[x] for x in (i,j,k,l)]
+    shells=[int(np.searchsorted(offsets,x,side='right')-1) for x in indices]
+    bounds=tuple(v for s in shells for v in (s,s+1))
+    block=binding.evaluate('eri',shell_slice=bounds)
+    return block[tuple(x-offsets[s] for x,s in zip(indices,shells))]
 
 
 def packed_eri_shape(nao: int, ndim: int):

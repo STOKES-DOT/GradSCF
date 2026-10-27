@@ -45,8 +45,7 @@ def main():
     np.testing.assert_allclose((flat*masses)@flat.T, np.eye(3), atol=2e-12, rtol=0)
     molecule = gto.M(atom=list(zip(harmonic["symbols"], harmonic["coordinates_bohr"])),
                      basis=harmonic["basis"], unit="Bohr", cart=True)
-    mean_field = scf.RHF(molecule, conv_tol=1e-12, conv_tol_grad=1e-10,
-                        integral_backend="native").run()
+    mean_field = scf.RHF(molecule, conv_tol=1e-12, conv_tol_grad=1e-10).run()
     assert mean_field.converged
 
     # Select numerical seeds once outside AD, then continue the converged

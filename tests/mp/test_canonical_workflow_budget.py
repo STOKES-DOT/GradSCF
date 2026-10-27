@@ -89,8 +89,7 @@ def test_canonical_workflow_preserves_separated_value_and_gradient(unrestricted,
             else 'H 0 0 0; H 0 0 1.5')
     molecule = gto.M(atom=atom, basis='sto-3g' if unrestricted else '6-31g',
                      spin=int(unrestricted), unit='Bohr', cart=True)
-    source = (scf.UHF if unrestricted else scf.RHF)(molecule,
-        integral_backend='native', execution_device='cpu', conv_tol=1e-12,
+    source = (scf.UHF if unrestricted else scf.RHF)(molecule, execution_device='cpu', conv_tol=1e-12,
         conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=250).run()
     assert source.converged
     assert np.min(np.abs(np.diff(np.asarray(source.mo_energy), axis=-1))) > 1e-5

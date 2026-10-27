@@ -19,6 +19,7 @@ from gradscf._memory import array_storage_bytes, tree_storage_bytes, validate_re
 def solve_hermitian(
     matrix_or_operator, *, config=None, response=None, probes=None, initial_vectors=None,
     max_memory=None, reserved_bytes=0, _batch_size=None,
+    workload_callback=None,
 ):
     """Solve once; differentiate isolated eigenpairs or an isolated subspace.
 
@@ -93,6 +94,7 @@ def solve_hermitian(
     roots = solve_ritz(
         op, cfg, initial_vectors=initial_vectors, structure_valid=structure,
         batch_size=_batch_size,
+        workload_callback=workload_callback,
     )
     x = roots.vectors[:, :k]
     if k < n:

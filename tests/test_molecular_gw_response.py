@@ -11,8 +11,7 @@ from gradscf_tools.gw_response import MolecularGW
 @pytest.fixture(scope="module")
 def reference():
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
-    return scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10,
-                   integral_backend="native").run()
+    return scf.RHF(mol, conv_tol=1e-12, conv_tol_grad=1e-10).run()
 
 
 @pytest.mark.parametrize("method", ["g0w0", "evgw0", "evgw"])

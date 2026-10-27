@@ -56,7 +56,7 @@ report = dict(
     grid_level=grid_level, grid_radial="Treutler-Ahlrichs",
     grid_angular="Lebedev / NWChem pruning",
     grid_partition="original Becke / Treutler radii adjustment",
-    integral_backend="native", jk_backend="full", grid_ao_backend="jax",
+    integral_backend='libcint', jk_backend="full", grid_ao_backend="jax",
     scf_energy_tolerance=1e-12, scf_density_tolerance=1e-10,
     scf_gradient_tolerance=1e-9, scf_max_cycle=180,
     td_tolerance=1e-9, td_max_cycle=150, td_max_subspace=80, td_initial_guess_count=32,
@@ -79,7 +79,7 @@ started = perf_counter()
 for functional in functional_names:
     mol = gto.M(atom=atom, basis=basis, unit="Angstrom", cart=True, charge=0, spin=0)
     settings = dict(grids_level=grid_level, conv_tol=1e-12, conv_tol_density=1e-10,
-                    conv_tol_grad=1e-9, max_cycle=180, integral_backend="native",
+                    conv_tol_grad=1e-9, max_cycle=180,
                     grid_ao_backend="jax", execution_device="cpu")
     mf = scf.RHF(mol, **settings) if functional == "hf" else dft.RKS(mol, xc=functional, **settings)
     start = perf_counter()

@@ -46,7 +46,7 @@ masses = np.asarray(paired["masses_amu"])
 modes = np.asarray(paired["ground_displacements"])*np.sqrt(AMU_TO_ELECTRON_MASS)
 np.testing.assert_allclose(np.einsum("aim,ain,a->mn", modes, modes, masses), np.eye(6), atol=1e-10, rtol=0)
 mol = gto.M(atom=list(zip(paired["symbols"], coordinates)), basis=paired["basis"], unit="Bohr", cart=True)
-mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+mf = scf.RHF(mol, conv_tol=1e-12,
              conv_tol_density=1e-11, conv_tol_grad=1e-11, max_cycle=180).run()
 if not mf.converged:
     raise RuntimeError("RHF did not converge.")

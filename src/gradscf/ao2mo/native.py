@@ -124,7 +124,7 @@ def transform_eri_blocks(coefficients, requests, basis, *, max_memory, reserved_
             dtype) for c, dtype in zip(coefficients, dtypes))
         arrays.extend((transform, *coefficients))
         basis = basis.primitive_basis
-    if not isinstance(basis, NativeDirectBasis) or basis.plan.backend != 'native':
+    if not isinstance(basis, NativeDirectBasis) or basis.plan.backend != 'libcint':
         raise TypeError('direct_basis must be a native direct integral basis')
     if any(c.shape[0] != basis.nao for c in coefficients):
         raise ValueError('Coefficient AO dimensions differ from direct_basis')

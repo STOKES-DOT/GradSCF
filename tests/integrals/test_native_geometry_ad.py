@@ -14,7 +14,7 @@ from gradscf import integrals
 def test_native_geometry_jvp_vjp_fd_and_adjoint(operator, cart):
     top, params = integrals.prepare_basis("O 0 0 0; H .1 .75 .58; H -.1 -.75 .58",
                                           basis="sto-3g", cart=cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     # Nuclear and shell coordinates are independent, so this also covers
     # floating centers and separates attraction-operator and AO responses.
     coords = jnp.concatenate([params.nuclear_coords, params.centers], axis=0)
@@ -35,7 +35,7 @@ def test_native_geometry_jvp_vjp_fd_and_adjoint(operator, cart):
 
 def test_native_dipole_origin_gradient():
     top, p = integrals.prepare_basis("H 0 0 0; H .2 .1 .74", basis="3-21g")
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     cot = jnp.arange(3*top.nao**2, dtype=float).reshape(3, top.nao, top.nao)/13
     f = lambda o: jnp.sum(cot*plan.evaluate("dipole", p, origin=o))
     actual = jax.jit(jax.grad(f))(jnp.array([.1, -.2, .3]))
@@ -43,15 +43,26 @@ def test_native_dipole_origin_gradient():
     np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 
-@pytest.mark.parametrize("operator,field", [("eri", "exponents"), ("eri", "coefficients")])
-def test_native_unimplemented_basis_derivatives_raise(operator, field):
+@pytest.mark.parametrize("field", ["exponents", "coefficients"])
+def test_native_full_eri_basis_jvp_vjp_and_finite_difference(field):
     top, p = integrals.prepare_basis("H 0 0 0; H 0 0 .74", basis="3-21g")
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     values = getattr(p, field)
     def f(v):
-        return plan.evaluate(operator, replace(p, **{field:(v, *values[1:])})).sum()
-    with pytest.raises(NotImplementedError, match="(?i)(exponent|coefficient|basis)"):
-        jax.grad(f)(values[0])
+        return plan.evaluate('eri', replace(p, **{field:(v, *values[1:])}))
+    initial = values[0]
+    direction = .13*jnp.cos(jnp.arange(initial.size).reshape(initial.shape)+.2)
+    value, tangent = jax.jvp(f, (initial,), (direction,))
+    assert np.linalg.norm(tangent) > 1e-8
+    cotangent = jnp.sin(jnp.arange(value.size).reshape(value.shape)+.3)
+    pullback = jax.vjp(f, initial)[1](cotangent)[0]
+    np.testing.assert_allclose(jnp.vdot(tangent, cotangent), jnp.vdot(pullback, direction),
+                               atol=2e-10, rtol=2e-9)
+    # Alpha tangents are Bohr^-2; raw contraction directions are dimensionless.
+    for step in (2e-4, 1e-4):
+        fd = (8*(f(initial+step*direction)-f(initial-step*direction))
+              - f(initial+2*step*direction)+f(initial-2*step*direction))/(12*step)
+        np.testing.assert_allclose(tangent, fd, atol=2e-8, rtol=2e-6)
 
 
 @pytest.mark.parametrize("cart", [True, False])
@@ -59,7 +70,7 @@ def test_native_unimplemented_basis_derivatives_raise(operator, field):
 def test_native_d_shell_coordinate_derivatives(operator, cart):
     top, p = integrals.prepare_basis("H 0 0 0; H .2 .1 .8", cart=cart,
         basis={"H": [[0, [1.1, 1.]], [2, [.7, 1.]]]})
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     owners = np.repeat(np.arange(2), 2)
     def value(r):
         return plan.evaluate(operator, replace(p, nuclear_coords=r, centers=r[owners]))
@@ -73,7 +84,7 @@ def test_native_d_shell_coordinate_derivatives(operator, cart):
 
 def test_native_jacfwd_jacrev_and_vmap():
     top, p = integrals.prepare_basis("H 0 0 0; H .2 .1 .8", basis="3-21g")
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     def value(r):
         return plan.evaluate("overlap", replace(p, centers=r))
     forward = jax.jit(jax.jacfwd(value))(p.centers)

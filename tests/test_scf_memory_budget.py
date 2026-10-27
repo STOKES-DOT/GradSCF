@@ -111,7 +111,7 @@ def test_reference_cache_preserves_adaptive_grid_and_legacy_fixed_default(tmp_pa
 @pytest.mark.parametrize("facade", [dft.RKS, dft.UKS])
 def test_converged_public_reference_retains_total_memory(facade):
     mol = gto.M(atom="H 0 0 0; H 0 0 .8", basis="sto-3g", cart=True)
-    mf = facade(mol, xc="hf", integral_backend="native", jk_backend="direct",
+    mf = facade(mol, xc="hf", jk_backend="direct",
                 execution_device="cpu", max_memory=128., grid_block_size=3,
                 direct_scf_workers=1, max_cycle=40).run()
     assert mf.converged

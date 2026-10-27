@@ -21,7 +21,7 @@ class H3FCI:
         self.topology,self.parameters = integrals.prepare_basis(mol.to_spec(),mol.basis)
         self.owners = np.argmin(np.linalg.norm(np.asarray(self.parameters.centers)[:,None]
                                                - np.asarray(self.center)[None,:],axis=-1),axis=1)
-        self.plan = integrals.make_plan(self.topology,backend='native')
+        self.plan = integrals.make_plan(self.topology)
         self.space = fci.make_fci_space(self.topology.nao,(2,1))
         assert self.space.norb == 3 and self.space.size == 9
         self.config = EigenSolverConfig(method='dense',nroots=2,max_dense=16,atol=1e-12)
@@ -33,7 +33,7 @@ class H3FCI:
         doubled = integrals.BasisTopology(self.topology.angular_momenta*2,
             self.topology.primitive_counts*2,self.topology.contraction_counts*2,
             self.topology.nuclear_charges,self.topology.cart)
-        self.cross_plan = integrals.make_plan(doubled,backend='native')
+        self.cross_plan = integrals.make_plan(doubled)
         self.determinants = jnp.eye(self.space.size).reshape((self.space.size,)+self.space.shape)
 
     def coordinates(self,q):

@@ -33,3 +33,14 @@ def test_final_trace_agrees_with_existing_rhf_solver():
     result = ns["reference_rhf_result"](experiment)
     assert result.converged
     np.testing.assert_allclose(energies[-1], result.total_energy, atol=1e-9, rtol=0)
+def test_small_coefficient_trace_rejects_budget_before_integral_evaluation(monkeypatch):
+    import runpy
+    from gradscf import integrals
+    import pytest
+
+    ns = runpy.run_path('tools/scf_coefficient_gradients.py', run_name='coefficient_trace_test')
+    def forbidden(*args, **kwargs):
+        pytest.fail('Primitive ERI preflight must precede numerical integral evaluation.')
+    monkeypatch.setattr(integrals, 'make_plan', forbidden)
+    with pytest.raises(ValueError, match='(?i)(primitive|budget|memory)'):
+        ns['make_experiment'](steps=2, max_memory=.0001)

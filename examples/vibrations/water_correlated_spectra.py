@@ -39,7 +39,7 @@ def folder(method):
 def molecular_energy(method, coordinates):
     mol = gto.M(atom=list(zip(SYMBOLS, coordinates)), basis="6-31g*", unit="Bohr", cart=True)
     mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                 max_cycle=200, integral_backend="native").run()
+                 max_cycle=200).run()
     return CorrelatedEnergy(mf, method)
 
 
@@ -51,7 +51,7 @@ def save(method, name, values):
               "src/gradscf/solvers/nonlinear/root.py", "src/gradscf/solvers/eigen/response.py")
     values.update(method=method.upper(), label=method.upper(), xc="HF", basis="6-31g*", cart=True,
                   symbols=SYMBOLS, grid_level=None, grid_response=False, dispersion="none",
-                  frozen_orbitals=None, reference="RHF", integral_backend="native",
+                  frozen_orbitals=None, reference="RHF", integral_backend='libcint',
                   dipole_expression="-dE_total/dF; relaxed HF orbitals and correlated amplitudes",
                   hf_gradient_tolerance=1e-10, implicit_tolerance=1e-10,
                   cc_energy_tolerance=1e-11 if method == "ccsd" else None,

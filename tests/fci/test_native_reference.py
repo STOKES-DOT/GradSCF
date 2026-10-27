@@ -20,7 +20,7 @@ def native_source(request):
                      basis="sto-3g", spin=int(open_shell), cart=True)
     factory = scf.ROHF if open_shell else scf.RHF
     options = {} if open_shell else dict(jk_backend="direct", direct_scf_tol=0.)
-    source = factory(molecule, integral_backend="native", execution_device="cpu",
+    source = factory(molecule, execution_device="cpu",
                      max_memory=128., **options,
                      conv_tol=1e-13, conv_tol_grad=1e-10,
                      conv_tol_density=1e-11, max_cycle=200).run()
@@ -30,7 +30,7 @@ def native_source(request):
         # of that converged common frame exactly; this does not claim that
         # the ROHF SCF solver itself executes a direct J/K path.
         topology, parameters = integrals.prepare_basis(source._spec(), molecule.basis, cart=True)
-        provider = NativeDirectBasis(integrals.make_plan(topology, backend="native"), parameters)
+        provider = NativeDirectBasis(integrals.make_plan(topology), parameters)
         source._scf_inputs = replace(source._scf_inputs, direct_basis=provider,
                                      eri=jnp.zeros((0, 0, 0, 0), dtype=jnp.float64))
     inputs = source._scf_inputs
@@ -149,26 +149,6 @@ def test_native_fci_budget_precedes_core_jk_and_eri(native_source, monkeypatch):
         fci.FCI(source, core=1, active=(2, 1), max_memory=.0001).run()
 
 
-def test_legacy_jax_direct_budget_precedes_packed_eri_materialization(monkeypatch):
-    from gradscf import gto, scf
-    from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
-    from gradscf.scf.inputs.types import RKSIntegralInputs
-
-    molecule = gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True)
-    source = scf.RHF(molecule, integral_backend="jax", execution_device="cpu",
-                     jk_backend="direct", direct_scf_tol=0., max_memory=128.,
-                     conv_tol=1e-12, conv_tol_grad=1e-10,
-                     conv_tol_density=1e-11).run()
-    assert source.converged
-    assert not isinstance(source._scf_inputs.direct_basis,
-                          (NativeDirectBasis, ProjectedNativeDirectBasis))
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("An insufficient FCI budget reached legacy packed AO ERI materialization")
-
-    monkeypatch.setattr(RKSIntegralInputs, "response_eri_pair_matrix", forbidden)
-    with pytest.raises(ValueError, match="(?i)(budget|memory|resident|minimum)"):
-        fci.FCI(source, max_memory=.0001).run()
 
 
 def test_explicit_reference_budget_precedes_core_folding(monkeypatch):
@@ -255,7 +235,7 @@ def test_pure_native_active_reference_keeps_coordinate_coefficient_and_projectio
 
     topology, parameters = integrals.prepare_basis(
         "H 0 0 0; H .2 -.1 .8", basis="3-21g", cart=True)
-    plan = integrals.make_plan(topology, backend="native")
+    plan = integrals.make_plan(topology)
     nnuc = len(topology.nuclear_charges)
     coordinates = jnp.concatenate((parameters.nuclear_coords, parameters.centers))
     rng = np.random.default_rng(2619)

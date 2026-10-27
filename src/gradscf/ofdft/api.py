@@ -13,15 +13,20 @@ class OFDFT:
     """
     def __init__(self, system, *, kinetic='tfvw', xc='svwn', representation=None,
                  kinetic_params=None, xc_energy_fn=None, xc_params=None,
-                 grids_level=1, integral_backend='native', **controls):
+                 grids_level=1, **controls):
         self.system = system
         self.kinetic = KineticFunctional(kinetic) if isinstance(kinetic,str) else kinetic
         self.config = OFDFTConfig(xc=xc,**controls)
         self.representation = representation
         self.kinetic_params = kinetic_params
         self.xc_energy_fn, self.xc_params = xc_energy_fn, xc_params
-        self.grids_level, self.integral_backend = grids_level, integral_backend
+        self.grids_level = grids_level
         self.inputs = self.result = self.e_tot = self.converged = None
+
+    @property
+    def integral_backend(self):
+        """Read-only provenance of molecular Gaussian integrals."""
+        return 'libcint'
 
     def kernel(self, initial=None):
         if isinstance(self.system,OFDFTInputs):
@@ -31,8 +36,7 @@ class OFDFT:
         else:
             if self.representation not in (None,'gaussian'):
                 raise ValueError('Molecules require the Gaussian representation.')
-            self.inputs = gaussian_inputs(self.system,grids_level=self.grids_level,
-                                           integral_backend=self.integral_backend)
+            self.inputs = gaussian_inputs(self.system,grids_level=self.grids_level)
         self.result = run_ofdft(self.inputs,kinetic=self.kinetic,kinetic_params=self.kinetic_params,
             xc_energy_fn=self.xc_energy_fn,xc_params=self.xc_params,initial=initial,config=self.config)
         self.e_tot, self.converged = self.result.total_energy,bool(self.result.converged)

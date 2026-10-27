@@ -75,7 +75,7 @@ def run_case(method, mode, observable, output=OUTPUT):
     start = perf_counter()
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis=BASIS, unit="Bohr", cart=True)
     settings = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                    max_cycle=150, integral_backend="native")
+                    max_cycle=150)
     mf = (scf.RHF(mol, **settings) if method == "HF" else
           dft.RKS(mol, xc="pbe", grids_level=0, **settings)).run()
     if not mf.converged:

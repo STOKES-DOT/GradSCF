@@ -29,8 +29,7 @@ functional = dft.custom_xc(input_fn=make_inputs, energy_fn=exchange_energy,
                           name='scaled_dirac_exchange')
 params = {'scale': jnp.asarray(1.)}
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='sto-3g')
-mf = dft.RKS(mol, xc=functional, params=params, grids_level=1,
-             integral_backend='native', conv_tol=1e-11, max_cycle=80).run()
+mf = dft.RKS(mol, xc=functional, params=params, grids_level=1, conv_tol=1e-11, max_cycle=80).run()
 if not mf.converged:
     raise RuntimeError('Custom-exchange SCF did not converge.')
 

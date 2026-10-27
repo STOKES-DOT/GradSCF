@@ -18,7 +18,7 @@ from test_prepared_properties import _problem, _config
 def source():
     mol = gto.M(atom='Li 0 0 0; H 0 0 3.1', basis='sto-3g',
                 charge=1, spin=1, unit='Bohr', cart=True)
-    mf = scf.UHF(mol, integral_backend='native', execution_device='cpu',
+    mf = scf.UHF(mol, execution_device='cpu',
         max_memory=64., conv_tol=1e-12, conv_tol_density=1e-11,
         conv_tol_grad=1e-10, max_cycle=250).run()
     assert mf.converged

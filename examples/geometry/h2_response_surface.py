@@ -22,8 +22,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 
 basis = "6-31g*"
 lengths = np.linspace(1., 5.8, 13)  # Bohr; fixed restricted occupation topology
-controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                integral_backend="native", max_cycle=200)
+controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=200)
 seed = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 1.4", basis=basis, unit="Bohr", cart=True),
                **controls).run()
 energy = MolecularEnergy(seed, gradient_tolerance=1e-10)

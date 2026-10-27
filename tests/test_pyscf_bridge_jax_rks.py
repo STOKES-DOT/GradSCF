@@ -122,7 +122,6 @@ def test_build_rks_integral_inputs_accepts_strict_jax_default_grid_level():
         cart=True,
         grids_level=0,
         max_l=1,
-        integral_backend="cpu",
         config=RKSConfig(max_cycle=1),
     )
     level3_inputs = build_rks_integral_inputs(
@@ -134,7 +133,6 @@ def test_build_rks_integral_inputs_accepts_strict_jax_default_grid_level():
         cart=True,
         grids_level=3,
         max_l=1,
-        integral_backend="cpu",
         config=RKSConfig(max_cycle=1),
     )
 
@@ -268,7 +266,6 @@ def test_restricted_molecule_from_spec_with_jax_rks_direct_backend_matches_water
             direct_scf_tol=0.0,
         ),
         grid_ao_backend="jax",
-        integral_backend="jax",
     )
 
     assert np.asarray(ref.rep_tensor).size == 0
@@ -368,51 +365,11 @@ def test_restricted_reference_from_pyscf_spec_with_jax_rks_matches_water_local_h
     )
 
 
-def test_restricted_molecule_from_spec_with_jax_rks_can_precompile_eri(monkeypatch):
-    calls: list[tuple[int, str, int]] = []
-
-    def fake_precompile(basis, *, engine="auto", chunk_size=512):
-        calls.append((basis.nao, str(engine), int(chunk_size)))
-        return {"compiled_shell_signatures": 0, "compiled_batch_shapes": 0}
-
-    monkeypatch.setattr("gradscf.scf.builders.precompile_eri_kernels", fake_precompile)
-
-    ref = _build_restricted_reference(
-        atom="""
-        H 0.0 0.0 -0.35
-        H 0.0 0.0  0.35
-        """,
-        basis="sto-3g",
-        unit="Angstrom",
-        xc_spec="pbe",
-        spin=0,
-        charge=0,
-        cart=True,
-        grids_level=0,
-        max_l=1,
-        rks_config=RKSConfig(
-            xc_spec="pbe",
-            max_cycle=20,
-            conv_tol=1e-8,
-            conv_tol_density=1e-6,
-            damping=0.15,
-            density_floor=1e-12,
-            potential_clip=20.0,
-        ),
-        grid_ao_backend="jax",
-        integral_backend="jax",
-        precompile_eri=True,
-        precompile_eri_chunk_size=64,
-    )
-
-    assert ref.h1e.ndim == 2
-    assert calls
-    assert calls[0][1] == "jit"
-    assert calls[0][2] == 64
 
 
-def test_restricted_molecule_from_spec_with_jax_rks_libcint_matches_jax():
+def test_restricted_molecule_from_spec_with_jax_rks_matches_independent_pyscf():
     _pyscf_or_skip()
+    from pyscf import dft, gto
 
     atom = """
     H 0.0 0.0 -0.35
@@ -427,20 +384,6 @@ def test_restricted_molecule_from_spec_with_jax_rks_libcint_matches_jax():
         density_floor=1e-12,
         potential_clip=20.0,
     )
-    ref_jax = _build_restricted_reference(
-        atom=atom,
-        basis="sto-3g",
-        unit="Angstrom",
-        xc_spec="pbe",
-        spin=0,
-        charge=0,
-        cart=True,
-        grids_level=0,
-        max_l=1,
-        rks_config=cfg,
-        grid_ao_backend="jax",
-        integral_backend="jax",
-    )
     ref_libcint = _build_restricted_reference(
         atom=atom,
         basis="sto-3g",
@@ -453,31 +396,38 @@ def test_restricted_molecule_from_spec_with_jax_rks_libcint_matches_jax():
         max_l=1,
         rks_config=cfg,
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
 
-    assert np.isclose(float(ref_jax.mf_energy), float(ref_libcint.mf_energy), atol=1e-6, rtol=0.0)
-    assert np.allclose(np.asarray(ref_jax.overlap_matrix), np.asarray(ref_libcint.overlap_matrix), atol=1e-7, rtol=1e-7)
-    assert np.allclose(np.asarray(ref_jax.h1e), np.asarray(ref_libcint.h1e), atol=5e-7, rtol=1e-7)
-    assert np.allclose(np.asarray(ref_jax.rep_tensor), np.asarray(ref_libcint.rep_tensor), atol=3e-7, rtol=1e-7)
+    mol = gto.M(atom=atom, basis='sto-3g', cart=True, verbose=0)
+    oracle = dft.RKS(mol)
+    oracle.xc, oracle.conv_tol = 'pbe', 1e-12
+    oracle.small_rho_cutoff = 0.
+    oracle.grids.coords = np.asarray(ref_libcint.grid.coords)
+    oracle.grids.weights = np.asarray(ref_libcint.grid.weights)
+    oracle.kernel()
+    assert oracle.converged
+    assert np.isclose(float(oracle.e_tot), float(ref_libcint.mf_energy), atol=1e-6, rtol=0.0)
+    assert np.allclose(mol.intor('int1e_ovlp_cart'), np.asarray(ref_libcint.overlap_matrix), atol=1e-7, rtol=1e-7)
+    assert np.allclose(oracle.get_hcore(), np.asarray(ref_libcint.h1e), atol=5e-7, rtol=1e-7)
+    assert np.allclose(mol.intor('int2e_cart', aosym='s4'), np.asarray(ref_libcint.eri_pair_matrix), atol=3e-7, rtol=1e-7)
 
 
 def test_restricted_molecule_from_spec_with_jax_rks_libcint_full_uses_packed_eri(monkeypatch):
     _pyscf_or_skip()
-    from pyscf import gto
+    from gradscf.integrals.plan import IntegralPlan
 
-    orig_intor = gto.mole.Mole.intor
+    original = IntegralPlan.evaluate
     seen_aosym: list[str] = []
 
-    def _guarded_intor(self, intor, *args, **kwargs):
-        if str(intor) == "int2e_cart":
+    def _guarded_evaluate(self, operator, *args, **kwargs):
+        if operator == "eri":
             aosym = str(kwargs.get("aosym", "s1"))
             seen_aosym.append(aosym)
             if aosym not in {"s4", "s8"}:
-                raise AssertionError("default no-DF RKS must not build dense int2e_cart")
-        return orig_intor(self, intor, *args, **kwargs)
+                raise AssertionError("default no-DF RKS must not build full ERIs")
+        return original(self, operator, *args, **kwargs)
 
-    monkeypatch.setattr(gto.mole.Mole, "intor", _guarded_intor)
+    monkeypatch.setattr(IntegralPlan, "evaluate", _guarded_evaluate)
 
     ref = _build_restricted_reference(
         atom="""
@@ -502,7 +452,6 @@ def test_restricted_molecule_from_spec_with_jax_rks_libcint_full_uses_packed_eri
             potential_clip=20.0,
         ),
         grid_ao_backend="jax",
-        integral_backend="cpu",
     )
 
     assert "s4" in seen_aosym
@@ -514,82 +463,16 @@ def test_restricted_molecule_from_spec_with_jax_rks_libcint_full_uses_packed_eri
     assert np.isfinite(float(ref.mf_energy))
 
 
-def test_restricted_molecule_from_spec_with_jax_rks_libcint_skips_precompile(monkeypatch):
-    _pyscf_or_skip()
-
-    called = {"value": False}
-
-    def fake_precompile(*args, **kwargs):
-        called["value"] = True
-        return {}
-
-    monkeypatch.setattr("gradscf.scf.builders.precompile_eri_kernels", fake_precompile)
-
-    with pytest.warns(RuntimeWarning, match="ignored when integral_backend='cpu'"):
-        _ = _build_restricted_reference(
-            atom="""
-            H 0.0 0.0 -0.35
-            H 0.0 0.0  0.35
-            """,
-            basis="sto-3g",
-            unit="Angstrom",
-            xc_spec="pbe",
-            spin=0,
-            charge=0,
-            cart=True,
-            grids_level=0,
-            max_l=1,
-            rks_config=RKSConfig(
-                xc_spec="pbe",
-                max_cycle=20,
-                conv_tol=1e-8,
-                conv_tol_density=1e-6,
-                damping=0.15,
-                density_floor=1e-12,
-                potential_clip=20.0,
-            ),
-            grid_ao_backend="jax",
-            integral_backend="cpu",
-            precompile_eri=True,
-        )
-
-    assert called["value"] is False
 
 
-def test_restricted_molecule_from_spec_with_jax_rks_libcint_zero_policy_runs():
-    _pyscf_or_skip()
-
-    ref = _build_restricted_reference(
-        atom="""
-        H 0.0 0.0 -0.35
-        H 0.0 0.0  0.35
-        """,
-        basis="sto-3g",
-        unit="Angstrom",
-        xc_spec="pbe",
-        spin=0,
-        charge=0,
-        cart=True,
-        grids_level=0,
-        max_l=1,
-        rks_config=RKSConfig(
-            xc_spec="pbe",
-            max_cycle=20,
-            conv_tol=1e-8,
-            conv_tol_density=1e-6,
-            damping=0.15,
-            density_floor=1e-12,
-            potential_clip=20.0,
-        ),
-        grid_ao_backend="jax",
-        integral_backend="cpu",
-        libcint_geometry_grad_policy="zero",
-    )
-    assert np.isfinite(float(ref.mf_energy))
+def test_restricted_molecule_rejects_zero_geometry_derivatives():
+    with pytest.raises(ValueError, match='(?i)(geometry|zero.*derivative)'):
+        _build_restricted_reference(atom='H 0 0 -.35; H 0 0 .35', basis='sto-3g',
+            xc_spec='pbe', libcint_geometry_grad_policy='zero')
 
 
 def test_restricted_molecule_from_spec_with_jax_rks_invalid_libcint_policy_raises():
-    with pytest.raises(ValueError, match="Unsupported libcint_geometry_grad_policy"):
+    with pytest.raises(ValueError, match="(?i)(geometry|policy)"):
         _ = _build_restricted_reference(
             atom="""
             H 0.0 0.0 -0.35
@@ -613,6 +496,5 @@ def test_restricted_molecule_from_spec_with_jax_rks_invalid_libcint_policy_raise
                 potential_clip=20.0,
             ),
             grid_ao_backend="jax",
-            integral_backend="cpu",
             libcint_geometry_grad_policy="invalid_policy",  # type: ignore[arg-type]
         )

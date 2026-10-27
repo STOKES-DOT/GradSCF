@@ -20,7 +20,7 @@ from gradscf_tools.correlated_response import CorrelatedEnergy
 def source():
     molecule = gto.M(atom='H 0 0 0; H 0 0 1.4; H 1.5 0 .1; H 1.5 0 1.5',
                      basis='sto-3g', unit='Bohr', cart=True)
-    mf = scf.RHF(molecule, integral_backend='native', execution_device='cpu',
+    mf = scf.RHF(molecule, execution_device='cpu',
         conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
         max_cycle=250).run()
     assert mf.converged

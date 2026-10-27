@@ -98,6 +98,25 @@ def test_molecular_coordinate_and_overlap_response():
     np.testing.assert_allclose(derivative,fd,rtol=5e-5,atol=1e-6)
 
 
+def test_molecular_coordinate_response_retains_packed_eri():
+    """The producer keeps s4 storage under geometry tracing, in float64/Bohr."""
+    from gradscf import gto, ofdft
+    mol = gto.M(atom='H 0 0 0; H 0 0 .8', basis='sto-3g')
+    coords = jnp.asarray(mol.to_spec().coords_bohr)
+    packed = jax.jit(lambda r: ofdft.gaussian_inputs(mol, coordinates=r, grids_level=0).eri)
+    value = packed(coords)
+    assert value.shape == (3, 3)
+    direction = jnp.array([[.03, -.02, .04], [-.01, .05, -.03]])
+    _, tangent = jax.jvp(packed, (coords,), (direction,))
+    cotangent = jnp.sin(jnp.arange(9).reshape(3, 3))
+    pullback = jax.vjp(packed, coords)[1](cotangent)[0]
+    analytic = jnp.vdot(tangent, cotangent)
+    np.testing.assert_allclose(analytic, jnp.vdot(pullback, direction), atol=2e-11, rtol=2e-10)
+    for step in (2e-4, 1e-4):
+        fd = jnp.vdot((packed(coords+step*direction)-packed(coords-step*direction))/(2*step), cotangent)
+        np.testing.assert_allclose(analytic, fd, atol=2e-8, rtol=2e-6)
+
+
 def test_periodic_gaussian_solution_and_response():
     from gradscf import integrals, ofdft
     top, pars = integrals.prepare_basis('H 1 1 1; H 3 1 1','sto-3g',unit='Bohr')

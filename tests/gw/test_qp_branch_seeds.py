@@ -176,7 +176,7 @@ def test_native_h2_matches_independent_scipy_arrowhead():
 
     function = _module().pole_seeds
     mf = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True),
-                 conv_tol=1e-12, conv_tol_grad=1e-10, integral_backend="native").run()
+                 conv_tol=1e-12, conv_tol_grad=1e-10).run()
     assert mf.converged
     factors = eri_pair_matrix_to_df_factors_traceable(mf._scf_inputs.eri_pair_matrix, nao=2, tol=1e-12)
     mo = _mo_factors(factors, mf.mo_coeff)

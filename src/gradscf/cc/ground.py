@@ -1,5 +1,8 @@
 """Ground-state CC/QCI orchestration: equations here, iteration/AD in solvers."""
 
+from functools import partial
+
+import jax
 import jax.numpy as jnp
 from ..solvers import LinearSolverConfig
 from ..solvers.nonlinear.iterate import NonlinearConfig, solve_nonlinear
@@ -92,6 +95,32 @@ def _prepare_ground(ints, cfg, t1, t2, max_memory, reserved_bytes, *, preview=Fa
     return space, initial, safe_diagonal, minimum, valid, ints, numerical, response, budget
 
 
+@partial(jax.jit, static_argnames=(
+    "space", "config", "linear_config", "max_memory", "reserved_bytes", "operator_min_bytes",
+))
+def _solve_ground(ints, initial, safe_diagonal, valid, *, space, config,
+                  linear_config, max_memory=None, reserved_bytes=0,
+                  operator_min_bytes=0):
+    """Keep the nonlinear executable stable across prepared integral objects.
+
+    Physical blocks, amplitudes and the preconditioner stay dynamic; only the
+    active-space layout, solver policies and workspace limits are static.
+    """
+    def equation(vector):
+        return space.pack(*residual(*space.unpack(vector), ints, model=space.method))
+
+    def energy(vector):
+        return correlation_energy(*space.unpack(vector), ints, model=space.method)
+
+    return solve_nonlinear(
+        equation, initial,
+        update=lambda x, rx: x + rx / safe_diagonal,
+        observable=energy, config=config, linear_config=linear_config,
+        valid_inputs=valid, max_memory=max_memory, reserved_bytes=reserved_bytes,
+        operator_min_bytes=operator_min_bytes,
+    )
+
+
 def run_cc_from_integrals(ints, *, config=None, t1=None, t2=None,
                           max_memory=None, reserved_bytes=0):
     """Solve a restricted model from prepared blocks using the shared CC body.
@@ -104,22 +133,13 @@ def run_cc_from_integrals(ints, *, config=None, t1=None, t2=None,
     (space, initial, safe_diagonal, minimum, valid,
      ints, numerical, response, budget) = _prepare_ground(
          ints, cfg, t1, t2, max_memory, reserved_bytes)
-    r = lambda vector: space.pack(
-        *residual(*space.unpack(vector), ints, model=cfg.method)
-    )
-    e = lambda vector: correlation_energy(*space.unpack(vector), ints, model=cfg.method)
-    solved = solve_nonlinear(
-        r,
-        initial,
-        update=lambda x, rx: x + rx / safe_diagonal,
-        observable=e,
-        config=numerical,
-        linear_config=response,
-        valid_inputs=valid,
+    solved = _solve_ground(
+        ints, initial, safe_diagonal, valid, space=space,
+        config=numerical, linear_config=response,
         **budget,
     )
     t1, t2 = space.unpack(solved.solution)
-    ecorr = e(solved.solution)
+    ecorr = correlation_energy(t1, t2, ints, model=cfg.method)
     return CCResult(
         ints.reference_energy + ecorr,
         ecorr,

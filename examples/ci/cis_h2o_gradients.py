@@ -54,7 +54,7 @@ def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     (OUTPUT/"gradscf.json").write_text('{"complete": false}\n')
     molecule = gto.M(atom=ATOM, basis=BASIS, unit="Angstrom", cart=True)
-    hf = scf.RHF(molecule, integral_backend="native", conv_tol=1e-12,
+    hf = scf.RHF(molecule, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-11, max_cycle=180).run()
     if not hf.converged:
         raise RuntimeError("RHF did not converge.")

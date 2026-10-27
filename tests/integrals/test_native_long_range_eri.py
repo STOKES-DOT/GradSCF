@@ -15,7 +15,7 @@ BASIS = {"H": [[0, [1.1, 1.]], [2, [.7, 1.]]]}
 
 def problem(cart, aosym="s1", omega=0.2):
     top, p = integrals.prepare_basis(ATOM, basis=BASIS, cart=cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     # Independent nuclear/AO coordinates also catch accidental nuclear
     # attraction changes and derivative leakage into the fixed omega slot.
     coords = jnp.concatenate((p.nuclear_coords, p.centers))
@@ -112,11 +112,10 @@ def test_omega_derivatives_and_dynamic_jit_are_rejected():
         jax.jit(f)(.2)
 
 
-def test_long_range_reference_backend_is_explicitly_unsupported():
+def test_long_range_retired_reference_backend_is_rejected():
     top, p, _, _, _ = problem(True)
-    plan = integrals.make_plan(top, backend="jax_reference")
-    with pytest.raises(NotImplementedError, match="(?i)(omega|long.range).*native"):
-        plan.evaluate("eri", p, omega=.2)
+    with pytest.raises(ValueError, match="(?i)(libcint|backend|retired)"):
+        integrals.make_plan(top, backend="jax_reference")
 
 
 def test_long_range_basis_and_third_geometry_ad_remain_unsupported():
@@ -129,5 +128,6 @@ def test_long_range_basis_and_third_geometry_ad_remain_unsupported():
             jax.grad(f)(values[0])
     first = lambda r: jax.jvp(value, (r,), (jnp.ones_like(r),))[1]
     second = lambda r: jax.jvp(first, (r,), (jnp.ones_like(r),))[1]
-    with pytest.raises(NotImplementedError, match="(?i)third.*geometry"):
+    with pytest.raises((NotImplementedError, jax.errors.JaxRuntimeError),
+                       match="(?i)third.*geometry"):
         jax.jvp(second, (coords,), (jnp.ones_like(coords),))

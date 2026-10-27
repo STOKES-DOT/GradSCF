@@ -22,7 +22,6 @@ class QuadratureGrid:
     static_fields=(
         "nocc",
         "scf_converged",
-        "scf_cycles",
         "runtime_scf_backend",
         "runtime_scf_options",
         "hfx_nu_api",
@@ -109,7 +108,6 @@ class RestrictedMolecule:
         "xc_spec",
         "range_separated_coefficients",
         "scf_converged",
-        "scf_cycles",
         "runtime_scf_backend",
         "runtime_scf_options",
         "hfx_nu_api",

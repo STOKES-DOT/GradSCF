@@ -37,7 +37,7 @@ In particular, this expansion does not add PAW/USPP or spin-orbit operators.
 
 PySCF is copyright The PySCF Developers and distributed under Apache License
 2.0. The full license is bundled at
-`gradscf/integrals/_native/vendor/pyscf/LICENSE` in this distribution.
+`gradscf/integrals/_native/vendor/libcint/LICENSE` in this distribution.
 Upstream source: https://github.com/pyscf/pyscf/tree/v2.9.0/pyscf/pbc/gto
 
 Numerical algorithms in this directory implement analytic Cartesian Gaussian

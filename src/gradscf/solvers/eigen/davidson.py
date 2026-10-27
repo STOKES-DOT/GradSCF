@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 from collections.abc import Callable
+from ._workload import _workload_reporter
 
 def _symmetrize(matrix):
     return 0.5 * (matrix + matrix.T.conj())
@@ -129,8 +130,15 @@ def _davidson_lowest_symmetric(
     preconditioner_level_shift: float = 0.0,
     orth_eps: float = 1e-10,
     return_basis: bool = False,
+    workload_callback: Callable[[dict], None] | None = None,
 ) -> tuple[Array, Array, Array]:
-    """Approximate the lowest eigenpairs of a Hermitian matrix with Davidson."""
+    """Approximate the lowest eigenpairs of a Hermitian matrix with Davidson.
+
+    ``workload_callback`` opts into runtime action and iteration records.
+    Its host callback timings include diagnostic overhead; leave it unset for
+    clean timing. Records contain only scalar
+    metadata and the requested roots' residual norms, never physical vectors.
+    """
 
     index_dtype = jnp.asarray(0).dtype
 
@@ -166,6 +174,22 @@ def _davidson_lowest_symmetric(
     # restart mask must never exceed the allocated subspace, even while traced
     # in a branch that is not taken for an already converged diagonal problem.
     collapse_subspace = min(collapse_subspace, max(nroots, max_subspace-trial_count))
+    workload = None if workload_callback is None else _workload_reporter(
+        workload_callback, solver="symmetric_davidson", nroots=nroots,
+        max_subspace=max_subspace, tolerance=jnp.asarray(tol, dtype=dtype),
+    )
+    missing_residuals = None if workload is None else jnp.full((nroots,), jnp.inf, dtype=dtype)
+
+    def _apply_columns(vectors, *, iteration, purpose, effective_columns,
+                       subspace_dim, residual_norms):
+        if workload is None:
+            return apply(vectors)
+        return workload.apply(
+            apply, vectors, iteration=iteration, purpose=purpose,
+            effective_columns=effective_columns, subspace_dim=subspace_dim,
+            residual_norms=residual_norms,
+        )
+
     if initial_vectors is None:
         guess_dim = min(dim, max_subspace, guess_count)
         guess_idx = jnp.argsort(diag)[:guess_dim]
@@ -178,7 +202,10 @@ def _davidson_lowest_symmetric(
         guess_dim = guess_basis.shape[1]
         guess_basis = jax.lax.stop_gradient(guess_basis)
     guess_basis, _ = jnp.linalg.qr(guess_basis, mode="reduced")
-    guess_abasis = apply(guess_basis)
+    guess_abasis = _apply_columns(
+        guess_basis, iteration=0, purpose="initial", effective_columns=guess_dim,
+        subspace_dim=0, residual_norms=missing_residuals,
+    )
 
     basis = jnp.zeros((dim, max_subspace), dtype=dtype)
     abasis = jnp.zeros((dim, max_subspace), dtype=dtype)
@@ -220,6 +247,8 @@ def _davidson_lowest_symmetric(
         basis_dim_in: Array,
         expand_cols: Array,
         expand_mask: Array,
+        iteration: Array,
+        residual_norms: Array | None,
     ) -> tuple[Array, Array, Array, Array, Array]:
         def body_fun(col_idx: int, carry):
             appended_cols_cur, appended_mask_cur, appended_count_cur = carry
@@ -271,7 +300,11 @@ def _davidson_lowest_symmetric(
             (init_cols, init_mask, jnp.asarray(0, dtype=index_dtype)),
         )
 
-        appended_abasis = apply(appended_cols)
+        appended_abasis = _apply_columns(
+            appended_cols, iteration=iteration, purpose="append",
+            effective_columns=appended, subspace_dim=basis_dim_in,
+            residual_norms=residual_norms,
+        )
 
         def scatter_body(col_idx: int, carry):
             basis_cur, abasis_cur, active_mask_cur, offset = carry
@@ -337,11 +370,18 @@ def _davidson_lowest_symmetric(
     def _restart_subspace(
         basis_in: Array,
         eigvecs_in: Array,
+        basis_dim_in: Array,
+        iteration: Array,
+        residual_norms: Array | None,
     ) -> tuple[Array, Array, Array, Array, Array]:
         restart_coeff = eigvecs_in[:, :collapse_subspace]
         restarted_basis = _matmul(basis_in, restart_coeff)
         restarted_basis, _ = jnp.linalg.qr(restarted_basis, mode="reduced")
-        restarted_abasis = apply(restarted_basis)
+        restarted_abasis = _apply_columns(
+            restarted_basis, iteration=iteration, purpose="restart",
+            effective_columns=collapse_subspace, subspace_dim=basis_dim_in,
+            residual_norms=residual_norms,
+        )
 
         basis_out = jnp.zeros((dim, max_subspace), dtype=dtype)
         abasis_out = jnp.zeros((dim, max_subspace), dtype=dtype)
@@ -381,6 +421,7 @@ def _davidson_lowest_symmetric(
         ) = state
 
         def _do_iteration(iter_state):
+            iteration = None if workload is None else _iter + 1
             (
                 basis_it,
                 abasis_it,
@@ -437,6 +478,12 @@ def _davidson_lowest_symmetric(
                 tol_arr,
                 valid=selected_valid,
             )
+            if workload is not None:
+                workload.record(
+                    "iteration", "ritz", iteration=iteration, columns=0,
+                    effective_columns=0, subspace_dim=basis_dim_it,
+                    residual_norms=selected_residual_norms,
+                )
             improve_best = (max_residual < best_residual_it) | converged_now
             best_theta_next = jnp.where(improve_best, theta, best_theta_it)
             best_vecs_next = jnp.where(improve_best, vecs, best_vecs_it)
@@ -542,9 +589,14 @@ def _davidson_lowest_symmetric(
                 return jax.lax.cond(
                     overflow,
                     lambda __: _append_new_columns(
-                        *_restart_subspace(basis_it, sub_eigvecs),
+                        *_restart_subspace(
+                            basis_it, sub_eigvecs, basis_dim_it, iteration,
+                            selected_residual_norms,
+                        ),
                         expand_cols,
                         expand_mask,
+                        iteration,
+                        selected_residual_norms,
                     ),
                     lambda __: _append_new_columns(
                         basis_it,
@@ -554,6 +606,8 @@ def _davidson_lowest_symmetric(
                         basis_dim_it,
                         expand_cols,
                         expand_mask,
+                        iteration,
+                        selected_residual_norms,
                     ),
                     operand=None,
                 )

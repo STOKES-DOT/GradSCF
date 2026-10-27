@@ -23,7 +23,7 @@ def test_native_ao2mo_cuda_coefficient_and_coordinate_hvp():
     cpu, gpu = jax.devices('cpu')[0], jax.devices('gpu')[0]
     with jax.default_device(cpu):
         top, parameters = integrals.prepare_basis('H 0 0 0; H .2 -.1 .8', basis='3-21g')
-        plan = integrals.make_plan(top, backend='native')
+        plan = integrals.make_plan(top)
         rng = np.random.default_rng(220)
         coefficients = tuple(jnp.asarray(rng.normal(scale=.2, size=(top.nao, n)))
                              for n in (2, 3, 1, 2))

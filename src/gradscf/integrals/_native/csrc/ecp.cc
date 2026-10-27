@@ -32,10 +32,10 @@ static ffi::Error ECP(ffi::BufferR2<ffi::S32> atoms,
     double* out=output->typed_data();std::fill(out,out+output->element_count(),0.);
     for(int i=0;i<t.nbas;++i)for(int j=0;j<t.nbas;++j){
       int shells[]={i,j};int di=t.ao[i+1]-t.ao[i],dj=t.ao[j+1]-t.ao[j];
-      int cache_size=intor(nullptr,nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),nullptr,nullptr);
+      int cache_size=libcint_diagnostics::invoke(libcint_diagnostics::ecp,intor,nullptr,nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),nullptr,nullptr);
       if(cache_size<=0)throw std::invalid_argument("Invalid ECP cache size");
       std::vector<double> block(size_t(di)*dj,0.),cache(cache_size);
-      intor(block.data(),nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),nullptr,cache.data());
+      libcint_diagnostics::invoke(libcint_diagnostics::ecp,intor,block.data(),nullptr,shells,t.atm.data(),t.natm,t.bas.data(),t.nbas,t.env.data(),nullptr,cache.data());
       for(int p=0;p<di;++p)for(int q=0;q<dj;++q)
         out[size_t(t.ao[i]+p)*t.n+t.ao[j]+q]=block[q*di+p];
     }

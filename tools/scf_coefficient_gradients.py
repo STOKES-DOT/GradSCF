@@ -1,8 +1,10 @@
 """Print dE_k/d(raw contraction coefficient) along an H2 RHF trajectory.
 
-Uses the existing GradSCF SCF scan and JAX reference integrals. Coefficients
-are held fixed across SCF iterations, while differentiation includes the
-normalization, integrals, hcore initial guess, and all preceding DIIS steps.
+Uses the existing GradSCF SCF scan and normalized contraction of fixed libcint
+primitive values. This is a bounded H2 reference at fixed geometry/exponents;
+it is not a scalable primitive-ERI cache. Coefficients are held fixed across SCF
+iterations, while differentiation includes normalization, the hcore initial
+guess, and all preceding DIIS steps.
 """
 from __future__ import annotations
 
@@ -22,30 +24,46 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf import integrals, scf
+from gradscf._memory import tree_storage_bytes, workspace_bytes
+from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
 from gradscf.scf.core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
 from gradscf.scf.rks import RKSConfig, _build_jk, _run_scf_iterations_lax_core
 
 
-def make_experiment(*, steps=12, bond=.74, basis="3-21g"):
+def make_experiment(*, steps=12, bond=.74, basis="3-21g", max_memory=64.):
     if steps < 1:
         raise ValueError("steps must be positive")
-    topology, params = integrals.prepare_basis(
-        atom=f"H 0 0 0; H 0 0 {bond}", basis=basis, unit="Angstrom",
-    )
-    plan = integrals.make_plan(topology, backend="jax_reference")
+    cpu = jax.devices('cpu')[0]
+    with jax.default_device(cpu):
+        topology, params = integrals.prepare_basis(
+            atom=f"H 0 0 0; H 0 0 {bond}", basis=basis, unit="Angstrom",
+        )
+        primitive_topology, primitive_params = primitive_basis(topology, params)
+        n, m = primitive_topology.nao, topology.nao
+        itemsize = np.dtype(params.coefficients[0].dtype).itemsize
+        # Charge primitive storage and conservative sequential contraction
+        # intermediates before any numerical integral call. This is an array
+        # workspace gate; the shared budget also retains its runtime reserve.
+        required = itemsize*(n**4+4*n**2+n**3*m+n**2*m**2+n*m**3+m**4)
+        remaining = workspace_bytes(max_memory, device=cpu,
+            resident_bytes=tree_storage_bytes(params, primitive_params))
+        if required > remaining:
+            raise ValueError('Fixed-primitive H2 reference exceeds its working-memory budget.')
+        plan = integrals.make_plan(primitive_topology)
+        tensors = {operator: plan.evaluate(operator, primitive_params)
+                   for operator in ('overlap', 'kinetic', 'nuclear', 'eri')}
     shapes = [c.shape for c in params.coefficients]
     sizes = [c.size for c in params.coefficients]
     offsets = np.cumsum([0] + sizes)
-    coefficients = jnp.concatenate([c.ravel() for c in params.coefficients])
-    enuc = scf.nuclear_repulsion_energy(params.nuclear_coords, jnp.asarray(topology.nuclear_charges))
+    with jax.default_device(cpu):
+        coefficients = jnp.concatenate([c.ravel() for c in params.coefficients])
+        enuc = scf.nuclear_repulsion_energy(params.nuclear_coords, jnp.asarray(topology.nuclear_charges))
 
     def integral_inputs(vector):
         cs = tuple(vector[offsets[i]:offsets[i+1]].reshape(shape) for i, shape in enumerate(shapes))
         p = replace(params, coefficients=cs)
-        s = plan.evaluate("overlap", p)
-        h = plan.evaluate("kinetic", p) + plan.evaluate("nuclear", p)
-        eri = plan.evaluate("eri", p)
-        return s, h, eri
+        projected = contract_integrals(tensors, contraction_matrix(topology, p))
+        return projected['overlap'], projected['kinetic']+projected['nuclear'], projected['eri']
 
     def energy_trace(vector):
         s, h, eri = integral_inputs(vector)
@@ -92,7 +110,9 @@ def make_experiment(*, steps=12, bond=.74, basis="3-21g"):
                 shared.setdefault(f"H.shell{local_shell+1}.p{primitive+1}.c{ctr+1}", []).append(index)
     return dict(energy_trace=energy_trace, integral_inputs=integral_inputs, coefficients=coefficients,
                 enuc=enuc, rows=rows, shared=shared, contraction_indices=contraction_indices,
-                steps=steps, bond=bond, basis=basis)
+                steps=steps, bond=bond, basis=basis, primitive_nao=n,
+                primitive_workspace_bytes=required, max_memory_mb=float(max_memory),
+                integral_device=str(cpu))
 
 
 def finite_difference_jacobian(fn, coefficients, *, step=1e-4):
@@ -119,13 +139,16 @@ def main():
     parser.add_argument("--bond", type=float, default=.74, help="H-H distance in Angstrom")
     parser.add_argument("--basis", default="3-21g")
     parser.add_argument("--fd-step", type=float, default=1e-4)
+    parser.add_argument("--max-memory", type=float, default=64.,
+                        help="Decimal MB for this bounded primitive reference workspace")
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/scf-coefficient-gradients"))
     args = parser.parse_args()
     if args.fd_step <= 0 or args.bond <= 0:
         parser.error("fd-step and bond must be positive")
     jax.config.update("jax_enable_x64", True)
     start = time.perf_counter()
-    experiment = make_experiment(steps=args.steps, bond=args.bond, basis=args.basis)
+    experiment = make_experiment(steps=args.steps, bond=args.bond, basis=args.basis,
+                                 max_memory=args.max_memory)
     c = experiment["coefficients"]
     fn = jax.jit(experiment["energy_trace"])
     print(f"H2 RHF/{args.basis}; R={args.bond} Angstrom; hcore guess; fixed {args.steps} DIIS iterations", flush=True)
@@ -156,7 +179,10 @@ def main():
         for k in range(len(energies)):
             writer.writerow([k, energies[k], *jac[k], error[k]])
     summary = dict(molecule="H2", bond_angstrom=args.bond, basis=args.basis, method="RHF",
-                   backend="jax_reference", devices=[str(d) for d in jax.devices()], jax_version=jax.__version__,
+                   backend="libcint", devices=[str(d) for d in jax.devices()], jax_version=jax.__version__,
+                   integral_device=experiment['integral_device'], scf_device=str(c.device),
+                   max_memory_mb=experiment['max_memory_mb'], primitive_nao=experiment['primitive_nao'],
+                   estimated_array_workspace_bytes=experiment['primitive_workspace_bytes'],
                    dtype="float64", steps=args.steps, initialization="hcore", coefficients=experiment["rows"],
                    gradient_semantics="total derivative through normalized basis, hcore guess, and fixed SCF/DIIS history",
                    fd_step=args.fd_step, fd_stencil="4-point central", max_ad_fd_error=float(error.max()),

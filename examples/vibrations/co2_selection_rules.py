@@ -54,8 +54,7 @@ assert modes.rigid_rank == 5 and np.all(modes.frequencies_cm1 > 0)
 assert modes.rigid_residual < 1e-9
 
 mol = gto.M(atom=list(zip(["C", "O", "O"], coordinates)), basis=basis, unit="Bohr", cart=True)
-mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-             integral_backend="native").run()
+mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11).run()
 energy = MolecularEnergy(mf)
 zero = jnp.zeros(3)
 # The stationary identity avoids redundant third-energy graphs. The relaxed

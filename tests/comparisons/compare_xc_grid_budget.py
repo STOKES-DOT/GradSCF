@@ -71,7 +71,7 @@ def run_benchmark(geometry, density_path, output_dir, max_memory=60000., repeats
     cfg = RKSConfig(xc_spec="pbe", jk_backend="direct", max_cycle=100,
                     max_memory=max_memory, grid_block_size=0, grid_max_memory=None)
     inputs = build_rks_integral_inputs(atom=mol.to_spec(), basis=mol.basis, config=cfg,
-        grids_level=3, integral_backend="native", include_dipole_integrals=False)
+        grids_level=3, include_dipole_integrals=False)
     jax.block_until_ready(inputs.grid_weights)
     if density.shape != inputs.overlap.shape or not np.isfinite(np.asarray(density)).all():
         raise ValueError("The fixed density must be finite and match the AO basis.")

@@ -1,5 +1,4 @@
 from gradscf import integrals
-from gradscf.integrals.backends.jax_reference import screening
 from gradscf.tools import features
 from gradscf.scf import builders, differentiable, facade, molecules, rhf, rks, uks
 from gradscf.scf import core
@@ -38,10 +37,6 @@ def test_facade_uses_builder_level_reference_and_result_helpers():
     )
 
 
-def test_direct_jk_uses_integrals_screening_helper():
-    from gradscf.integrals.backends.jax_reference import direct_jk
-
-    assert direct_jk.shell_pair_schwarz_bounds is screening.shell_pair_schwarz_bounds
 
 
 def test_integral_layer_exports_packed_eri_helpers():

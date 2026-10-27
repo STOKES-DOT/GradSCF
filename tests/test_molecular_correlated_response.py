@@ -16,7 +16,7 @@ def test_mp2_geometry_at_nitrogen_pi_degeneracy_matches_pyscf_gradient():
     # The normalized STO-3G AOs give Tr[D S] = 14 for this rotation-symmetric
     # seed. Select the usual closed-shell branch: the default hcore seed can
     # instead converge to a higher, symmetry-broken stationary solution.
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-13,
+    mf = scf.RHF(mol, conv_tol=1e-13,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=250,
                  init_guess=1.4*np.eye(10)).run()
     assert np.min(np.abs(np.diff(np.asarray(mf.mo_energy)))) < 1e-9
@@ -51,7 +51,7 @@ def test_correlated_geometry_matches_pyscf_and_gradient_differences(method, unre
     spin = int(unrestricted)
     mol = gto.M(atom=atom, basis=basis, spin=spin, unit="Bohr", cart=True)
     mf = (scf.UHF if unrestricted else scf.RHF)(
-        mol, integral_backend="native", conv_tol=1e-12, conv_tol_density=1e-11,
+        mol, conv_tol=1e-12, conv_tol_density=1e-11,
         conv_tol_grad=1e-10, max_cycle=250).run()
     model = CorrelatedEnergy(mf, method)
     coordinates = model.coordinates
@@ -87,7 +87,7 @@ def test_correlated_mixed_raman_response_matches_displaced_polarizability(method
     from gradscf_tools.correlated_response import CorrelatedEnergy
 
     mol = gto.M(atom="H 0 0 -.75; H 0 0 .75", basis="6-31g", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(mol, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     model = CorrelatedEnergy(mf, method)
     direction = jnp.array([[0., 0., -.5], [0., 0., .5]])

@@ -59,7 +59,7 @@ def _assert_tree_allclose(actual, expected, **kwargs):
 
 def _primitive_reference(top, parameters, operator):
     primitive_top, primitive_parameters = primitive_basis(top, parameters)
-    primitive = integrals.make_plan(primitive_top, backend="native").evaluate(
+    primitive = integrals.make_plan(primitive_top).evaluate(
         operator, primitive_parameters
     )
 
@@ -74,7 +74,7 @@ def _primitive_reference(top, parameters, operator):
 @pytest.mark.parametrize("operator", ["overlap", "kinetic", "nuclear", "dipole"])
 def test_native_raw_coefficient_jvp_vjp_fd_and_adjoint(operator, cart):
     top, p = _basis(cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     value = lambda c: plan.evaluate(operator, replace(p, coefficients=c))
     c, direction = p.coefficients, _direction(p.coefficients)
     primal, tangent = jax.jit(lambda c, d: jax.jvp(value, (c,), (d,)))(c, direction)
@@ -90,7 +90,7 @@ def test_native_raw_coefficient_jvp_vjp_fd_and_adjoint(operator, cart):
 @pytest.mark.parametrize("operator", ["overlap", "kinetic", "nuclear", "dipole"])
 def test_native_coefficient_gradient_hvp_matches_primitive_projection(operator, cart):
     top, p = _basis(cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     value = lambda c: plan.evaluate(operator, replace(p, coefficients=c))
     reference = _primitive_reference(top, p, operator)
     c, direction = p.coefficients, _direction(p.coefficients, seed=617)
@@ -111,7 +111,7 @@ def test_native_coefficient_gradient_hvp_matches_primitive_projection(operator, 
 @pytest.mark.parametrize("cart", [True, False])
 def test_native_coefficient_jacfwd_jacrev_and_vmap(cart):
     top, p = _basis(cart)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     value = lambda c: plan.evaluate("kinetic", replace(p, coefficients=(c, *p.coefficients[1:])))
     c = p.coefficients[0]
     forward = jax.jit(jax.jacfwd(value))(c)
@@ -134,7 +134,7 @@ def test_native_coefficient_jacfwd_jacrev_and_vmap(cart):
 @pytest.mark.parametrize("operator", ["overlap", "kinetic", "nuclear", "dipole"])
 def test_native_coefficient_normalization_scale_gauge(operator):
     top, p = _basis(cart=False)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     value = lambda c: plan.evaluate(operator, replace(p, coefficients=c))
     c = p.coefficients
     # Every contraction column has an independent positive scale gauge.
@@ -149,7 +149,7 @@ def test_native_coefficient_normalization_scale_gauge(operator):
 
 def test_native_entire_zero_contraction_column_is_invalid():
     top, p = _basis(cart=False)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     zero_column = p.coefficients[0].at[:, 0].set(0.0)
     parameters = replace(p, coefficients=(zero_column, *p.coefficients[1:]))
     # Normalization of an entirely zero contraction is undefined: an explicit
@@ -164,7 +164,7 @@ def test_native_entire_zero_contraction_column_is_invalid():
 @pytest.mark.parametrize("operator", ["overlap", "kinetic", "nuclear", "dipole"])
 def test_native_exponent_second_derivatives_raise_including_normalization(operator):
     top, p = _basis(cart=False)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
 
     def loss(alpha):
         parameters = replace(p, exponents=(alpha, *p.exponents[1:]))

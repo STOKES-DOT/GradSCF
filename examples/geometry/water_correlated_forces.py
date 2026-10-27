@@ -28,8 +28,7 @@ output.mkdir(parents=True, exist_ok=True)
 records = []
 for basis in ("sto-3g", "6-31g*"):
     mol = gto.M(atom=atom, basis=basis, unit="Bohr", cart=True)
-    mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-                 integral_backend="native").run()
+    mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11).run()
     hf = MolecularEnergy(mf)
     coordinates = hf.coordinates
     nocc = int(np.count_nonzero(np.asarray(mf.mo_occ)))

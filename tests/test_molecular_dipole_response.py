@@ -11,8 +11,7 @@ def test_stationary_dipole_and_its_relaxed_derivatives(method):
     from gradscf_tools.molecular_response import MolecularEnergy
 
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
-    controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                    integral_backend="native")
+    controls = dict(conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10)
     mf = (scf.RHF(mol, **controls) if method == "HF"
           else dft.RKS(mol, xc="pbe", grids_level=0, **controls)).run()
     energy = MolecularEnergy(mf)

@@ -60,12 +60,19 @@ class ShiftedShells {
   }
 
 public:
-  ShiftedShells(IntegralTables& tables,int op,int order,const double* directions)
+  ShiftedShells(IntegralTables& tables,int op,int order,const double* directions,
+                 const ERIWindow* window=nullptr)
       :t(tables),legs(op==4 ? 4:2),extra_order(order-2),
        original_env_size(t.env.size()),extra(directions) {
     const int original=t.nbas;
     size_t capacity=0;
     for (int s=0;s<original;++s) {
+      if (window) {
+        bool selected=false;
+        for (int axis=0;axis<4;++axis)
+          selected=selected || (window->shells[2*axis]<=s && s<window->shells[2*axis+1]);
+        if (!selected) continue;
+      }
       const int* row=t.bas.data()+s*BAS_SLOTS;
       if (row[ANG_OF]+2>12)
         throw std::invalid_argument("Cubic/quartic geometry shifts require original l <= 10");
@@ -166,8 +173,8 @@ public:
       }
       if (components*shifted_size>=size_t(std::numeric_limits<int>::max()))
         throw std::invalid_argument("Higher geometry component workspace exceeds int32 indexing");
-      // Reuse scratch storage, not the 2/3-leg query cache. All four ERI legs
-      // would have to enter its key before four-leg cache reuse is valid.
+      // Scratch-size keys include the kernel and all actual shifted shell
+      // shapes; alpha-weighted numerical blocks are always recomputed.
       t.shell(kernel,shifted_shells,components*shifted_size,raw,cache);
       for (const Reduction& entry:group.second) for (size_t contraction=0;contraction<contraction_size;++contraction) {
         size_t rest=contraction,original_index=0,shifted_index=0,original_stride=1,shifted_stride=1;
@@ -187,15 +194,18 @@ public:
 }  // namespace
 
 template<bool transpose>
-static ffi::Error GeometryHigher(ffi::BufferR2<ffi::S32> atoms,
+static ffi::Error GeometryHigherImpl(ffi::BufferR2<ffi::S32> atoms,
     ffi::BufferR2<ffi::S32> basis,ffi::BufferR1<ffi::F64> environment,
     ffi::Buffer<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
     ffi::BufferR2<ffi::F64> extra,ffi::ResultBuffer<ffi::F64> result,
-    int32_t op,int32_t cart,int32_t order) {
+    int32_t op,int32_t cart,int32_t order,
+    const int32_t* slice=nullptr,size_t count=0) {
   try {
     if ((order!=3 && order!=4) || cart!=1 || (op!=0 && op!=1 && op!=2 && op!=4))
-      throw std::invalid_argument("Higher geometry supports Cartesian S/T/nuclear/full-ERI orders 3 and 4 only");
+      throw std::invalid_argument("Higher geometry supports Cartesian S/T/nuclear/ERI orders 3 and 4 only");
     IntegralTables t(atoms,basis,environment,op,cart,true);
+    if (slice && op!=4) throw std::invalid_argument("Higher shell_slice products require ERI");
+    ERIWindow window(t,slice,count);
     if (t.env[PTR_RANGE_OMEGA]!=0.)
       throw std::invalid_argument("Third/fourth geometry derivatives currently require omega=0");
     const size_t env_size=t.env.size();
@@ -212,27 +222,50 @@ static ffi::Error GeometryHigher(ffi::BufferR2<ffi::S32> atoms,
       throw std::invalid_argument("Invalid higher geometry direction shape");
     check_direction(direction.typed_data());
     for (int i=0;i<order-2;++i) check_direction(extra.typed_data()+size_t(i)*env_size);
+    auto check_shape=[&](const ffi::Buffer<ffi::F64>& buffer) {
+      if (slice) window.check_shape(buffer); else t.check_shape(buffer,op);
+    };
     if constexpr (transpose) {
-      t.check_shape(vector,op);
+      check_shape(vector);
       if (result->dimensions().size()!=1 || result->element_count()!=env_size)
         throw std::invalid_argument("Invalid higher geometry adjoint shape");
       for (size_t i=0;i<vector.element_count();++i) if (!std::isfinite(vector.typed_data()[i]))
         throw std::invalid_argument("Higher geometry cotangent must be finite");
     } else {
-      t.check_shape(*result,op);
+      check_shape(*result);
       if (vector.dimensions().size()!=1 || vector.element_count()!=env_size)
         throw std::invalid_argument("Invalid higher geometry direction shape");
       check_direction(vector.typed_data());
     }
     double* output=result->typed_data();
     std::fill(output,output+result->element_count(),0.);
-    ShiftedShells evaluator(t,op,order,extra.typed_data());
-    contract_geometry_hessian<transpose>(t,op,cart,direction.typed_data(),vector.typed_data(),output,evaluator);
+    ShiftedShells evaluator(t,op,order,extra.typed_data(),slice ? &window:nullptr);
+    contract_geometry_hessian<transpose>(t,op,cart,direction.typed_data(),vector.typed_data(),
+                                          output,evaluator,slice ? &window:nullptr);
     for (size_t i=0;i<result->element_count();++i) if (!std::isfinite(output[i]))
       throw std::invalid_argument("Higher geometry derivative is nonfinite");
     return ffi::Error::Success();
   } catch (const std::invalid_argument& error) { return ffi::Error::InvalidArgument(error.what()); }
     catch (const std::exception& error) { return ffi::Error::Internal(error.what()); }
+}
+
+template<bool transpose>
+static ffi::Error GeometryHigher(ffi::BufferR2<ffi::S32> atoms,
+    ffi::BufferR2<ffi::S32> basis,ffi::BufferR1<ffi::F64> environment,
+    ffi::Buffer<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
+    ffi::BufferR2<ffi::F64> extra,ffi::ResultBuffer<ffi::F64> result,
+    int32_t op,int32_t cart,int32_t order) {
+  return GeometryHigherImpl<transpose>(atoms,basis,environment,direction,vector,extra,result,op,cart,order);
+}
+
+template<bool transpose>
+static ffi::Error ERISliceGeometryHigher(ffi::BufferR2<ffi::S32> atoms,
+    ffi::BufferR2<ffi::S32> basis,ffi::BufferR1<ffi::F64> environment,
+    ffi::Buffer<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
+    ffi::BufferR2<ffi::F64> extra,ffi::ResultBuffer<ffi::F64> result,
+    int32_t op,int32_t cart,int32_t order,ffi::Span<const int32_t> slice) {
+  return GeometryHigherImpl<transpose>(atoms,basis,environment,direction,vector,extra,result,
+                                         op,cart,order,slice.begin(),slice.size());
 }
 
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFGeometryHigherJVP(XLA_FFI_CallFrame*);
@@ -244,3 +277,9 @@ extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFGeometry
     .Attr<int32_t>("operator").Attr<int32_t>("cart").Attr<int32_t>("order")
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFGeometryHigherJVP,GeometryHigher<false>,GEOMETRY_HIGHER_BIND);
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFGeometryHigherVJP,GeometryHigher<true>,GEOMETRY_HIGHER_BIND);
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERISliceGeometryHigherJVP(XLA_FFI_CallFrame*);
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFERISliceGeometryHigherVJP(XLA_FFI_CallFrame*);
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFERISliceGeometryHigherJVP,ERISliceGeometryHigher<false>,
+                              GEOMETRY_HIGHER_BIND.Attr<ffi::Span<const int32_t>>("shell_slice"));
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFERISliceGeometryHigherVJP,ERISliceGeometryHigher<true>,
+                              GEOMETRY_HIGHER_BIND.Attr<ffi::Span<const int32_t>>("shell_slice"));

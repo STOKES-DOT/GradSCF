@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from .dense import dense_vectors
 from .davidson import _davidson_lowest_symmetric, _davidson_max_subspace
 from ..memory import apply_columns
+from ._workload import _workload_reporter, _tree_norm
 
 
 class RitzResult(NamedTuple):
@@ -20,7 +21,7 @@ class RitzResult(NamedTuple):
 
 
 def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
-               batch_size=None):
+               batch_size=None, workload_callback=None):
     n, k = operator.shape[0], config.nroots
     count = min(k + 1, n)
     if k > n:
@@ -31,6 +32,7 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
     lower_gap, lower_residual = jnp.asarray(jnp.inf, operator.dtype), jnp.asarray(
         0.0, operator.dtype
     )
+    workload = None
     if config.method == "dense":
         if initial_vectors is not None:
             raise ValueError("initial_vectors applies only to Davidson")
@@ -62,6 +64,9 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
                 "max_subspace must include nroots plus one boundary root and two expansion slots (or the full dimension)"
             )
         width = _davidson_max_subspace(count, n, config.max_subspace)
+        workload = _workload_reporter(
+            workload_callback, solver='symmetric_davidson', nroots=count,
+            max_subspace=width, tolerance=config.atol)
         if initial_vectors is None:
             guess_count = min(
                 width,
@@ -98,6 +103,7 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
             orth_eps=jnp.minimum(1e-10, 0.01 * config.atol / scale),
             positive_eig_threshold=config.value_min,
             return_basis=config.value_min is not None,
+            workload_callback=workload,
         )
         if config.value_min is None:
             _, x, _ = numerical
@@ -128,9 +134,17 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
             x = (basis @ coeff[:, order]) * present[None, :]
             complete = jnp.all(active) & (width == n)
     x = jax.lax.stop_gradient(x)
+    if workload is not None:
+        workload.record('apply_start', 'final_ritz_verify', iteration=None,
+            columns=x.shape[1], effective_columns=jnp.sum(present), subspace_dim=None,
+            residual_norms=jnp.full((count,), jnp.inf), action_norm=_tree_norm(x))
     ax = apply(x)
     values = jnp.sum(x * ax, axis=0)
     residual = jnp.linalg.norm(ax - x * values[None, :], axis=0)
+    if workload is not None:
+        workload.record('apply_end', 'final_ritz_verify', iteration=None,
+            columns=x.shape[1], effective_columns=jnp.sum(present), subspace_dim=None,
+            residual_norms=jnp.where(present, residual, jnp.inf), action_norm=_tree_norm(ax))
     orth = jnp.linalg.norm(x.T @ x - jnp.diag(present.astype(x.dtype)))
     valid = (
         jnp.isfinite(values)

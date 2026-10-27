@@ -42,7 +42,6 @@ def test_unrestricted_molecule_from_spec_with_jax_uks_h_atom_smoke():
             damping=0.1,
         ),
         grid_ao_backend="jax",
-        integral_backend="jax",
     )
 
     nao = ref.mo_coeff.shape[-1]
@@ -77,7 +76,6 @@ def test_unrestricted_molecule_from_spec_with_jax_uks_builds_zero_local_pt2_for_
             damping=0.1,
         ),
         grid_ao_backend="jax",
-        integral_backend="jax",
         compute_local_pt2_features=True,
     )
 
@@ -101,7 +99,6 @@ def test_unrestricted_molecule_from_spec_with_jax_uks_invalid_spin_parity_raises
             max_l=0,
             uks_config=UKSConfig(xc_spec="hf", max_cycle=4),
             grid_ao_backend="jax",
-            integral_backend="jax",
         )
 
 
@@ -123,7 +120,6 @@ def test_run_molecule_from_spec_accepts_jax_uks_for_open_shell():
             scf_backend="jax_uks",
             jax_basis_max_l=0,
             jax_grid_ao_backend="jax",
-            jax_integral_backend="jax",
             jax_uks_xc_spec="hf",
             jax_uks_max_cycle=12,
             jax_uks_conv_tol=1e-9,

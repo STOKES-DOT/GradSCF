@@ -12,8 +12,7 @@ from gradscf import bse, dft, gto, gw
 @pytest.fixture(scope='module', params=['pbe', 'pbe0', 'r2scan', 'lc_wpbe'])
 def source(request):
     mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='sto-3g')
-    mf = dft.RKS(mol, xc=request.param, grids_level=1,
-                 integral_backend='native', conv_tol=1e-11, max_cycle=100).run()
+    mf = dft.RKS(mol, xc=request.param, grids_level=1, conv_tol=1e-11, max_cycle=100).run()
     assert mf.converged
     return mf
 

@@ -16,7 +16,7 @@ from gradscf_tools.molecular_response import MolecularEnergy
 def hydrogen():
     coordinates = np.array([[.2, -.1, -.6], [.2, -.1, .8]])
     mol = gto.M(atom=list(zip(("H", "H"), coordinates)), basis="6-31g*", unit="Bohr", cart=True)
-    mf = scf.RHF(mol, integral_backend="native", conv_tol=1e-12,
+    mf = scf.RHF(mol, conv_tol=1e-12,
                  conv_tol_density=1e-11, conv_tol_grad=1e-10, max_cycle=180).run()
     assert mf.converged
     policy = EigenResponseConfig(linear_config=LinearSolverConfig(method="direct", max_dense=8, rtol=1e-10))

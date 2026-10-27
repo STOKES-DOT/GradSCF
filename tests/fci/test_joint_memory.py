@@ -188,7 +188,7 @@ def test_bound_cartesian_basis_declared_storage_is_counted_once(storage, monkeyp
 
     api = importlib.import_module("gradscf.fci.api")
     basis = basis_from_spec("H 0 0 0; H 0 0 1.4", basis={"H": [[0, [1., 1.]]]},
-                            unit="Bohr", precompute_eri_groups=False)
+                            unit="Bohr")
     if storage == "padding":
         previous = basis.ao_exponents_padded
         payload = jax.ShapeDtypeStruct((8192,), previous.dtype)

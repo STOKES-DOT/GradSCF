@@ -11,8 +11,7 @@ def molecule():
     from gradscf_tools.molecular_response import MolecularEnergy
 
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr")
-    mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11,
-                 integral_backend="native").run()
+    mf = scf.RHF(mol, conv_tol=1e-12, conv_tol_density=1e-11).run()
     return mf, MolecularEnergy(mf)
 
 
@@ -59,8 +58,7 @@ def test_pbe_moving_grid_hvp_matches_gradient_differences():
 
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
     mf = dft.RKS(mol, xc="pbe", grids_level=0, conv_tol=1e-12,
-                 conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                 integral_backend="native").run()
+                 conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     energy = MolecularEnergy(mf)
     coordinates = energy.coordinates
     direction = jnp.array([[0., 0., -.5], [0., 0., .5]])
@@ -82,8 +80,7 @@ def test_pbe_mixed_raman_derivative_keeps_reference_response():
 
     mol = gto.M(atom="H 0 0 -.7; H 0 0 .7", basis="sto-3g", unit="Bohr", cart=True)
     mf = dft.RKS(mol, xc="pbe", grids_level=0, conv_tol=1e-12,
-                 conv_tol_density=1e-11, conv_tol_grad=1e-10,
-                 integral_backend="native").run()
+                 conv_tol_density=1e-11, conv_tol_grad=1e-10).run()
     energy = MolecularEnergy(mf)
     coordinates, field = energy.coordinates, jnp.zeros(3)
     direction = jnp.array([[0., 0., -.5], [0., 0., .5]])

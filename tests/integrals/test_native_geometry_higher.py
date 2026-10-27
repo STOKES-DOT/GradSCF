@@ -14,14 +14,54 @@ def problem(operator, angular=0):
     basis = {"H": [[angular, [.9, 1.]]]}
     top, parameters = integrals.prepare_basis(
         "H .07 -.11 .08; H .31 .22 1.19", basis=basis, unit="Bohr", cart=True)
-    plans = [integrals.make_plan(top, backend=name) for name in ("native", "jax_reference")]
+    plan = integrals.make_plan(top)
     coordinates = jnp.concatenate((parameters.nuclear_coords, parameters.centers))
 
-    def value(coords, plan):
+    def value(coords):
         moving = replace(parameters, nuclear_coords=coords[:2], centers=coords[2:])
         return plan.evaluate(operator, moving)
 
-    return tuple(lambda coords, plan=plan: value(coords, plan) for plan in plans), coordinates
+    reference = lambda coords: pyscf_value(top, parameters, operator, coords)
+    return (value, reference), coordinates
+
+
+def pyscf_value(topology, parameters, operator, coordinates):
+    """Independent values with floating ghost AOs and physical potential centers."""
+    gto = pytest.importorskip('pyscf.gto')
+    coords = np.asarray(coordinates)
+    count = parameters.nuclear_coords.shape[0]
+    labels = [f'ghost-H{i}' for i in range(len(topology.angular_momenta))]
+    shells = {label: [[l, *np.column_stack((np.asarray(a), np.asarray(c))).tolist()]]
+              for label, l, a, c in zip(labels, topology.angular_momenta,
+                                       parameters.exponents, parameters.coefficients)}
+    mol = gto.M(atom=list(zip(labels, coords[count:])), basis=shells,
+                cart=topology.cart, unit='Bohr', verbose=0)
+    if operator == 'nuclear':
+        value = np.zeros((mol.nao, mol.nao))
+        for charge, center in zip(topology.nuclear_charges, coords[:count]):
+            with mol.with_rinv_origin(center):
+                value -= charge*mol.intor('int1e_rinv_cart')
+        return value
+    name = {'overlap': 'int1e_ovlp_cart', 'kinetic': 'int1e_kin_cart', 'eri': 'int2e_cart'}[operator]
+    return mol.intor(name, aosym='s1') if operator == 'eri' else mol.intor(name)
+
+
+def independent_mixed_difference(function, coordinates, directions):
+    """Richardson-extrapolated PySCF values; h is in Bohr.
+
+    The 3e-6 operator-a.u./Bohr**order acceptance below matches the existing
+    independent d-shell quartic gate. Native AD uses no displaced integrals.
+    """
+    coords, ds = np.asarray(coordinates), np.asarray(directions)
+    approximations = []
+    for step in (.02, .01):
+        value = None
+        for signs in product((-1., 1.), repeat=len(ds)):
+            displaced = coords + step*np.einsum('i,ijk->jk', signs, ds)
+            term = np.prod(signs)*np.asarray(function(displaced))
+            value = term if value is None else value+term
+        approximations.append(value/(2*step)**len(ds))
+    return (4*approximations[1]-approximations[0])/3
 
 
 def directional(function, coordinates, directions):
@@ -35,13 +75,13 @@ def directional(function, coordinates, directions):
 
 @pytest.mark.parametrize("operator", ["overlap", "kinetic", "nuclear", "eri"])
 @pytest.mark.parametrize("order", [3, 4])
-def test_directional_products_match_jax_reference(operator, order):
+def test_directional_products_match_independent_pyscf_differences(operator, order):
     (native, reference), coordinates = problem(operator)
     directions = jnp.asarray(np.random.default_rng(193).normal(size=(order, *coordinates.shape))*.2)
     actual = jax.jit(lambda x, ds: directional(native, x, ds))(coordinates, directions)
-    expected = jax.jit(lambda x, ds: directional(reference, x, ds))(coordinates, directions)
+    expected = independent_mixed_difference(reference, coordinates, directions)
     assert np.isfinite(actual).all() and np.max(np.abs(actual)) > 1e-8
-    np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=2e-7)
+    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=3e-6)
 
 
 @pytest.mark.parametrize("order", [3, 4])
@@ -55,11 +95,11 @@ def test_nuclear_operator_and_floating_ao_mixed_permutations(order):
     directions = directions.at[2, 3, 2].set(1.).at[3, 0, 2].set(1.)
     directions = directions[:order]
     calculate = jax.jit(lambda x, ds: directional(native, x, ds))
-    expected = jax.jit(lambda x, ds: directional(reference, x, ds))(coordinates, directions)
+    expected = independent_mixed_difference(reference, coordinates, directions)
     assert np.max(np.abs(expected)) > 1e-7
     for indices in permutations(range(order)):
         actual = calculate(coordinates, directions[jnp.asarray(indices)])
-        np.testing.assert_allclose(actual, expected, atol=2e-9, rtol=2e-8)
+        np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=3e-6)
 
 
 @pytest.mark.parametrize("operator", ["nuclear", "eri"])
@@ -88,24 +128,21 @@ def test_quartic_adjoint_nonlinear_cotangent_and_direction_slots(operator):
                                 coordinates, directions[jnp.array([0, 2, 3])])
     np.testing.assert_allclose(through_adjoint_direction, expected_pull, atol=2e-10)
     native_loss = lambda x: jnp.sum(jnp.sin(.17*native(x)))
-    reference_loss = lambda x: jnp.sum(jnp.sin(.17*reference(x)))
+    reference_loss = lambda x: np.sum(np.sin(.17*reference(x)))
     actual = jax.jit(lambda x: directional(jax.grad(native_loss), x, directions[1:]))(coordinates)
-    expected = jax.jit(lambda x: directional(jax.grad(reference_loss), x, directions[1:]))(coordinates)
-    np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=2e-7)
+    expected = independent_mixed_difference(reference_loss, coordinates, directions)
+    np.testing.assert_allclose(jnp.vdot(actual, directions[0]), expected, atol=3e-6, rtol=3e-6)
 
 
 @pytest.mark.parametrize("operator,angular", [(op, 1) for op in ("overlap", "kinetic", "nuclear", "eri")]
                          + [("overlap", 2), ("kinetic", 2)])
 def test_p_d_shell_normalization_primitives_and_contractions(operator, angular):
-    from gradscf.integrals.plan import _reference_basis
-
     # Two primitive exponents; the p shell also has two contractions. This
     # exercises alpha-weighted shadow coefficients and contraction-major AO order.
     rows = [[1.3, .7, .2], [.4, .5, .8]] if angular == 1 else [[1.3, .7], [.4, .5]]
     top, parameters = integrals.prepare_basis("H .07 -.11 .08; H .31 .22 1.19",
         basis={"H": [[angular, *rows]]}, unit="Bohr", cart=True)
-    native_plan = integrals.make_plan(top, backend="native")
-    reference_plan = integrals.make_plan(top, backend="jax_reference")
+    native_plan = integrals.make_plan(top)
     coordinates = jnp.concatenate((parameters.nuclear_coords, parameters.centers))
     half, cart_size = top.nao//2, (angular+1)*(angular+2)//2
     indices = ((0, half, cart_size-1, top.nao-1), (cart_size-1, half, 0, top.nao-1),
@@ -113,33 +150,19 @@ def test_p_d_shell_normalization_primitives_and_contractions(operator, angular):
 
     def value(coords, native):
         moving = replace(parameters, nuclear_coords=coords[:2], centers=coords[2:])
-        if native:
-            tensor = native_plan.evaluate(operator, moving)
-            if operator == "eri":
-                return jnp.stack([tensor[index] for index in indices])
-            if angular == 2:
-                return jnp.stack([tensor[index[:2]] for index in indices])
-            return tensor
-        if operator != "eri" and angular == 1:
-            return reference_plan.evaluate(operator, moving)
-        # Build the same existing reference AO objects, but evaluate only four
-        # ERIs; do not materialize a full high-angular JAX fourth-derivative tensor.
-        basis = _reference_basis(top, moving, precompute_eri_groups=False)
+        tensor = (native_plan.evaluate(operator, moving) if native else
+                  pyscf_value(top, parameters, operator, coords))
         if operator == "eri":
-            return jnp.stack([integrals.eri_element(basis, *index, engine="jit") for index in indices])
-        # The auto matrix path chooses the legacy d-shell implementation, whose
-        # host index conversion cannot be nested inside an outer JIT. Select the
-        # existing compiled scalar oracle explicitly, without changing production.
-        element = {"overlap": integrals.overlap_element,
-                   "kinetic": integrals.kinetic_element,
-                   "nuclear": integrals.nuclear_attraction_element}[operator]
-        return jnp.stack([element(basis, *index[:2], engine="jit") for index in indices])
+            return jnp.stack([tensor[index] for index in indices])
+        if angular == 2:
+            return jnp.stack([tensor[index[:2]] for index in indices])
+        return tensor
 
     directions = jnp.asarray(np.random.default_rng(211).normal(size=(4, *coordinates.shape))*.15)
     actual = jax.jit(lambda x, ds: directional(lambda r: value(r, True), x, ds))(coordinates, directions)
-    expected = jax.jit(lambda x, ds: directional(lambda r: value(r, False), x, ds))(coordinates, directions)
+    expected = independent_mixed_difference(lambda r: value(r, False), coordinates, directions)
     assert np.isfinite(actual).all() and np.max(np.abs(actual)) > 1e-8
-    np.testing.assert_allclose(actual, expected, atol=2e-8, rtol=3e-7)
+    np.testing.assert_allclose(actual, expected, atol=3e-6, rtol=3e-6)
 
 
 @pytest.mark.parametrize("operator", ["nuclear", "eri"])
@@ -149,7 +172,7 @@ def test_d_shell_quartic_against_independent_pyscf_mixed_differences(operator):
     rows = [[1.3, .7], [.4, .5]]
     top, parameters = integrals.prepare_basis("H .07 -.11 .08; H .31 .22 1.19",
         basis={"H": [[2, *rows]]}, unit="Bohr", cart=True)
-    plan = integrals.make_plan(top, backend="native")
+    plan = integrals.make_plan(top)
     coordinates = jnp.concatenate((parameters.nuclear_coords, parameters.centers))
     directions = jnp.asarray(np.random.default_rng(211).normal(size=(4, *coordinates.shape))*.15)
 
@@ -205,7 +228,7 @@ def test_quartic_rigid_translation_and_zero_direction_derivative(operator):
     # slot must recover the nonzero product instead of freezing a zero branch.
     slot = lambda vector: product(directions.at[0].set(vector))
     actual = jax.jit(lambda vector: jax.jvp(slot, (jnp.zeros_like(vector),), (vector,))[1])(directions[0])
-    expected = jax.jit(lambda ds: directional(reference, coordinates, ds))(directions)
+    expected = product(directions)
     assert np.max(np.abs(expected)) > 1e-8
     np.testing.assert_allclose(actual, expected, atol=1e-8, rtol=2e-7)
 

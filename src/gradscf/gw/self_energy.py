@@ -219,16 +219,20 @@ def sigma_residue_part(
     if resolvent_data is not None:
         if q0 is not None or p_index is None:
             raise NotImplementedError("Pole residue expansion requires a molecular external orbital index")
-        frequencies = jnp.abs(mo_energy - omega_r)
+        weights = (_static_residue_weights(omega_r, mo_energy, ef, occupation_sign)
+                   if wmn_static is not None else fm * mask.astype(jnp.complex128))
+        active = weights != 0
+        # Match the direct dielectric path: inactive lanes are not physical
+        # response probes and may coincide with a removable screening pole.
+        frequencies = jnp.where(active, jnp.abs(mo_energy - omega_r), 0.)
         indices = jnp.arange(mo_energy.size) if g_indices is None else g_indices
         from math import isqrt
         nmo = isqrt(resolvent_data["coupling"].shape[1])
         row = screened_w_real_resolvent(
             resolvent_data, frequencies, pairs=p_index*nmo+indices)
-        weights = (_static_residue_weights(omega_r, mo_energy, ef, occupation_sign)
-                   if wmn_static is not None else fm * mask.astype(row.dtype))
         if wmn_static is not None:
             row = row - jnp.asarray(wmn_static)
+        row = jnp.where(active, row, 0.)
         return jnp.sum(weights * row)
 
     pole_freqs = jnp.abs(mo_energy - omega_r)  # (nmo,)

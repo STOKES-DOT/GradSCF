@@ -16,7 +16,7 @@ from gradscf.integrals.backends.native.jk import (
 
 def _native_action_basis(basis):
     primitive = basis.primitive_basis if isinstance(basis, ProjectedNativeDirectBasis) else basis
-    if not isinstance(primitive, NativeDirectBasis) or primitive.plan.backend != 'native':
+    if not isinstance(primitive, NativeDirectBasis) or primitive.plan.backend != 'libcint':
         raise TypeError('VirtualERI requires NativeDirectBasis or a single projected native basis; nested projection is unsupported')
     return primitive
 

@@ -4,6 +4,8 @@ No runtime PySCF dependency. Coordinates in ``env`` are in Bohr; output units
 are atomic units. ``dipole`` is the position operator r, without electron charge.
 The caller supplies libcint-normalized contraction coefficients. Tables follow
 the documented libcint/PySCF layout and are static under ``jax.jit``.
+``rinv`` uses ENV[4:7] for the potential origin and fixed ENV[7] for its
+nonnegative Gaussian charge exponent (zero selects a point Coulomb potential).
 """
 
 import operator as operator_module
@@ -15,7 +17,7 @@ import numpy as np
 
 from gradscf.integrals._native import register_integrals
 
-_OPERATORS = {"overlap": 0, "kinetic": 1, "nuclear": 2, "dipole": 3, "eri": 4}
+_OPERATORS = {"overlap": 0, "kinetic": 1, "nuclear": 2, "dipole": 3, "eri": 4, "rinv": 5}
 
 
 def _check_eri_capacity(basis, cart, shell_slice=None):

@@ -37,8 +37,8 @@ class TinyNeuralXC:
 def make_experiment(mode='implicit', *, basis_name='3-21g', max_cycle=40):
     atom='H 0 0 -.38; H .06 .03 .38'
     topology, basis_parameters = integrals.prepare_basis(atom,basis=basis_name)
-    plan=integrals.make_plan(topology,backend='native')
-    basis=integrals.basis_from_spec(atom,basis=basis_name,precompute_eri_groups=False)
+    plan=integrals.make_plan(topology)
+    basis=integrals.basis_from_spec(atom,basis=basis_name)
     coordinates=basis_parameters.nuclear_coords
     owners=np.argmin(np.linalg.norm(np.asarray(basis_parameters.centers)[:,None,:]
         -np.asarray(coordinates)[None,:,:],axis=2),axis=1)
@@ -69,8 +69,7 @@ def make_experiment(mode='implicit', *, basis_name='3-21g', max_cycle=40):
         enuc=nuclear_repulsion_energy(coords,jnp.asarray(topology.nuclear_charges))
         grid_coords=coords.mean(axis=0)+offsets
         moving_basis=integrals.CartesianBasis(
-            tuple(replace(ao,center=coords[owner]) for ao,owner in zip(basis.aos,ao_owners)),
-            precompute_eri_groups=False,atom_coords=coords,atom_charges=jnp.asarray(topology.nuclear_charges))
+            tuple(replace(ao,center=coords[owner]) for ao,owner in zip(basis.aos,ao_owners)),atom_coords=coords,atom_charges=jnp.asarray(topology.nuclear_charges))
         ao=integrals.evaluate_cartesian_ao(moving_basis,grid_coords)
         lower=jnp.linalg.cholesky(seed.T@s@seed)
         coeff=solve_triangular(lower,seed.T,lower=True).T
@@ -118,7 +117,7 @@ def validate_and_train(mode='implicit'):
     updated=optax.apply_updates(params,updates)
     after=scalar_loss(ravel_pytree(updated)[0])
     _,converged,cycles=jax.jit(experiment['state'])(params,r)
-    summary=dict(mode=mode,basis=experiment['basis'],backend='native',dtype='float64',
+    summary=dict(mode=mode,basis=experiment['basis'],backend='libcint',dtype='float64',
         energy=float(prediction.energy),forces=np.asarray(prediction.forces).tolist(),
         coordinates_bohr=np.asarray(r).tolist(),target_forces=np.asarray(target).tolist(),
         force_units='Hartree/Bohr',converged=bool(converged),cycles=int(cycles),

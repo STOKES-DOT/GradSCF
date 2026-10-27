@@ -27,7 +27,7 @@ from density_matrix_mlp import functional
 
 
 mol = gto.M(atom='H 0 0 0; H 0 0 .74', basis='6-31g*')
-mf = scf.RHF(mol, grids_level=0, integral_backend='native').run()
+mf = scf.RHF(mol, grids_level=0).run()
 reference = mf.to_reference()
 coeff = reference.mo_coeff[0]
 solver = fci.FCI(mf, solver='dense', conv_tol=1e-12).run()

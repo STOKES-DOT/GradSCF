@@ -34,12 +34,12 @@ def native_problem(request, *, max_memory=None):
     unrestricted = spin != 0
     mol = gto.M(atom=atom, basis=basis, spin=spin, unit=unit, cart=True)
     driver = scf.UHF if unrestricted else scf.RHF
-    reference = driver(mol, integral_backend="native", max_cycle=200,
+    reference = driver(mol, max_cycle=200,
                        conv_tol=1e-12, conv_tol_density=1e-11,
                        conv_tol_grad=1e-10).run()
     assert reference.converged
     topology, parameters = integrals.prepare_basis(mol.to_spec(), basis, cart=True)
-    plan = integrals.make_plan(topology, backend="native")
+    plan = integrals.make_plan(topology)
     coordinates = jnp.asarray(parameters.nuclear_coords)
     owners = np.argmin(np.linalg.norm(np.asarray(parameters.centers)[:, None]
                                      - np.asarray(coordinates)[None], axis=-1), axis=1)

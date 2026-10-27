@@ -154,7 +154,6 @@ def basis_from_pyscf_mol_cart(
     mol: Any,
     *,
     max_l: int = 3,
-    precompute_eri_groups: bool = True,
 ) -> CartesianBasis:
     """Build a Cartesian AO basis from a PySCF Mole.
 
@@ -209,7 +208,6 @@ def basis_from_pyscf_mol_cart(
 
     return CartesianBasis(
         aos=tuple(aos),
-        precompute_eri_groups=bool(precompute_eri_groups),
         atom_coords=np.asarray(mol.atom_coords(), dtype=float),
         atom_charges=np.asarray(mol.atom_charges(), dtype=float),
         shells=tuple(shells),

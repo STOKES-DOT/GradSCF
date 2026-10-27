@@ -6,9 +6,10 @@ import numpy as np
 def test_integrals_has_canonical_public_namespace():
     assert importlib.util.find_spec("gradscf.integrals") is not None
     from gradscf import integrals
-    from gradscf.integrals.backends import jax_reference
-    assert integrals.overlap_matrix is jax_reference.overlap_matrix
-    assert integrals.eri_tensor is jax_reference.eri_tensor
+    assert integrals.overlap_matrix.__module__.startswith("gradscf.integrals.")
+    assert integrals.eri_tensor.__module__.startswith("gradscf.integrals.")
+    top, _ = integrals.prepare_basis("H 0 0 0; H 0 0 .74", "sto-3g")
+    assert integrals.make_plan(top).backend == "libcint"
 
 
 def test_gto_facade_uses_canonical_basis_implementation():

@@ -12,7 +12,7 @@ from gradscf.integrals.plan import IntegralPlan
 @pytest.fixture(params=["hf", "pbe"], ids=["UHF", "UKS-PBE"])
 def lithium_reference(request):
     molecule = gto.M(atom="Li 0 0 0", basis="sto-3g", spin=1, cart=True)
-    options = dict(integral_backend="native", jk_backend="full", grids_level=0,
+    options = dict(jk_backend="full", grids_level=0,
                    conv_tol=1e-11, conv_tol_density=1e-10, conv_tol_grad=1e-9,
                    max_cycle=120)
     mean_field = (scf.UHF(molecule, **options) if request.param == "hf"

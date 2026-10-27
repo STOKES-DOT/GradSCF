@@ -21,7 +21,7 @@ from gradscf.scf.reference import RestrictedReference, UnrestrictedReference
 def _hf_source(unrestricted=False, *, max_memory=128.0):
     molecule = gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True)
     return (scf.UHF if unrestricted else scf.RHF)(
-        molecule, integral_backend="native", execution_device="cpu",
+        molecule, execution_device="cpu",
         max_memory=max_memory, conv_tol=1e-12, conv_tol_grad=1e-10,
         conv_tol_density=1e-11,
     )
