@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any, Literal
 
@@ -305,12 +306,43 @@ class _BaseKS:
             min_entry_size_bytes=self.jax_persistent_cache_min_entry_size_bytes,
         )
 
-    def _put_on_requested_device(self, reference: Any) -> Any:
-        if self.execution_device == "auto":
-            return reference
-        from ..tools.device import put_molecule_on_device, resolve_execution_device
+    @contextmanager
+    def _preparation_inputs(self, spec):
+        """Prepare explicit auxiliary RI and its eager SCF/reference on CPU.
 
-        device = resolve_execution_device(self.execution_device)
+        Libcint 2c/3c values have a CPU FFI. Copy committed input arrays as
+        well as selecting the creation device; a default-device context alone
+        does not move existing CUDA arrays. The user inputs remain current and
+        unmodified. This eager boundary leaves native basis JVP/VJP rules intact.
+        """
+        if getattr(self, 'jk_backend', None) != 'df' or getattr(self, 'auxbasis', None) is None:
+            yield spec, self.mol, self.init_guess
+            return
+        cpu = jax.devices('cpu')[0]
+        def put(values):
+            return jax.tree_util.tree_map(lambda value: jax.device_put(value, cpu)
+                if isinstance(value, (jax.Array, jax.core.Tracer)) else value, values)
+        spec = replace(spec, coords_bohr=put(spec.coords_bohr), charges=put(spec.charges))
+        mol = replace(self.mol, basis=put(self.mol.basis))
+        with jax.default_device(cpu):
+            yield spec, mol, put(self.init_guess)
+
+    def _response_device(self):
+        from ..tools.device import resolve_execution_device
+
+        if (self.execution_device == 'auto' and getattr(self, 'jk_backend', None) == 'df'
+                and getattr(self, 'auxbasis', None) is not None):
+            # Resolve outside CPU preparation, so auto follows the caller's
+            # active device when the prepared arrays enter response work.
+            return jax.config.jax_default_device or jax.devices()[0]
+        return resolve_execution_device(self.execution_device)
+
+    def _put_on_requested_device(self, reference: Any) -> Any:
+        from ..tools.device import put_molecule_on_device
+
+        device = self._response_device()
+        if device is None:
+            return reference
         return put_molecule_on_device(reference, device=device)
 
     def to_reference(self) -> Any:
@@ -382,46 +414,48 @@ class RKS(_BaseKS):
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
-        if self._scf_inputs is not None:
-            self._scf_inputs = complete_restricted_response_inputs(self._scf_inputs,spec,self.mol.basis)
-        reference = build_restricted_reference_from_facade(
-            spec,
-            **self._build_options(spec),
-            compute_local_hfx_features=self.compute_local_hfx_features,
-            compute_local_hfx_aux=self.compute_local_hfx_aux,
-            hfx_omega_values=self.hfx_omega_values,
-            hfx_chunk_size=self.hfx_chunk_size,
-            include_dipole_integrals=True,
-            reference_builder=_build_restricted_reference,
-            scf_inputs=self._scf_inputs,
-            scf_result=self.scf_result,
-        )
+        with self._preparation_inputs(spec) as (spec, mol, init_guess):
+            if self._scf_inputs is not None:
+                self._scf_inputs = complete_restricted_response_inputs(self._scf_inputs,spec,mol.basis)
+            reference = build_restricted_reference_from_facade(
+                spec,
+                **self._build_options(spec, mol, init_guess),
+                compute_local_hfx_features=self.compute_local_hfx_features,
+                compute_local_hfx_aux=self.compute_local_hfx_aux,
+                hfx_omega_values=self.hfx_omega_values,
+                hfx_chunk_size=self.hfx_chunk_size,
+                include_dipole_integrals=True,
+                reference_builder=_build_restricted_reference,
+                scf_inputs=self._scf_inputs,
+                scf_result=self.scf_result,
+            )
         if self._is_external_xc() and self.scf_result is not None:
             reference = replace(reference, fock_matrix=self.scf_result.fock_matrix,
                 mf_energy=self.scf_result.total_energy, exact_exchange_fraction=0., xc_spec=None)
         return reference
 
     def _build_scf_result(self, spec: MoleculeSpec) -> Any:
-        result, inputs = build_restricted_scf_result_from_facade(
-            spec,
-            **self._build_options(spec),
-            build_inputs_fn=build_rks_integral_inputs,
-            run_rks_fn=run_rks_from_integrals,
-            return_inputs=True,
-        )
+        with self._preparation_inputs(spec) as (spec, mol, init_guess):
+            result, inputs = build_restricted_scf_result_from_facade(
+                spec,
+                **self._build_options(spec, mol, init_guess),
+                build_inputs_fn=build_rks_integral_inputs,
+                run_rks_fn=run_rks_from_integrals,
+                return_inputs=True,
+            )
         self._scf_inputs = inputs
         return result
 
-    def _build_options(self, spec):
-        return dict(mol=self.mol,xc=self._standard_xc_spec(),grids_level=self.grids_level,max_l=self.max_l,
+    def _build_options(self, spec, mol, init_guess):
+        return dict(mol=mol,xc=self._standard_xc_spec(),grids_level=self.grids_level,max_l=self.max_l,
             integral_backend=self.integral_backend,geometry_grad_policy=self.geometry_grad_policy,
-            grid_ao_backend=self.grid_ao_backend,rks_config=self._config(),init_guess=self.init_guess,
+            grid_ao_backend=self.grid_ao_backend,rks_config=self._config(),init_guess=init_guess,
             chkfile=self.chkfile,sap_basis=self.sap_basis,init_guess_chkfile_project=self.init_guess_chkfile_project,
             geometry_is_traced=_contains_jax_tracer(spec))
 
     def _response_signature(self):
         return _cache_signature((self.compute_local_hfx_features,self.compute_local_hfx_aux,
-            self.hfx_omega_values,self.hfx_chunk_size,self.execution_device))
+            self.hfx_omega_values,self.hfx_chunk_size,self.execution_device,self._response_device()))
 
     def multistart(self, *, amplitudes=(.05, .15, .4), seed=20260923, seeds=None, require_stable=False):
         """Select an explicit lowest-energy candidate without mutating this object."""
@@ -457,6 +491,7 @@ class RKS(_BaseKS):
         return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "RKS":
+        """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend = "df"
         self.auxbasis = auxbasis or 'def2-universal-jkfit'
         return self
@@ -493,7 +528,7 @@ class UKS(_BaseKS):
     def _response_signature(self):
         # UKS builds the response container during SCF, without the optional
         # restricted local-HFX feature controls.
-        return _cache_signature((self.execution_device,))
+        return _cache_signature((self.execution_device,self._response_device()))
 
     def _ensure_reference(self) -> Any:
         self._check_reference_source()
@@ -524,22 +559,23 @@ class UKS(_BaseKS):
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
-        return build_unrestricted_reference_from_facade(
-            spec,
-            mol=self.mol,
-            xc=self._standard_xc_spec(),
-            grids_level=self.grids_level,
-            max_l=self.max_l,
-            integral_backend=self.integral_backend,
-            geometry_grad_policy=self.geometry_grad_policy,
-            grid_ao_backend=self.grid_ao_backend,
-            uks_config=self._config(),
-            init_guess=self.init_guess,
-            chkfile=self.chkfile,
-            sap_basis=self.sap_basis,
-            init_guess_chkfile_project=self.init_guess_chkfile_project,
-            reference_builder=_build_unrestricted_reference,
-        )
+        with self._preparation_inputs(spec) as (spec, mol, init_guess):
+            return build_unrestricted_reference_from_facade(
+                spec,
+                mol=mol,
+                xc=self._standard_xc_spec(),
+                grids_level=self.grids_level,
+                max_l=self.max_l,
+                integral_backend=self.integral_backend,
+                geometry_grad_policy=self.geometry_grad_policy,
+                grid_ao_backend=self.grid_ao_backend,
+                uks_config=self._config(),
+                init_guess=init_guess,
+                chkfile=self.chkfile,
+                sap_basis=self.sap_basis,
+                init_guess_chkfile_project=self.init_guess_chkfile_project,
+                reference_builder=_build_unrestricted_reference,
+            )
 
     def kernel(self) -> Any:
         self._configure_jax_cache()
@@ -564,6 +600,7 @@ class UKS(_BaseKS):
         return stabilize_scf(self, **kwargs)
 
     def density_fit(self, auxbasis: str | None = None) -> "UKS":
+        """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend='df'
         self.auxbasis=auxbasis or 'def2-universal-jkfit'
         return self
