@@ -1271,6 +1271,10 @@ class UnrestrictedTDA:
         )
 
     def kernel(self, nstates: int | None = None) -> UnrestrictedTDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> UnrestrictedTDAResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(
@@ -1321,6 +1325,10 @@ class UnrestrictedCasidaTDDFT:
     response_kernel_options: ResponseKernelOptions | dict[str, Any] | None = None
 
     def tda(self, nstates: int | None = None) -> UnrestrictedTDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_tda_impl')
+
+    def _tda_impl(self, nstates: int | None = None) -> UnrestrictedTDAResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(
@@ -1423,6 +1431,10 @@ class UnrestrictedCasidaTDDFT:
         )
 
     def kernel(self, nstates: int | None = None) -> UnrestrictedTDDFTResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> UnrestrictedTDDFTResult:
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
             raise ValueError(

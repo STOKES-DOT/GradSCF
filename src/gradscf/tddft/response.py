@@ -60,6 +60,8 @@ class _RestrictedResponseOperatorData:
 def _assert_finite(values: Array, *, label: str) -> None:
     arr = jnp.asarray(values)
     if any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree_util.tree_leaves(arr)):
+        from .validation import record_finite_check
+        record_finite_check(arr)
         # Avoid host NumPy conversion for traced values in differentiable paths.
         return
     if not np.all(np.isfinite(np.asarray(arr))):
@@ -146,7 +148,10 @@ def _strict_hybrid_fraction(
             )
 
     if alpha_grid is None:
-        return alpha
+        # A declared Python coefficient is structural, unlike a learned JAX
+        # scalar. Preserve that distinction under an outer response JIT so
+        # a pure functional does not acquire a needless exchange contraction.
+        return alpha_raw if isinstance(alpha_raw, (int, float, np.number)) else alpha
 
     if any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree_util.tree_leaves(alpha_grid)):
         # Constant-grid validation uses NumPy host checks; skip it in traced mode.

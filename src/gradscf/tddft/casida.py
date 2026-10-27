@@ -231,6 +231,10 @@ class RestrictedCasidaTDDFT:
         )
 
     def tda(self, nstates: int | None = None) -> TDAResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_tda_impl')
+
+    def _tda_impl(self, nstates: int | None = None) -> TDAResult:
         memory = self._memory_plan(nstates)
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
@@ -281,6 +285,10 @@ class RestrictedCasidaTDDFT:
         )
 
     def kernel(self, nstates: int | None = None) -> TDDFTResult:
+        from .execution import execute_response
+        return execute_response(self, nstates, '_kernel_impl')
+
+    def _kernel_impl(self, nstates: int | None = None) -> TDDFTResult:
         memory = self._memory_plan(nstates, rpa=True)
         mode = str(self.eigensolver).lower()
         if mode not in {"auto", "davidson"}:
