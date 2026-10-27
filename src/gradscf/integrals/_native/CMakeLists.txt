@@ -32,12 +32,12 @@ add_library(gradscf_integrals SHARED
   vendor/libcint/src/autocode/int3c2e.c
   vendor/libcint/src/autocode/grad1.c vendor/libcint/src/autocode/grad2.c
   vendor/libcint/src/autocode/hess.c
-  vendor/pyscf/pyscf/lib/gto/fill_int2e.c csrc/ffi.cc csrc/geometry.cc csrc/geometry_hessian.cc csrc/geometry_higher.cc csrc/coefficients.cc csrc/exponents.cc csrc/compact.cc
+  vendor/libcint/extensions/eri/fill_int2e.c csrc/ffi.cc csrc/geometry.cc csrc/geometry_hessian.cc csrc/geometry_higher.cc csrc/coefficients.cc csrc/exponents.cc csrc/compact.cc
   csrc/packed_eri.cc csrc/density_fitting.cc csrc/direct_jk.cc csrc/direct_jk_geometry.cc csrc/packed_jk.cc csrc/eri_basis.cc csrc/diagnostics.cc
-  vendor/pyscf_ecp/gto/nr_ecp.c vendor/pyscf_ecp/np_helper/np_helper.c csrc/ecp.cc)
+  vendor/libcint/extensions/ecp/gto/nr_ecp.c vendor/libcint/extensions/ecp/np_helper/np_helper.c csrc/ecp.cc)
 target_include_directories(gradscf_integrals PRIVATE
   "${JAX_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/generated"
-  vendor/libcint/src vendor/libcint/include vendor/pyscf_ecp)
+  vendor/libcint/src vendor/libcint/include vendor/libcint/extensions/ecp)
 if(GRADSCF_LIBCINT_DIAGNOSTICS)
   target_compile_definitions(gradscf_integrals PRIVATE GRADSCF_LIBCINT_DIAGNOSTICS=1)
 endif()

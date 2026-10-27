@@ -81,7 +81,7 @@ See [_native/README.md](_native/README.md) for the exact numerical contract.
 ## Scalar ECP and storage boundaries
 
 Gaussian/Coulomb operators use libcint. Scalar ECP values additionally require
-the pinned PySCF ECP C subset in `_native/vendor/pyscf_ecp`; this distinct special
+the pinned PySCF ECP C subset in `_native/vendor/libcint/extensions/ecp`; this distinct special
 kernel is compiled into the private library, with its own license/provenance.
 It is not a PySCF Python runtime or an alternative Gaussian engine. ECP metadata
 and effective core charges must be preserved; unsupported ECP derivatives must

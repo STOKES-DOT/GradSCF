@@ -4,9 +4,9 @@ This directory builds the private CPU library for the sole public Gaussian
 interface, `libcint`, with JAX typed FFI entry points. Runtime evaluation does
 not import PySCF/gpu4pyscf Python or load their `libcgto` libraries.
 
-The Gaussian kernels are pinned to libcint v6.1.3. A small ERI filling-driver
-subset is pinned to PySCF v2.13.0. Scalar ECP additionally uses the distinct
-PySCF v2.9.0 C subset in `vendor/pyscf_ecp`; it remains necessary for the ECP
+The Gaussian kernels are pinned to libcint v6.1.3. An ERI filling-driver
+extension in `vendor/libcint/extensions/eri` is pinned to PySCF v2.13.0. Scalar ECP additionally uses the distinct
+PySCF v2.9.0 C subset in `vendor/libcint/extensions/ecp`; it remains necessary for the ECP
 Hamiltonian and is not a duplicate Gaussian runtime. Versions, source paths,
 commit/blob IDs where available, file hashes and licenses are recorded in
 `vendor/manifest.json` and the corresponding vendor directories. Vendor bytes
@@ -26,7 +26,7 @@ remain unmodified; adaptations belong in `patches/`.
 - `csrc/eri_symmetry.h`: streaming canonical shell-orbit metadata for selected four-center products.
 - `csrc/packed_eri.cc`, `csrc/density_fitting.cc`: compact ERI and auxiliary 2c/3c values.
 - `csrc/direct_jk*.cc`, `csrc/packed_jk.cc`: shell-direct and packed density actions.
-- `csrc/ecp.cc`, `vendor/pyscf_ecp/`: the separate scalar ECP adapter and required C sources.
+- `csrc/ecp.cc`, `vendor/libcint/extensions/ecp/`: the separate scalar ECP adapter and required C sources.
 - `csrc/tables.h`: shared table validation and owned libcint buffers.
 - `csrc/parallel.h`: bounded shell workers and parameter-gradient reduction.
 - `vendor/`: pinned, unmodified upstream C sources, licenses and checksums.
