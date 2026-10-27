@@ -293,6 +293,19 @@ def _response_grid_view(molecule, block_size):
     return view
 
 
+def _orbital_factor_channels(rho_o_full, rho_v_full, *, with_tau):
+    # AO values and derivative[0] can be independent leaves in dense fixtures.
+    # GGA uses the latter, exactly as the original block projection does.
+    rho_o, rho_v = rho_o_full[0], rho_v_full[0]
+    channels = [((1.0, rho_o, rho_v),)]
+    channels.extend(((1.0, rho_o_full[axis], rho_v),
+                     (1.0, rho_o, rho_v_full[axis])) for axis in range(1, 4))
+    if with_tau:
+        channels.append(tuple((0.5, rho_o_full[axis], rho_v_full[axis])
+                              for axis in range(1, 4)))
+    return channels
+
+
 def _restricted_response_factors(
     molecule: Any,
     orbo: Array,
@@ -344,24 +357,9 @@ def _restricted_response_factors(
         orbv,
         precision=Precision.HIGHEST,
     )
-    # Match the dense feature definition even when AO and derivative[0] are
-    # independent dynamic leaves. The Laplacian channel uses AO values below.
-    rho_o, rho_v = rho_o_full[0], rho_v_full[0]
-    channels: list[tuple[tuple[float, Array, Array], ...]] = [((1.0, rho_o, rho_v),)]
-    channels.extend(
-        (
-            (1.0, rho_o_full[axis], rho_v),
-            (1.0, rho_o, rho_v_full[axis]),
-        )
-        for axis in range(1, 4)
-    )
-    if feature_kind == "GGA":
-        return _RestrictedResponseFactors(feature_kind, tuple(channels))
-
-    channels.append(
-        tuple((0.5, rho_o_full[axis], rho_v_full[axis]) for axis in range(1, 4))
-    )
-    if feature_kind == "MGGA":
+    channels = _orbital_factor_channels(rho_o_full, rho_v_full,
+                                         with_tau=feature_kind != "GGA")
+    if feature_kind in {"GGA", "MGGA"}:
         return _RestrictedResponseFactors(feature_kind, tuple(channels))
     if feature_kind != "MGGA_LAPL":
         raise ValueError(f"Unsupported response_feature_kind={feature_kind!r}.")
@@ -440,6 +438,7 @@ def _restricted_grid_xc_response(
     dtype: Any,
     block_size: int = 256,
     compute_diagonal: bool = True,
+    cache_orbitals: bool = False,
 ) -> tuple[Callable[[Array], Array], Array | None]:
     weighted_hessian = jnp.asarray(weighted_hessian, dtype=dtype)
     nocc = int(orbo.shape[1])
@@ -453,8 +452,27 @@ def _restricted_grid_xc_response(
     if provider is not None and not getattr(provider, "adaptive", False):
         width = min(width, provider.block_size)
     full_blocks, tail = divmod(ngrids, width)
+    cached = None
+    if cache_orbitals:
+        if provider is None:
+            cached = _restricted_response_factors(
+                molecule, orbo, orbv, feature_kind=feature_kind, dtype=dtype)
+        elif feature_kind in {"LDA", "GGA", "MGGA"}:
+            from .grid_orbitals import streamed_orbital_fields
+            occupied, virtual = streamed_orbital_fields(
+                provider, orbo, orbv, feature_kind=feature_kind,
+                dtype=dtype, block_size=width)
+            channels = ([((1.0, occupied[0], virtual[0]),)] if feature_kind == "LDA"
+                        else _orbital_factor_channels(occupied, virtual,
+                                                      with_tau=feature_kind == "MGGA"))
+            cached = _RestrictedResponseFactors(feature_kind, tuple(channels))
 
     def block_factors(start, size):
+        if cached is not None:
+            return _RestrictedResponseFactors(feature_kind, tuple(tuple(
+                (coefficient, jax.lax.dynamic_slice_in_dim(left, start, size),
+                 jax.lax.dynamic_slice_in_dim(right, start, size))
+                for coefficient, left, right in channel) for channel in cached.channels))
         return _restricted_response_factors(
             molecule, orbo, orbv, feature_kind=feature_kind, dtype=dtype,
             grid_start=start, grid_size=size,
@@ -1161,6 +1179,7 @@ def _build_restricted_response_operator_data(
                 dtype=jnp.asarray(weights).dtype,
                 block_size=memory_plan.grid_block_size,
                 compute_diagonal=False,
+                cache_orbitals=bool(memory_plan.orbital_grid_cache_bytes),
             )
             linear_xc_response = True
         else:
@@ -1190,6 +1209,7 @@ def _build_restricted_response_operator_data(
                 dtype=jnp.asarray(weights).dtype,
                 block_size=memory_plan.grid_block_size,
                 compute_diagonal=False,
+                cache_orbitals=bool(memory_plan.orbital_grid_cache_bytes),
             )
             linear_xc_response = True
 

@@ -105,6 +105,7 @@ class _ResponseMemoryPlan(NamedTuple):
     grid_block_size: int
     # Existing planner share, including fixed arrays; not a measured peak.
     action_bytes: int = 0
+    orbital_grid_cache_bytes: int = 0
 
 
 def _response_memory_inputs(molecule, resolved_xc, *, spin_channels=1):
@@ -162,7 +163,18 @@ def _response_memory_inputs(molecule, resolved_xc, *, spin_channels=1):
     device = getattr(coefficients, "device", None)
     if callable(device):
         device = device()
+    orbital_grid_bytes = 0
+    # Local restricted kernels can retain budgeted MO fields. Streamed AO
+    # production remains block-local; global HVP callbacks retain their own
+    # complete fields and are not converted to point-local kernels.
+    if (spin_channels == 1 and type(resolved_xc) is SemilocalResponseFunctional
+            and not standard_hf and coefficients is not None
+            and getattr(molecule, 'direct_basis', None) is None):
+        # The scan output can include one padded AO block before trimming.
+        points = ngrids if provider is None else ngrids + provider.block_size - 1
+        orbital_grid_bytes = itemsize * points * coefficients.shape[-1] * (1 if kind == 'LDA' else 4)
     return dict(resident_bytes=resident, grid_vector_bytes=grid_vector,
+                orbital_grid_bytes=orbital_grid_bytes,
                 ao_point_bytes=ao_workspace, device=device)
 
 
@@ -170,7 +182,8 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
                          max_subspace=None, rpa=False, *, direct_basis=None,
                          integral_cache="auto", direct_workers=8, direct_tol=0.,
                          grid_block_size=0, spin_channels=1, resident_bytes=0,
-                         grid_vector_bytes=0, ao_point_bytes=0, device=None):
+                         grid_vector_bytes=0, ao_point_bytes=0, device=None,
+                         orbital_grid_bytes=0):
     """Bound primary solver/AO work arrays; max_memory is decimal MB.
 
     The estimate reserves common AO state, output vectors, QR/Ritz work and
@@ -179,7 +192,8 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
     """
     validate_memory_mb(max_memory)
     for name, value in (("resident_bytes", resident_bytes),
-                        ("grid_vector_bytes", grid_vector_bytes), ("ao_point_bytes", ao_point_bytes)):
+                        ("grid_vector_bytes", grid_vector_bytes), ("ao_point_bytes", ao_point_bytes),
+                        ("orbital_grid_bytes", orbital_grid_bytes)):
         if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
             raise ValueError(f"{name} must be a nonnegative integer.")
     if (isinstance(direct_tol, bool) or not isinstance(direct_tol, Real)
@@ -239,6 +253,11 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
                         if grid_block_size else 0)
     action_budget = max(native_fixed + per_vector + grid_point_bytes, budget // 2)
     action_available = action_budget - native_fixed
+    # Charge cached MO values/derivatives within the existing action share,
+    # retaining at least half of it for vector and grid contraction workspace.
+    orbital_cache = (int(orbital_grid_bytes) if grid_block_size
+                     and 0 < orbital_grid_bytes <= action_available // 2 else 0)
+    action_available -= orbital_cache
     cache_bytes = 0
     if integral_cache not in {"auto", "none"}:
         raise ValueError("integral_cache must be 'auto' or 'none'.")
@@ -277,4 +296,4 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
     while basis_bytes(width) > available:
         width -= 1
     return _ResponseMemoryPlan(
-        width, batch_size, cache_bytes, grid_width, fixed+action_budget)
+        width, batch_size, cache_bytes, grid_width, fixed+action_budget, orbital_cache)
