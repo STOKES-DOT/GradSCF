@@ -31,7 +31,7 @@ def median(folder, stage):
 def csv_file(path, data):
     if data:
         with path.open('w') as stream:
-            writer=csv.DictWriter(stream, fieldnames=list(data[0]))
+            writer=csv.DictWriter(stream, fieldnames=list(data[0]), lineterminator='\n')
             writer.writeheader();writer.writerows(data)
 
 

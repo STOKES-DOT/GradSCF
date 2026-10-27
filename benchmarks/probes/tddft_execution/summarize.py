@@ -50,7 +50,7 @@ def main():
         (args.output/(name+'.jsonl')).write_text(''.join(json.dumps(x, allow_nan=False)+'\n' for x in rows))
     if summaries:
         with (args.output/'summary.csv').open('w') as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(summaries[0]))
+            writer = csv.DictWriter(stream, fieldnames=list(summaries[0]), lineterminator='\n')
             writer.writeheader()
             writer.writerows(summaries)
 
