@@ -18,12 +18,17 @@ through JAX automatic differentiation and shared implicit-response solvers.
   orbital-free DFT, and molecular MP, CI/FCI, and CC/QCI calculations.
 - **Excitations and spectra.** TDHF/TDDFT, EOM excitation/ionization/attachment
   energies, GW quasiparticles, BSE optical response, and vibrational coupling.
+- **Memory-aware molecular response.** Matrix-free TDA/full TDDFT, streamed
+  AO grids, reusable MO grid fields, and coordinated vector/subspace budgets.
 - **Differentiable physical solutions.** Array kernels expose parameter
   derivatives; converged electronic states and spectral problems use shared
   response rules with explicit validity conditions.
 - **External models in self-consistency.** User-defined features and networks
   supply XC or kinetic energies; GradSCF computes potentials and response
   actions. Neural basis models optimize Gaussian contractions.
+- **Shared libcint integral interface.** Gaussian integrals, exact packed ERIs,
+  shell-direct J/K and explicit auxiliary RI share one production engine with
+  operator-specific JVP/VJP rules.
 - **Two Python interfaces.** Short calculation objects for interactive use,
   and functional array APIs for `jax.jit`, `jax.grad`, and custom objectives.
 
@@ -74,9 +79,10 @@ after changing JAX versions. See the [native build guide](src/gradscf/integrals/
 | `python -m pip install -e ".[nnao]"` | Pinned MACE-JAX dependency for neural basis models |
 | `python -m pip install -e ".[reproducibility]"` | Plotting, HDF5, SciPy, and evaluation tools |
 
-PySCF is a comparison/optional-bridge dependency, not the native integral or
-post-HF numerical runtime. Native integrals execute on CPU; downstream JAX
-device support does not establish GPU coverage for every calculation.
+PySCF is an optional independent reference for comparisons. Production Gaussian
+integrals use the bundled libcint engine without a PySCF Python runtime.
+Integral preparation executes on CPU; supported downstream JAX calculations
+can use GPU. Device coverage is specified for each calculation path.
 
 ## Quick start
 
@@ -114,13 +120,20 @@ jax.config.update("jax_enable_x64", True)
 from gradscf import gto, dft, tdscf
 
 mol = gto.M(atom="O 0 0 0; H 0 .75 .58; H 0 -.75 .58", basis="sto-3g")
-mf = dft.RKS(mol, xc="pbe", grids_level=1, conv_tol=1e-10).run()
+mf = dft.RKS(mol, xc="pbe", grids_level=1, conv_tol=1e-10,
+             max_memory=60000).run()
 assert mf.converged
 td = tdscf.TDA(mf, nstates=3)
 td.kernel()
 assert td.converged
 print("Excitation energies / Ha:", td.e)
 ```
+
+Use `tdscf.TDDFT(mf, nstates=3)` for full response. The same facades dispatch
+`dft.UKS` references to spin-conserving unrestricted TDA/TDDFT. TD response
+inherits the SCF memory budget; pass `max_memory` to the TD constructor to
+override it. The default is 60000 decimal MB, a planning budget rather than a
+process-memory limit. See [molecular response execution](#molecular-response-execution).
 
 ### Differentiate a correlated energy
 
@@ -206,6 +219,8 @@ Forward availability, derivative coverage, and physical accuracy are separate.
 | GW | Molecular G0W0-CD, evGW0, evGW, restricted qsGW/matrix Matsubara scGW; Gamma/k-point GW | [GW](src/gradscf/gw), [scGW](src/gradscf/gw/SCGW.md), [periodic GW](src/gradscf/gw/pbc) |
 | BSE | Static TDA/full optics, singlet/triplet and unrestricted spin-conserving sectors | [BSE](src/gradscf/bse/README.md); molecular reference and screening conventions |
 | OFDFT | Molecular/periodic Gaussian amplitudes and FFT grids; TF, vW, TF+vW, WT, WGC99, external KEDFs | [OFDFT](src/gradscf/ofdft/README.md); unpolarized density, WT/WGC periodic only |
+| DFPT | Static molecular/periodic KS and OFDFT response; Taylor response series and supported finite-q perturbations | [DFPT](src/gradscf/dfpt/README.md); converged-reference, k-mesh and perturbation contracts |
+| Inverse KS references | RKS/UKS/GKS density targets and local-potential maps; finite-temperature matrix references; fixed-reference functional assessment | [iKS](src/gradscf/dft/iks/README.md); explicit finite-basis reference method, zero-temperature Wu–Yang/coupled inverse-GKS unfinished |
 | Vibrational coupling | Fan/Debye–Waller self-energies, spectra, exciton–vibration optics, finite-space vibronic Hamiltonians | [GW EP](src/gradscf/gw/ep_coupling/README.md), [BSE EP](src/gradscf/bse/ep_coupling/README.md); fixed bath, BSE projection restricted TDA |
 
 Canonical real UHF CCSD(T), UCC Lambda and spin-resolved densities are available.
@@ -228,7 +243,7 @@ Choose the variable and observable before selecting a derivative path:
 | MP energy/amplitudes | Specialized JAX kernels or residual-driven Taylor lifting | Canonical inputs, physical denominators; upstream HF response |
 | CI/FCI/TDA states | Shared isolated-root response; FCI also exposes complete-subspace response | Coefficient objectives need an eigenvector response mode |
 | CC energy/amplitudes | Shared nonlinear-root response | Converged amplitudes and checked adjoint solves |
-| EOM energies | First-order non-Hermitian left/right energy response | Supported isolated roots; returned vectors are forward diagnostics with stopped AD |
+| EOM states and cluster observables | First-order non-Hermitian isolated-root/pair and complete-cluster projector/energy-sum response | Real semisimple clusters with a resolved external boundary; state/Dyson properties require the specified isolated-pair mode |
 | GW roots/self-consistency | Implicit QP roots and opt-in molecular outer response | [GW contracts](src/gradscf/gw/OUTER_RESPONSE.md); method/spectral-gap restrictions |
 | OFDFT density/energy | Explicit iterates or constrained implicit stationarity | Particle-number constraint, functional derivatives, resolved solution |
 | Geometry/basis parameters | Integral rules composed with electronic response | Operator, layout, parameter and derivative-order coverage |
@@ -286,7 +301,11 @@ support the derivative order and physical inputs required by their objective.
 
 **Neural basis sets.** [NNAO](src/gradscf/model/nnao/NNAO.md) maps MACE outputs
 to normalized Gaussian contractions. Fixed-primitive direct J/K and RI/DF
-paths support self-consistent contraction optimization. See the
+paths support self-consistent contraction optimization. Contracted joint
+workflows also optimize supported log-exponent scales, preserving normalization,
+trainable masks and explicit CPU-integral/model-device transfers. Coefficient,
+exponent and geometry derivatives have separate contracts in the
+[NNAO guide](src/gradscf/model/nnao/README.md). See the
 [molecular tool](tools/optimize_methane_nnao.py),
 [pilot validator](tools/validate_nnao_pilot.py), and
 [shared trainer](tools/train_nnao_pilot.py).
@@ -296,6 +315,16 @@ Single-geometry or training-set optimization does not establish transferability.
 representation features; their energy supplies potential and response.
 See [neural kinetic energy](examples/ofdft/neural_kinetic.py).
 Additional dispersion models live in [model.neural_d](src/gradscf/model/neural_d).
+
+**Inverse-reference assessment.** `dft.iks` provides AO density targets,
+block-local potential maps and analytic/neural functional evaluation for
+RKS/UKS/GKS layouts. The explicitly selected `thermal_matrix` method constructs
+an offline finite-temperature finite-basis reference. Evaluation and training
+against that fixed reference are differentiable; inverse-map AD/JIT is not
+implemented. See the
+[carbon FCI example](examples/iks/README.md) for energy/operator training;
+its objective does not reconverge a candidate SCF density. Zero-temperature
+Wu–Yang and coupled inverse-GKS optimization/backward remain unfinished.
 
 ### Model development and ownership
 
@@ -353,13 +382,23 @@ See the [model development guide](src/gradscf/model/README.md) and
 diagonalization, linear solves, nonlinear iteration and their derivative rules.
 Methods supply Hamiltonian actions, residuals and physical convergence conditions.
 
-The [integral layer](src/gradscf/integrals/COMPRESSED.md) provides native CPU
-and JAX reference paths, exact s4/s8 storage, shell-direct J/K and auxiliary RI/DF.
+The [integral layer](src/gradscf/integrals/README.md) uses **libcint as its sole
+production Gaussian integral interface**, with exact s4/s8 storage, shell-direct
+J/K and explicit auxiliary RI/DF. Ordinary calculations select the physical
+representation or device through their method controls. Retired integral-engine
+selectors (`cpu`, `native`, `jax`, `jax_reference`) are rejected. JAX continues
+to provide AO/grid evaluation, normalization, contractions and differentiation.
+Necessary scalar ECP C extensions retain their own provenance and licenses
+within the same private native interface.
+
+The sibling [AO-to-MO module](src/gradscf/ao2mo/README.md) owns shared selected
+dense, packed, DF and native-direct transformations for correlated and response
+methods. Complete four-index outputs remain quartic when explicitly requested.
 
 - Packing is exact; direct J/K avoids a stored four-index tensor.
 - RI/DF introduces an auxiliary-basis approximation. DF-MP2 retains
   occupied–virtual factors and streams slices; `with_t2=False` omits doubles output.
-- MP3 and current CI/CC paths can expand DF inputs into full MO tensors.
+- MP3 and some CI/CC paths can expand DF inputs into full MO tensors.
   Accepting DF input is not a DF contraction algorithm.
 - FCI transforms only active orbitals after core folding. BSE offers
   matrix-free Hamiltonian/screening actions with documented solver options.
@@ -367,6 +406,30 @@ and JAX reference paths, exact s4/s8 storage, shell-direct J/K and auxiliary RI/
 Derivative support is parameter- and layout-specific; fixed-primitive
 contraction training does not imply native exponent/auxiliary-integral AD.
 Storage bounds and compile estimates are distinct from measured peak memory.
+
+### Molecular response execution
+
+Molecular TDA/full TDDFT supports AO-density and DF operator actions with the
+shared Davidson/RPA solvers. Local restricted semilocal kernels can reuse
+occupied/virtual MO grid fields prepared from streamed AO blocks. Grid blocks,
+trial-vector batches, packed J/K workspace and solver subspaces share the
+response memory plan. Changing the budget changes execution blocks and caches;
+it does not reduce grid accuracy or truncate the occupied/virtual space.
+
+Repeated compatible response calculations reuse compiled numerical programs
+while orbitals, integrals and external XC parameters remain live inputs.
+Global/neural XC callbacks retain their declared nonlocal dependence.
+Geometry objectives still require the upstream SCF, integral and grid response;
+supported parameter products are described in the
+[functional](src/gradscf/dft/FUNCTIONAL.md) and
+[integral contracts](src/gradscf/integrals/README.md).
+
+For eager molecular RKS/UKS with explicit auxiliary RI, `density_fit(auxbasis)`
+prepares integrals and the reference on CPU. `execution_device="gpu"` then
+places the completed reference on GPU for supported response calculations.
+Repeated access reuses that resident reference; changed SCF inputs require
+reconvergence. This is a staged CPU/GPU calculation. Full traced RI geometry
+derivatives remain outside this path's supported scope.
 
 ## Examples
 
@@ -379,6 +442,9 @@ Storage bounds and compile estimates are distinct from measured peak memory.
 | Vibrational spectral effects | [Fixed-phonon scGW](examples/gw/fixed_phonon_scgw.py), [water BSE–vibration](examples/bse/water_ep_coupling.py) |
 | Orbital localization/animation | [Ethylene Boys](examples/localization/ethylene_boys.py), [BODIPY](examples/localization/bodipy_boys.md), [rotation animation](examples/localization/animate_bodipy_boys_rotation.py) |
 | Wavefunction/basis derivatives | [CIS probes](examples/ci/cis_h2o_gradients.py), [implicit HF → MP](examples/mp/implicit_gradient.py), [counterpoise](examples/basis/README.md) |
+| Molecular response and properties | [Direct response](examples/tdscf/direct_response.py), [oscillator-strength response](examples/tdscf/formaldehyde_oscillator_response.py), [electric response](examples/response/README.md) |
+| Static perturbation theory | [Molecular DFPT](examples/dfpt/01_molecular_response.py), [periodic DFPT](examples/dfpt/02_periodic_response.py), [OFDFT response](examples/dfpt/03_ofdft_response.py) |
+| Inverse-reference assessment | [Carbon FCI and neural functional](examples/iks/README.md), [independent PySCF reference](examples/iks/compare_carbon_fci_pyscf.py) |
 | External-model training | [External functional](examples/training/external_functional.py), [density-matrix MLP](examples/training/density_matrix_mlp.py), [H2/FCI modes](examples/training/h2_fci_training.py) |
 | OFDFT | [Molecular](examples/ofdft/molecular.py), [periodic](examples/ofdft/periodic.py), [DFTpy comparison](examples/ofdft/compare_dftpy.py), [WGC scope/results](examples/ofdft/WGC_REPRODUCTION.md) |
 | Periodic methods/solvers | [Bands](examples/pbc/periodic_h2.py), [shared solvers](examples/solvers/shared_solvers.py), [degenerate subspace](examples/solvers/degenerate_subspace.py) |
@@ -402,6 +468,14 @@ These are scoped records, not a whole-project test counter. CPU/float64
 comparisons do not establish GPU coverage; finite-basis agreement does not
 establish model accuracy. Performance comparisons need matching workloads,
 settings, compilation/warmup policy and timed regions.
+
+The [TD response execution report](reports/tddft_execution_fix/20261027-d67ce6c/report.md)
+records matched parent/candidate timings, new-object compilation counts,
+original-operator residuals, CPU/GPU memory metrics and neural/basis AD checks.
+Its [reproduction commands](reports/tddft_execution_fix/20261027-d67ce6c/commands.txt)
+separate cold calls, warm solves and prepared action probes. Reported gains
+apply to those workloads; GPU packed contraction has a measured time/memory
+tradeoff rather than a universal speedup.
 
 With test dependencies and native integrals available:
 
