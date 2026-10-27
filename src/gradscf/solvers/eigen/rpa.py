@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.scipy.linalg import solve_triangular
 from jaxtyping import Array
 from ..diagnostics import require_converged_derivative
+from ._workload import _workload_reporter, _tree_norm
 from .davidson import (
     _symmetrize,
     _MATMUL_PRECISION, _DEFAULT_MATMUL_PRECISION, _solver_dtype,
@@ -36,11 +37,14 @@ def _davidson_lowest_tdhf(
     orth_eps: float = 1e-10,
     initial_vectors: Array | None = None,
     initial_guess_count: int | None = None,
+    workload_callback: Callable[[dict], None] | None = None,
 ) -> tuple[Array, Array, Array, Array]:
     """Real structured Davidson for stable TDHF/TDDFT problems in JAX.
 
     ``vind`` follows PySCF ``gen_tdhf_operation``: input rows are ``[X, Y]`` and
     output rows are ``[AX + BY, -(BX + AY)]``.
+    An optional ``workload_callback`` records scalar action/iteration metadata.
+    Its ordered host intervals include diagnostic synchronization overhead.
     """
 
     if initial_guess_count is not None and (
@@ -65,12 +69,28 @@ def _davidson_lowest_tdhf(
         max_subspace = min(dim, max(8 * nroots, 128))
     else:
         max_subspace = _davidson_max_subspace(nroots, dim, max_subspace)
+    tol_arr = _residual_tol_with_dtype_slack(tol, dtype)
+    workload = _workload_reporter(
+        workload_callback, solver="rpa_davidson", nroots=nroots,
+        max_subspace=max_subspace, tolerance=tol_arr,
+    )
+    missing_residuals = None if workload is None else jnp.full((nroots,), jnp.inf, dtype=dtype)
 
     def apply_pair(v_cols: Array, w_cols: Array) -> tuple[Array, Array]:
         rows = jnp.concatenate([v_cols.T, w_cols.T], axis=-1)
         with jax.default_matmul_precision(_DEFAULT_MATMUL_PRECISION):
             applied = jnp.asarray(vind(rows), dtype=dtype).reshape(-1, 2 * dim)
         return applied[:, :dim].T, -applied[:, dim:].T
+
+    def _apply_pair_with_workload(v_cols, w_cols, *, iteration, purpose,
+                                  effective_columns, subspace_dim, residual_norms):
+        if workload is None:
+            return apply_pair(v_cols, w_cols)
+        return workload.apply(
+            apply_pair, v_cols, w_cols, iteration=iteration, purpose=purpose,
+            effective_columns=effective_columns, subspace_dim=subspace_dim,
+            residual_norms=residual_norms,
+        )
 
     if initial_vectors is None:
         guess_dim = nroots if initial_guess_count is None else max(nroots, int(initial_guess_count))
@@ -85,7 +105,10 @@ def _davidson_lowest_tdhf(
         guess_dim = guess_v.shape[1]
         guess_v, _ = jnp.linalg.qr(guess_v, mode="reduced")
     guess_w = jnp.zeros_like(guess_v)
-    guess_u1, guess_u2 = apply_pair(guess_v, guess_w)
+    guess_u1, guess_u2 = _apply_pair_with_workload(
+        guess_v, guess_w, iteration=0, purpose="initial", effective_columns=guess_dim,
+        subspace_dim=0, residual_norms=missing_residuals,
+    )
 
     v_basis = jnp.zeros((dim, max_subspace), dtype=dtype)
     w_basis = jnp.zeros((dim, max_subspace), dtype=dtype)
@@ -106,7 +129,6 @@ def _davidson_lowest_tdhf(
         (jnp.maximum(jnp.max(jnp.abs(diag)), 1.0) + 1.0) * 1.0e6,
         dtype=dtype,
     )
-    tol_arr = _residual_tol_with_dtype_slack(tol, dtype)
     eps_arr = jnp.asarray(matrix_eps, dtype=dtype)
     orth_eps_arr = jnp.asarray(orth_eps, dtype=dtype)
     full_diag = jnp.concatenate([diag, -diag])
@@ -125,6 +147,8 @@ def _davidson_lowest_tdhf(
         u1_in: Array,
         u2_in: Array,
         active_in: Array,
+        basis_dim_in: Array,
+        iteration: Array,
     ) -> tuple[Array, Array, Array, Array, Array, Array]:
         primary_basis = jnp.concatenate([v_in.T.conj(), w_in.T.conj()], axis=1)
         dual_basis = jnp.concatenate([w_in.T.conj(), v_in.T.conj()], axis=1)
@@ -176,6 +200,12 @@ def _davidson_lowest_tdhf(
         dual_coeff = coefficients[max_subspace:]
         x_full = _matmul(v_in, primary_coeff) + _matmul(w_in, dual_coeff)
         y_full = _matmul(w_in, primary_coeff) + _matmul(v_in, dual_coeff)
+        if workload is not None:
+            workload.record(
+                "apply_start", "residual", iteration=iteration, columns=nroots,
+                effective_columns=jnp.sum(selected_valid), subspace_dim=basis_dim_in,
+                residual_norms=missing_residuals, action_norm=_tree_norm((x_full, y_full)),
+            )
         applied_x, applied_y = apply_pair(x_full, y_full)
         r_x = applied_x - x_full * omega[None, :]
         r_y = applied_y + y_full * omega[None, :]
@@ -183,6 +213,13 @@ def _davidson_lowest_tdhf(
             jnp.sum(jnp.abs(r_x) ** 2, axis=0) + jnp.sum(jnp.abs(r_y) ** 2, axis=0)
         )
         residual_norms = jnp.where(selected_valid, residual_norms, jnp.inf)
+        if workload is not None:
+            workload.record(
+                "apply_end", "residual", iteration=iteration, columns=nroots,
+                effective_columns=jnp.sum(selected_valid), subspace_dim=basis_dim_in,
+                residual_norms=residual_norms,
+                action_norm=_tree_norm((applied_x, applied_y)),
+            )
         return omega, x_full, y_full, r_x, r_y, residual_norms
 
     def _append_new_pairs(
@@ -195,6 +232,9 @@ def _davidson_lowest_tdhf(
         new_x: Array,
         new_y: Array,
         new_mask: Array,
+        iteration: Array,
+        residual_norms: Array | None,
+        purpose: str = "append",
     ) -> tuple[Array, Array, Array, Array, Array, Array]:
         def orthogonalize_pair(
             x: Array,
@@ -259,7 +299,11 @@ def _davidson_lowest_tdhf(
             body_fun,
             (init_x, init_y, init_mask, jnp.asarray(0, dtype=index_dtype)),
         )
-        pair_u1, pair_u2 = apply_pair(x_pairs, y_pairs)
+        pair_u1, pair_u2 = _apply_pair_with_workload(
+            x_pairs, y_pairs, iteration=iteration, purpose=purpose,
+            effective_columns=pair_count, subspace_dim=basis_dim_in,
+            residual_norms=residual_norms,
+        )
 
         def scatter_body(col_idx: int, carry):
             v_cur, w_cur, u1_cur, u2_cur, active_cur, offset = carry
@@ -313,7 +357,8 @@ def _davidson_lowest_tdhf(
         )
         return v_out, w_out, u1_out, u2_out, active_out, basis_dim_in + accepted_count
 
-    def _restart_from_roots(x_full: Array, y_full: Array):
+    def _restart_from_roots(x_full: Array, y_full: Array, iteration: Array,
+                            residual_norms: Array | None):
         return _append_new_pairs(
             jnp.zeros((dim, max_subspace), dtype=dtype),
             jnp.zeros((dim, max_subspace), dtype=dtype),
@@ -324,6 +369,9 @@ def _davidson_lowest_tdhf(
             x_full[:, :nroots],
             y_full[:, :nroots],
             jnp.ones((nroots,), dtype=bool),
+            iteration,
+            residual_norms,
+            purpose="restart",
         )
 
     def _step(
@@ -346,6 +394,7 @@ def _davidson_lowest_tdhf(
         ) = state
 
         def do_iteration(iter_state):
+            iteration = None if workload is None else _iter + 1
             (
                 v_it,
                 w_it,
@@ -366,9 +415,17 @@ def _davidson_lowest_tdhf(
                 u1_it,
                 u2_it,
                 active_it,
+                basis_dim_it,
+                iteration,
             )
             max_residual = jnp.max(residual_norms)
             converged_now = _all_roots_converged(residual_norms, tol_arr)
+            if workload is not None:
+                workload.record(
+                    "iteration", "ritz", iteration=iteration, columns=0,
+                    effective_columns=0, subspace_dim=basis_dim_it,
+                    residual_norms=residual_norms,
+                )
             improve_best = (max_residual < best_residual_it) | converged_now
             best_w_next = jnp.where(improve_best, omega, best_w_it)
             best_x_next = jnp.where(improve_best, x_full, best_x_it)
@@ -402,10 +459,12 @@ def _davidson_lowest_tdhf(
                 return jax.lax.cond(
                     overflow,
                     lambda __: _append_new_pairs(
-                        *_restart_from_roots(x_full, y_full),
+                        *_restart_from_roots(x_full, y_full, iteration, residual_norms),
                         new_x,
                         new_y,
                         new_mask,
+                        iteration,
+                        residual_norms,
                     ),
                     lambda __: _append_new_pairs(
                         v_it,
@@ -417,6 +476,8 @@ def _davidson_lowest_tdhf(
                         new_x,
                         new_y,
                         new_mask,
+                        iteration,
+                        residual_norms,
                     ),
                     operand=None,
                 )
@@ -496,6 +557,7 @@ def implicit_differential_davidson_lowest_tdhf(
     preconditioner_level_shift: float = 0.0,
     orth_eps: float = 1e-10,
     initial_guess_count: int | None = None,
+    workload_callback: Callable[[dict], None] | None = None,
 ) -> tuple[Array, Array, Array, Array]:
     """Return TDHF Davidson roots with implicit eigenvalue differentiation.
 
@@ -505,6 +567,19 @@ def implicit_differential_davidson_lowest_tdhf(
     """
 
     dim = int(size)
+
+    workload = None
+    if workload_callback is not None:
+        reported_roots = max(1, min(int(nroots), dim)) if dim else 0
+        reported_capacity = (
+            min(dim, max(8 * reported_roots, 128)) if max_subspace is None
+            else _davidson_max_subspace(reported_roots, dim, max_subspace)
+        )
+        workload = _workload_reporter(
+            workload_callback, solver="rpa_davidson", nroots=reported_roots,
+            max_subspace=reported_capacity,
+            tolerance=_residual_tol_with_dtype_slack(tol, _solver_dtype(jnp.asarray(diag).dtype)),
+        )
 
     def solver_vind(values: Array) -> Array:
         return jax.lax.stop_gradient(vind(values))
@@ -522,9 +597,17 @@ def implicit_differential_davidson_lowest_tdhf(
         preconditioner_level_shift=preconditioner_level_shift,
         orth_eps=orth_eps,
         initial_guess_count=initial_guess_count,
+        workload_callback=workload,
     )
     x_vecs = jax.lax.stop_gradient(x_vecs)
     y_vecs = jax.lax.stop_gradient(y_vecs)
+    if workload is not None:
+        workload.record(
+            "apply_start", "implicit_metric", iteration=None, columns=x_vecs.shape[1],
+            effective_columns=x_vecs.shape[1], subspace_dim=None,
+            residual_norms=jnp.full((x_vecs.shape[1],), jnp.inf, dtype=x_vecs.dtype),
+            action_norm=_tree_norm((x_vecs, y_vecs)),
+        )
     applied = vind(jnp.concatenate([x_vecs.T, y_vecs.T], axis=-1))
     top = applied[:, :dim].T
     bottom = -applied[:, dim:].T
@@ -536,6 +619,16 @@ def implicit_differential_davidson_lowest_tdhf(
         jnp.asarray(1e-30, dtype=x_vecs.dtype),
     )
     values = require_converged_derivative(numerator / denominator, converged)
+    if workload is not None:
+        residual_norms = jnp.sqrt(
+            jnp.sum(jnp.abs(top - x_vecs * values[None, :]) ** 2, axis=0)
+            + jnp.sum(jnp.abs(bottom + y_vecs * values[None, :]) ** 2, axis=0)
+        )
+        workload.record(
+            "apply_end", "implicit_metric", iteration=None, columns=x_vecs.shape[1],
+            effective_columns=x_vecs.shape[1], subspace_dim=None,
+            residual_norms=residual_norms, action_norm=_tree_norm(applied),
+        )
     return values, x_vecs, y_vecs, converged
 
 
