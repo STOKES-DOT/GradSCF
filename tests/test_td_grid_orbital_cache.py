@@ -15,6 +15,16 @@ def test_grid_orbital_cache_is_charged_inside_action_budget():
     assert limited.orbital_grid_cache_bytes==0
 
 
+def test_packed_workspace_is_reserved_before_grid_cache_and_blocks():
+    common = dict(grid_block_size=8192, orbital_grid_bytes=5_000_000)
+    ordinary=plan_response_memory(25,100,5,jnp.float64,128.,**common)
+    packed=plan_response_memory(25,100,5,jnp.float64,128.,packed_workspace_bytes=64_000_000,**common)
+    assert 0 < packed.packed_jk_workspace_bytes <= 64_000_000
+    # A distinct reservation reduces the workspace available to grid blocks.
+    assert packed.grid_block_size < ordinary.grid_block_size
+    assert packed.action_bytes == ordinary.action_bytes
+    assert packed.orbital_grid_cache_bytes == ordinary.orbital_grid_cache_bytes
+
 
 def test_cached_orbital_grid_action_and_derivatives_match_block_recomputation():
     molecule=reference()

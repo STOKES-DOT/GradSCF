@@ -278,17 +278,19 @@ def _unrestricted_project_response(
     )
 
 
-def _jk_from_full_eri(eri: Array, density: Array) -> tuple[Array, Array]:
+def _jk_from_full_eri(eri: Array, density: Array, *, max_memory=None) -> tuple[Array, Array]:
     if eri.ndim in (1,2):
         from gradscf.integrals.molecular.jk import build_jk_from_packed
-        return build_jk_from_packed(eri,density)
+        return build_jk_from_packed(eri,density,max_memory=max_memory)
     j_mat = jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     k_mat = jnp.einsum("prqs,nrs->npq", eri, density, precision=Precision.HIGHEST)
     return j_mat, k_mat
 
 
-def _j_from_full_eri(eri: Array, density: Array) -> Array:
-    if eri.ndim in (1,2):return _jk_from_full_eri(eri,density)[0]
+def _j_from_full_eri(eri: Array, density: Array, *, max_memory=None) -> Array:
+    if eri.ndim in (1,2):
+        from gradscf.integrals.molecular.jk import build_jk_from_packed
+        return build_jk_from_packed(eri,density,with_k=False,max_memory=max_memory)[0]
     return jnp.einsum("pqrs,nrs->npq", eri, density, precision=Precision.HIGHEST)
 
 
@@ -300,6 +302,7 @@ def _unrestricted_ao_response_action(
     dtype: Any,
     response_options: ResponseKernelOptions | None = None,
     eri_cache_bytes: int = 0,
+    packed_max_memory: float | None = None,
 ) -> Callable[[Array, Array], tuple[Array, Array]]:
     response_options = normalize_response_kernel_options(
         response_options,
@@ -354,8 +357,8 @@ def _unrestricted_ao_response_action(
         if source is None or not int(jnp.asarray(source).size):
             raise ValueError("Unrestricted response requires direct_basis or AO ERIs.")
         source = jnp.asarray(source, dtype=dtype)
-        jk_fn = lambda density: _jk_from_full_eri(source, density)
-        j_fn = lambda density: _j_from_full_eri(source, density)
+        jk_fn = lambda density: _jk_from_full_eri(source, density, max_memory=packed_max_memory)
+        j_fn = lambda density: _j_from_full_eri(source, density, max_memory=packed_max_memory)
 
     def action(density_alpha: Array, density_beta: Array) -> tuple[Array, Array]:
         density_alpha = jnp.asarray(density_alpha, dtype=dtype)
@@ -369,8 +372,8 @@ def _unrestricted_ao_response_action(
         j_total = j_alpha + j_beta
         exchange_a, exchange_b = alpha*k_alpha, alpha*k_beta
         if eri_lr is not None:
-            exchange_a = exchange_a+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_alpha)[1]
-            exchange_b = exchange_b+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_beta)[1]
+            exchange_a = exchange_a+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_alpha, max_memory=packed_max_memory)[1]
+            exchange_b = exchange_b+(long_range-short_range)*_jk_from_full_eri(eri_lr, density_beta, max_memory=packed_max_memory)[1]
         return j_total-exchange_a, j_total-exchange_b
 
     return action
@@ -580,6 +583,8 @@ def _build_unrestricted_response_operator_data(
         dtype=jnp.result_type(de_a, de_b),
         response_options=response_options,
         eri_cache_bytes=memory_plan.eri_cache_bytes,
+        packed_max_memory=(memory_plan.packed_jk_workspace_bytes / 1_000_000
+                           if memory_plan.packed_jk_workspace_bytes else None),
     )
     df_factors = getattr(molecule, "df_factors", None)
     ao_mo_response_action_fn = None

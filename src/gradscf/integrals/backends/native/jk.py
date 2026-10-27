@@ -446,8 +446,8 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
             out[-1] if with_k else jnp.zeros_like(d))
 
 
-@lru_cache(maxsize=4)
-def _packed_operator(with_j=True, with_k=True):
+@lru_cache(maxsize=16)
+def _packed_operator(with_j=True, with_k=True, max_memory=64.):
     from ...molecular.jk import _build_jk_from_packed_jax
     from .autodiff.common import register_eager_dispatch
 
@@ -455,7 +455,8 @@ def _packed_operator(with_j=True, with_k=True):
     nops = int(with_j) + int(with_k)
 
     def reference(e, d):
-        coulomb, exchange = _build_jk_from_packed_jax(e, d)
+        coulomb, exchange = _build_jk_from_packed_jax(
+            e, d, with_j=with_j, with_k=with_k, max_memory=max_memory)
         return jnp.stack([v for v, include in ((coulomb, with_j), (exchange, with_k))
                           if include])
 
@@ -519,7 +520,7 @@ def _packed_operator(with_j=True, with_k=True):
     return primitive
 
 
-def packed_jk(eri, density, *, with_j=True, with_k=True):
+def packed_jk(eri, density, *, with_j=True, with_k=True, max_memory=None):
     """Native s8 value/density AD; ERI VJP uses bounded JAX scatters."""
     if eri.ndim != 1:
         raise ValueError("The native packed J/K operator requires s8 ERIs.")
@@ -534,7 +535,8 @@ def packed_jk(eri, density, *, with_j=True, with_k=True):
         if jnp.iscomplexobj(flat)
         else flat
     )
-    out = _packed_operator(bool(with_j), bool(with_k)).bind(eri, d)
+    out = _packed_operator(bool(with_j), bool(with_k),
+                           64. if max_memory is None else float(max_memory)).bind(eri, d)
     if jnp.iscomplexobj(flat):
         out = out[:, :count] + 1j * out[:, count:]
     out = out.reshape(int(with_j) + int(with_k), *density.shape)

@@ -16,7 +16,6 @@ from ..tools.features import (
     molecule_grid_block,
     normalize_response_feature_kind,
 )
-from gradscf.integrals.molecular.eri import _metadata_arrays
 from ._utils import (
     _density_on_grid,
     _resolve_xc_functional,
@@ -797,49 +796,14 @@ def _j_from_df_factors(df_factors: Array, density: Array) -> Array:
     return jnp.einsum("nQ,Qpq->npq", rho_aux, df_factors, precision=Precision.HIGHEST)
 
 
-def _jk_from_eri_pair_matrix(eri_pair_matrix: Array, density: Array) -> tuple[Array, Array]:
-    pair = jnp.asarray(eri_pair_matrix)
-    density = jnp.asarray(density)
-    nao = int(density.shape[-1])
-    rows, cols, pair_index, _ = _metadata_arrays(nao, density.dtype)
-    offdiag = (rows != cols)[None, :]
-    density_pair = density[:, rows, cols] + jnp.where(
-        offdiag,
-        density[:, cols, rows],
-        jnp.zeros_like(density[:, rows, cols]),
-    )
-    j_pair = jnp.einsum("PQ,nQ->nP", pair, density_pair, precision=Precision.HIGHEST)
-    j_mat = jnp.zeros_like(density)
-    j_mat = j_mat.at[:, rows, cols].set(j_pair)
-    j_mat = j_mat.at[:, cols, rows].set(j_pair)
-
-    ao = jnp.arange(nao, dtype=jnp.int32)
-    qs_by_q = pair_index[:, ao]
-
-    def k_row(p: Array) -> Array:
-        pr = pair_index[p, ao]
-        blocks = pair[pr[None, :, None], qs_by_q[:, None, :]]
-        return jnp.einsum("qrs,nrs->nq", blocks, density, precision=Precision.HIGHEST)
-
-    k_mat = jnp.transpose(jax.vmap(k_row)(ao), (1, 0, 2))
-    return j_mat, k_mat
+def _jk_from_eri_pair_matrix(eri_pair_matrix: Array, density: Array, *, max_memory=None) -> tuple[Array, Array]:
+    from ..integrals.molecular.jk import build_jk_from_packed
+    return build_jk_from_packed(eri_pair_matrix, density, max_memory=max_memory)
 
 
-def _j_from_eri_pair_matrix(eri_pair_matrix: Array, density: Array) -> Array:
-    pair = jnp.asarray(eri_pair_matrix)
-    density = jnp.asarray(density)
-    nao = int(density.shape[-1])
-    rows, cols, _, _ = _metadata_arrays(nao, density.dtype)
-    offdiag = (rows != cols)[None, :]
-    density_pair = density[:, rows, cols] + jnp.where(
-        offdiag,
-        density[:, cols, rows],
-        jnp.zeros_like(density[:, rows, cols]),
-    )
-    j_pair = jnp.einsum("PQ,nQ->nP", pair, density_pair, precision=Precision.HIGHEST)
-    j_mat = jnp.zeros_like(density)
-    j_mat = j_mat.at[:, rows, cols].set(j_pair)
-    return j_mat.at[:, cols, rows].set(j_pair)
+def _j_from_eri_pair_matrix(eri_pair_matrix: Array, density: Array, *, max_memory=None) -> Array:
+    from ..integrals.molecular.jk import build_jk_from_packed
+    return build_jk_from_packed(eri_pair_matrix, density, with_k=False, max_memory=max_memory)[0]
 
 
 def _restricted_df_mo_response_action(
@@ -873,6 +837,7 @@ def _restricted_ao_response_action(
     eri_cache_bytes: int = 0,
     direct_tol: float = 0.0,
     direct_workers: int = 8,
+    packed_max_memory: float | None = None,
 ) -> Callable[[Array], Array]:
     alpha = jnp.asarray(hybrid_fraction, dtype=dtype)
     rsh = _restricted_rsh_coefficients(molecule)
@@ -920,8 +885,8 @@ def _restricted_ao_response_action(
         eri_pair_matrix = getattr(molecule, "eri_pair_matrix", None)
         if eri_pair_matrix is not None and int(jnp.asarray(eri_pair_matrix).size) > 0:
             source = jnp.asarray(eri_pair_matrix, dtype=dtype)
-            jk_fn = lambda density: _jk_from_eri_pair_matrix(source, density)
-            j_fn = lambda density: _j_from_eri_pair_matrix(source, density)
+            jk_fn = lambda density: _jk_from_eri_pair_matrix(source, density, max_memory=packed_max_memory)
+            j_fn = lambda density: _j_from_eri_pair_matrix(source, density, max_memory=packed_max_memory)
         else:
             rep_tensor = getattr(molecule, "rep_tensor", None)
             if rep_tensor is None or int(jnp.asarray(rep_tensor).size) == 0:
@@ -1251,6 +1216,8 @@ def _build_restricted_response_operator_data(
             eri_cache_bytes=memory_plan.eri_cache_bytes,
             direct_tol=response_options.direct_tol,
             direct_workers=response_options.direct_workers,
+            packed_max_memory=(memory_plan.packed_jk_workspace_bytes / 1_000_000
+                               if memory_plan.packed_jk_workspace_bytes else None),
         )
     else:
         ao_response_action_fn = _unused_ao_response_action
