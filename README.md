@@ -34,23 +34,35 @@ through JAX automatic differentiation and shared implicit-response solvers.
 
 ```mermaid
 %%{init: {"htmlLabels": false, "themeVariables": {"fontFamily": "Arial, sans-serif", "fontSize": "16px"}, "flowchart": {"padding": 24, "nodeSpacing": 36, "rankSpacing": 48}}}%%
-flowchart LR
-    I["Geometry<br/>and basis"] --> S["HF / DFT"]
-    M["External<br/>models"] --> S
-    S --> P["MP / CI / FCI"]
-    S --> C["CC"]
-    S --> R["TD response<br/>GW / BSE"]
-    C --> E["EOM-CC"]
-    I --> O["Orbital-free<br/>DFT"]
-    P --> V["Energies<br/>Densities<br/>Spectra"]
-    C --> V
-    R --> V
-    E --> V
-    O --> V
+flowchart TB
+    G["Geometry and basis"] --> I["Integrals and grids"]
+    N["NNAO basis model"] -.-> I
+    M["External XC / KEDF"] -.->|XC| K["KS-DFT"]
+    M -.->|XC / KEDF| O["OFDFT"]
+    I --> H["HF"]
+    I --> K
+    I --> O
+
+    H --> P["MP / CI / FCI"]
+    H --> C["CC / QCI"]
+    H --> T["TDA / TDHF / TDDFT"]
+    K --> T
+    H --> W["GW"]
+    K --> W
+    W --> B["BSE"]
+    C -->|CCSD| E["EOM-CCSD"]
+
+    H --> D["DFPT"]
+    K --> D
+    O --> D
+    P -->|Reference data| A["iKS assessment"]
 ```
 
-Each method has its own reference, representation, and derivative contract;
-the guides below identify supported combinations. EOM uses a CC reference.
+Solid arrows show reference/preparation paths; dashed arrows show external-model
+inputs. Gaussian AO integrals use libcint; periodic grids and pseudopotentials
+retain their FFT/GTH paths. iKS here denotes fixed-reference functional
+assessment. Each method's guide specifies its supported references,
+representations and derivative contract.
 
 ## Installation
 
