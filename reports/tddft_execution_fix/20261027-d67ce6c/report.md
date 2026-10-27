@@ -198,6 +198,8 @@ CH₂O/PBE0 RI → GPU TDA completes with a warm response around **0.163 s** and
 warm end-to-end around **1.325 s**, with eight logical CPU threads for CPU
 preparation. Its CPU1 result is not used as a matched GPU speed ratio.
 The old failed CUDA-handler entry cannot supply an acceleration denominator.
+CPU/staged-GPU CH₂O excitation energies agree to 7.991e-13 eV;
+see [gpu_cpu_numerical_comparison.json](gpu_cpu_numerical_comparison.json).
 Tests count one 2c/3c preparation, one reference completion and one logical
 reference transfer per converged reference. These counts are not PCIe bus
 traffic measurements. Native basis coefficient/log-exponent JVP/VJP survive
