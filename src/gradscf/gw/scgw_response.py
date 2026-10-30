@@ -58,6 +58,7 @@ def _residual(state, params, grid, nocc):
     return result.at[-1].set((2 * jnp.trace(per_spin) - 2 * nocc) / grid.beta)
 
 
+@jax.jit
 def _chemical_potential(fock, sigma, guess, grid, target, particle_tol):
     def number(mu):
         _, density = dyson_green_and_density(fock, sigma, mu, grid)
