@@ -33,12 +33,14 @@ class MolecularEnergy:
     restricted implicit solve. The final stationary equations and response
     remain the same live orbital minimization as ``forward="minimize"``.
 
-    Full native ERIs are the default geometry-AD representation. HF may opt
-    into ``jk_backend="direct"`` to use moving native J/K without AO ERIs.
+    Native full J/K is the default geometry-AD representation. Supported HF
+    and DFT references may opt into ``jk_backend="direct"`` to use moving
+    native J/K without full or long-range AO ERIs.
     Direct calls inherit the seed's J/K worker count and retain zero screening.
     The default requires a full-J/K seed; explicit direct accepts full or
-    direct HF seeds. Original omegaB97X-D carries full/LR ERIs and its
-    geometry-dependent CHG energy explicitly through the same solver.
+    direct seeds. DFT assembly inherits the seed's grid and memory controls;
+    an explicit max_memory overrides that assembly budget. Original
+    omegaB97X-D retains its geometry-dependent CHG energy in both backends.
     DFT grids and AO values move with R. Isolated state stability and numerical
     grid convergence must be checked for each demonstrated observable.
     """
@@ -72,16 +74,14 @@ class MolecularEnergy:
             self.occupations = np.stack([occupations / 2] * 2)
         seed_backends = ("full", "direct") if jk_backend == "direct" else ("full",)
         if not mf.mol.cart or getattr(mf, "jk_backend", "full") not in seed_backends:
-            raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct HF J/K.")
+            raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct J/K.")
         self.jk_backend = jk_backend
         self.direct_scf_workers = getattr(mf, "direct_scf_workers", 1)
         self.xc = mf.xc
         self.rsh = rsh_preset(self.xc)
         self.kind = xc_type(local_xc_spec(self.xc))
         if self.kind not in ("HF", "LDA", "GGA"):
-            raise NotImplementedError("This molecular adapter supports HF/LDA/GGA/global hybrids.")
-        if jk_backend == "direct" and (self.kind != "HF" or self.rsh is not None):
-            raise NotImplementedError("Direct molecular response currently supports HF only.")
+            raise NotImplementedError("This molecular adapter supports HF/LDA/GGA/hybrids, not MGGA.")
         self.spec = mf.mol.to_spec()
         self.basis = mf.mol.basis
         self.coordinates = jnp.asarray(self.spec.coords_bohr)
@@ -95,13 +95,14 @@ class MolecularEnergy:
         if forward == "scf":
             if self.unrestricted or self.differentiation.mode != "implicit":
                 raise ValueError("forward='scf' requires a restricted implicit solve.")
-            self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
-            if self.max_memory is not None:
-                self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
             self.nelectron = int(np.sum(occupations))
             self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
                                                         np.flatnonzero(occupations == 0)])
             self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
+        if self.kind != "HF" or forward == "scf":
+            self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
+            if self.max_memory is not None:
+                self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
         topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
         self.plan = integrals.make_plan(topology)
         distances = np.linalg.norm(np.asarray(self.parameters.centers)[:, None]
@@ -178,14 +179,17 @@ class MolecularEnergy:
             options = {} if self.unrestricted else dict(include_dipole_integrals=False)
             data = build(
                 atom=replace(self.spec, coords_bohr=coordinates), basis=self.basis,
-                xc_spec=self.xc, grids_level=self.grids_level, max_l=self.max_l,
+                config=self.scf_config, xc_spec=self.xc,
+                grids_level=self.grids_level, max_l=self.max_l,
                 cart=True, **options)
             overlap, hcore = data.overlap, data.hcore
-            eri = data.eri if data.eri is not None else data.eri_pair_matrix
+            eri = data.eri if data.eri is not None else getattr(data, "eri_pair_matrix", None)
             enuc = data.nuclear_repulsion
             ao, dao, weights = data.ao, data.ao_deriv1, data.grid_weights
             if data.grid_ao is not None:
                 extra["grid_ao"] = data.grid_ao
+            if data.direct_basis is not None:
+                extra["direct_basis"] = data.direct_basis
             if self.rsh is not None:
                 extra.update(eri_lr=data.eri_lr, dispersion_energy=data.dispersion_energy)
         if potential is not None:
