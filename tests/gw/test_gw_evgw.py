@@ -114,17 +114,16 @@ def test_evgw_damping_cannot_hide_a_large_residual():
 
 def test_evgw0_builds_fixed_w_once(monkeypatch):
     from unittest.mock import patch
-    from gradscf.gw import g0w0 as module
+    from gradscf.gw import integrals, screened
 
     kwargs = _inputs("H 0 0 0; H 0 0 0.74", nocc=1)
     kwargs["df_factors"] = _df(kwargs)
-    with patch.object(module, "rpa_resolvent", wraps=module.rpa_resolvent) as build, \
-         patch.object(module, "screened_w_imag_resolvent", wraps=module.screened_w_imag_resolvent) as evaluate:
+    with patch.object(integrals, "prepare_selected_factors", wraps=integrals.prepare_selected_factors) as build, \
+         patch.object(screened, "screened_w_selected", wraps=screened.screened_w_selected) as evaluate:
         result = evgw_cd_restricted(**kwargs, nw=16, eta=1e-5, max_iter=50,
                                    tol=1e-9, damping=.2, update_w=False)
         assert result.converged
-        assert build.call_count == 1
-        assert evaluate.call_count == 2  # Frequency grid and Wc(0), once each.
+        assert build.call_count == evaluate.call_count == 1
     # Independent uncached CD residual at the returned fixed point.
     check = g0w0_cd_restricted(**kwargs, nw=16, eta=1e-5,
                               screening_energy=kwargs["mo_energy"],

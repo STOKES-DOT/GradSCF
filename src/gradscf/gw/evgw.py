@@ -38,11 +38,12 @@ import jax.numpy as jnp
 from jaxtyping import Array
 
 from .g0w0 import (
-    build_screened_w_restricted,
     g0w0_cd_restricted,
+    _run_g0w0_numerics,
     g0w0_cd_unrestricted,
 )
 from .types import GWResult
+from .._memory import DEFAULT_MAX_MEMORY_MB
 from ..scf.autodiff import SCFDifferentiationConfig
 from ..solvers.nonlinear import NonlinearConfig, attach_root, solve_nonlinear
 from .outer_response import linear_config, require_occupation_gap, require_valid, require_real
@@ -92,6 +93,9 @@ def _evgw_loop(
     if not isinstance(diis_space, Integral) or isinstance(diis_space, bool) or diis_space < 0:
         raise ValueError("diis_space must be a nonnegative integer.")
     e_old = jnp.asarray(mo_energy_mf, dtype=jnp.float64)
+    plan = kwargs.get("_preparation", {}).get("plan")
+    memory = ({} if plan is None else dict(max_memory=plan.max_memory,
+        reserved_bytes=plan.resident_bytes, operator_min_bytes=plan.working_bytes))
     occupations = kwargs.get("nocc")
     selected = kwargs.get("orbs")
     selected = (jnp.arange(e_old.shape[-1]) if selected is None
@@ -135,7 +139,7 @@ def _evgw_loop(
                 observable=jnp.sum,
                 config=NonlinearConfig(maxiter=max_iter, residual_tol=tol, energy_tol=tol,
                                        diis_space=int(diis_space), damping=damping),
-                linear_config=config)
+                linear_config=config, **memory)
             energy, norm = solved.solution.reshape(shape), solved.residual_norm
             done = solved.converged & (norm < tol)
         else:
@@ -152,7 +156,7 @@ def _evgw_loop(
         norm, done = jax.tree.map(jax.lax.stop_gradient, (norm, done))
         require_valid(done, norm, "evGW")
         if not diis_space:
-            energy = attach_root(residual, jax.lax.stop_gradient(energy), config=config, converged=done)
+            energy = attach_root(residual, jax.lax.stop_gradient(energy), config=config, converged=done, **memory)
         result = driver(mo_energy_poles=energy, evaluate_only=True, **kwargs)
         return _converged_result(result, computed, tol, done)
     for _ in range(int(max_iter)):
@@ -176,7 +180,7 @@ def evgw_cd_restricted(
     mo_energy: Array,
     mo_coeff: Array,
     nocc: int,
-    df_factors: Array,
+    df_factors: Array | None = None,
     fock_matrix: Array,
     hcore_matrix: Array,
     density_matrix: Array,
@@ -194,6 +198,13 @@ def evgw_cd_restricted(
     g_orbitals: Sequence[int] | None = None,
     screening_occupied: Sequence[int] | None = None,
     screening_virtual: Sequence[int] | None = None,
+    max_memory: float = DEFAULT_MAX_MEMORY_MB,
+    reserved_bytes: int = 0,
+    screening_config=None,
+    v_mf_matrix=None,
+    eri=None,
+    eri_pair_matrix=None,
+    direct_basis=None,
 ) -> GWResult:
     """Spin-restricted evGW with contour deformation.
 
@@ -224,18 +235,45 @@ def evgw_cd_restricted(
     Jacobian or enumerate all quasiparticle branches.
     """
     require_real(mo_energy, mo_coeff, df_factors, fock_matrix, hcore_matrix, density_matrix)
+    mo_energy = jnp.asarray(mo_energy, dtype=jnp.float64)
+    mo_coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
+    nocc = int(nocc)
+    if not 0 < nocc < mo_energy.size:
+        raise ValueError("Restricted GW requires occupied and virtual orbitals")
     if type(update_w) is not bool:
         raise TypeError("update_w must be boolean")
-    fixed_w = None
+    from .g0w0 import _requested_orbitals, _window_indices
+    from .integrals import prepare_restricted, screen_restricted
+    from .freq import scaled_legendre_grid
+    orbs = _requested_orbitals(orbs, mo_energy.shape[0])
+    gi = _window_indices(g_orbitals, range(mo_energy.size), "g_orbitals")
+    oi = _window_indices(screening_occupied, range(nocc), "screening_occupied")
+    va = _window_indices(screening_virtual, range(nocc, mo_energy.size), "screening_virtual")
+    if df_factors is None:
+        from .conventional import prepare, screened
+        data = prepare(mo_coeff, mo_energy,
+            source=dict(eri=eri, eri_pair_matrix=eri_pair_matrix, direct_basis=direct_basis),
+            nocc=nocc, orbs=orbs, gi=gi, oi=oi, va=va, nw=nw,
+            fock=fock_matrix, hcore=hcore_matrix, density=density_matrix,
+            max_memory=max_memory, reserved_bytes=reserved_bytes,
+            config=screening_config, v_mf=v_mf_matrix)
+    else:
+        if any(x is not None for x in (eri, eri_pair_matrix, direct_basis)):
+            raise ValueError("Supply exactly one integral representation")
+        data = prepare_restricted(df_factors, mo_coeff, mo_energy, nocc=nocc,
+            orbs=orbs, g_orbitals=gi, screening_occupied=oi, screening_virtual=va,
+            nw=nw, fock=fock_matrix, hcore=hcore_matrix, density=density_matrix,
+            v_mf=v_mf_matrix, max_memory=max_memory, reserved_bytes=reserved_bytes,
+            screening_config=screening_config)
     if not update_w:
-        fixed_w = build_screened_w_restricted(
-            mo_energy=mo_energy, mo_coeff=mo_coeff, nocc=int(nocc),
-            df_factors=df_factors, nw=int(nw), eta=float(eta),
-            screening_occupied=screening_occupied,
-            screening_virtual=screening_virtual,
-        )
+        frequencies, _ = scaled_legendre_grid(nw)
+        frequencies = jnp.concatenate((jnp.zeros(1), frequencies))
+        pair = (mo_energy[jnp.asarray(oi, dtype=jnp.int32)],
+                mo_energy[jnp.asarray(va, dtype=jnp.int32)])
+        data["projected"] = (screen_restricted(data, pair, frequencies) if df_factors is not None
+            else screened(data, (pair[1][None, :]-pair[0][:, None]).reshape(-1), frequencies))
     result = _evgw_loop(
-        g0w0_cd_restricted,
+        _run_g0w0_numerics,
         mo_energy,
         mo_energy=mo_energy,
         mo_coeff=mo_coeff,
@@ -255,13 +293,12 @@ def evgw_cd_restricted(
         initial_guess=initial_guess,
         differentiation=differentiation,
         screening_energy=None if update_w else mo_energy,
-        wmn_fixed=None if fixed_w is None else fixed_w["wmn"],
-        wmn_static_fixed=None if fixed_w is None else fixed_w["wmn_static"],
-        resolvent_expansion=True,
-        resolvent_data_fixed=None if fixed_w is None else fixed_w["resolvent_data"],
-        g_orbitals=g_orbitals,
-        screening_occupied=screening_occupied,
-        screening_virtual=screening_virtual,
+        _preparation=data, eri=eri, eri_pair_matrix=eri_pair_matrix, direct_basis=direct_basis,
+        max_memory=max_memory, reserved_bytes=reserved_bytes,
+        screening_config=screening_config, v_mf_matrix=v_mf_matrix,
+        g_orbitals=gi,
+        screening_occupied=oi,
+        screening_virtual=va,
     )
 
     return replace(result, method="evgw" if update_w else "evgw0")

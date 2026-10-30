@@ -404,6 +404,9 @@ def sigma_cd(omega: float | Array, ctx: dict) -> Array:
         occupation_sign=ctx.get("occupation_sign"),
         del_w_static=ctx.get("del_w_static"),
     )
+    if "transition" in ctx:
+        from .conventional import residue
+        return sigma_i+residue(omega, ctx)
     sigma_r = sigma_residue_part(
         omega,
         ctx["mo_energy"],

@@ -99,3 +99,38 @@ def prepare_selected_factors(factors, coefficients, *, nocc, orbs, g_orbitals,
         array_storage_bytes(*output.values(), left)).transpose(0, 2, 1)
     output["exchange"] = -jnp.einsum("Qpi,Qpi->p", left, right, precision="highest")
     return output
+
+
+def prepare_restricted(factors, coefficients, energy, *, nocc, orbs, g_orbitals,
+                       screening_occupied, screening_virtual, nw, fock, hcore,
+                       density, v_mf=None, max_memory=DEFAULT_MAX_MEMORY_MB,
+                       reserved_bytes=0, screening_config=None):
+    """Call-local fixed-orbital data, with all numerical AD dependencies live."""
+    from ._memory import plan_gw
+    from ..integrals.molecular.jk import build_j_from_df
+    reserved = reserved_bytes+array_storage_bytes(energy, fock, hcore, density, v_mf)
+    plan = plan_gw(factors, coefficients, nocc=nocc, n_targets=len(orbs),
+        n_g=len(g_orbitals), screening_shape=(len(screening_occupied), len(screening_virtual)),
+        nw=nw, max_memory=max_memory, reserved_bytes=reserved, screening_config=screening_config)
+    vertices = prepare_selected_factors(factors, coefficients, nocc=nocc, orbs=orbs,
+        g_orbitals=g_orbitals, screening_occupied=screening_occupied,
+        screening_virtual=screening_virtual, max_memory=max_memory, reserved_bytes=reserved)
+    if v_mf is None:
+        v_mf = jnp.asarray(fock)-jnp.asarray(hcore)-build_j_from_df(factors, density)
+    elif v_mf.shape != fock.shape:
+        raise ValueError("v_mf_matrix must match the AO Fock matrix")
+    targets = coefficients[:, jnp.asarray(orbs)]
+    delta = vertices["exchange"]-jnp.einsum("mp,mn,np->p", targets, v_mf, targets, precision="highest")
+    return dict(vertices=vertices, plan=plan,
+                delta_v=jnp.zeros_like(energy).at[jnp.asarray(orbs)].set(delta))
+
+
+def screen_restricted(preparation, screen_pairs, frequencies):
+    """Energy-dependent W preparation; W0 may be reused only within one call."""
+    from .screened import screened_w_selected
+    from .polarizability import rho_response_iw
+    vertices, plan = preparation["vertices"], preparation["plan"]
+    ov = vertices["b_ov"]
+    return screened_w_selected(vertices["b_mp"],
+        lambda w: rho_response_iw(w, screen_pairs, ov, spin_factor=4.),
+        frequencies, plan, channels=((screen_pairs, ov, 4.),))

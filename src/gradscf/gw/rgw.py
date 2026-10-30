@@ -26,22 +26,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors
-from .g0w0 import g0w0_cd_restricted, _mo_factors, _requested_orbitals, _window_indices
+from .g0w0 import g0w0_cd_restricted, _run_g0w0_numerics, _mo_factors, _requested_orbitals, _window_indices
 from .evgw import evgw_cd_restricted
 from ..scf.reference import reference_state_signature, _array_signature
 from .._memory import DEFAULT_MAX_MEMORY_MB
-
-
-# Cache executables by orbital layout and solver policy. All spectra, factors,
-# mean-field matrices and broadening remain numerical arguments; no GW/SCF
-# facade or frequency-dependent screening value enters the static cache key.
-_run_g0w0_numerics = jax.jit(g0w0_cd_restricted, static_argnames=(
-    "nocc", "nw", "orbs", "diff_mode", "qp_solver", "linearized", "evaluate_only",
-    "g_orbitals", "screening_occupied", "screening_virtual", "resolvent_expansion", "qp_tol",
-    "max_memory",
-    "screening_config",
-    "reserved_bytes",
-))
 
 
 def _use_cpu_resolvent(arrays, *, nmo, transitions, max_memory=DEFAULT_MAX_MEMORY_MB, nw=100, reserved_bytes=0):
@@ -105,11 +93,11 @@ class GW:
         scGW inverse temperature (Ha^-1) and accepted fixed-point mixing.
         Matsubara scGW does not supply inferred QP energies for static BSE.
     max_memory:
-        Known G0W0 working arrays in decimal MB, inherited from mf or the
-        shared 60000 MB default. Other GW methods and arbitrary outer
-        AD/model/compiler residency are not newly budgeted here.
+        Known G0W0/evGW/qsGW working arrays in decimal MB, inherited from mf
+        or the shared 60000 MB default. This is not a process RSS limit;
+        Matsubara scGW and arbitrary outer AD/compiler residency are excluded.
     screening_config:
-        Optional shared GMRES config for G0W0. Omit for bounded dense/small
+        Optional shared GMRES config for molecular CD screening. Omit for bounded dense/small
         CPU RPA screening. Use density_fit(auxbasis) for independent RI.
     """
 
@@ -132,6 +120,7 @@ class GW:
         self.max_memory = resolve_memory_mb(max_memory, mf)
         self.screening_config = screening_config
         self.auxbasis = None
+        self._conventional = False
         self._ri_key = self._ri_factors = None
         self.nw = int(nw)
         self.eta = float(eta)
@@ -172,7 +161,7 @@ class GW:
             self.eta,
             self.method, self.max_cycle, self.conv_tol, self.damp, self.qp_solver,
             self.beta, self.mixing,
-            self.max_memory, self.screening_config, self.auxbasis,
+            self.max_memory, self.screening_config, self.auxbasis, self._conventional,
             tuple(None if x is None else tuple(x) for x in
                   (self.g_orbitals, self.screening_occupied, self.screening_virtual)),
             reference_state_signature(mf, allow_range_separated=True),
@@ -220,6 +209,8 @@ class GW:
             raise NotImplementedError(
                 "Molecular Matsubara scGW needs validated analytic continuation and QP "
                 "coverage before a static BSE reference can be constructed.")
+        if self._conventional and self.result is not None:
+            raise NotImplementedError("Static BSE export of a conventional four-center GW source is not implemented; no implicit factorization is performed")
         if self.result is None or self._ao_factors is None:
             raise RuntimeError("Run GW before requesting BSE inputs")
         naux = self._ao_factors.shape[0]
@@ -288,12 +279,37 @@ class GW:
         nao = int(np.asarray(self._scf.mo_coeff).shape[0])
         return eri_pair_matrix_to_df_factors(pair, nao=nao, tol=1e-12)
 
+    def conventional(self):
+        """Use actual packed/direct four-center CD, without auxiliary/spectral factors.
+
+        The SCF reference is unchanged. Restricted G0W0/evGW are supported;
+        the factor-based static BSE adapter is a separate capability boundary.
+        """
+        if self.method not in {"g0w0", "evgw", "evgw0"}:
+            raise NotImplementedError("Conventional screening currently supports G0W0 and evGW")
+        self._conventional, self.auxbasis = True, None
+        self._ri_key = self._ri_factors = self._ao_factors = None
+        return self
+
+    def _conventional_source(self):
+        inputs = self._scf._scf_inputs
+        for name in ("direct_basis", "eri_pair_matrix", "eri"):
+            value = getattr(inputs, name, None)
+            if value is not None:
+                return {name: value}
+        # Keep learned contraction/exponent values and their AO normalization;
+        # a named molecular basis need not describe the actual SCF basis.
+        from ..integrals.libcint import bind_cartesian
+        basis = getattr(inputs, "basis", None)
+        if basis is None:
+            raise RuntimeError("Conventional GW requires the actual AO basis or a native/packed Coulomb source")
+        return {"direct_basis": bind_cartesian(basis).direct()}
+
     def density_fit(self, auxbasis="def2-universal-jkfit"):
-        """Use independent fixed-geometry libcint RI for G0W0, leaving SCF intact."""
+        """Use independent fixed-geometry libcint RI, leaving SCF intact."""
         if not isinstance(auxbasis, str) or not auxbasis.strip():
             raise ValueError("auxbasis must name an explicit auxiliary basis")
-        if self.method != "g0w0":
-            raise NotImplementedError("Independent GW auxiliary fitting currently requires G0W0")
+        self._conventional = False
         self.auxbasis = auxbasis
         self._ri_key = self._ri_factors = None
         return self
@@ -304,8 +320,8 @@ class GW:
         self._source_key = None
         if self.method not in {"g0w0", "evgw", "evgw0", "qsgw", "scgw"}:
             raise ValueError("GW method must be g0w0, evgw, evgw0, qsgw or scgw")
-        if self.screening_config is not None and self.method != "g0w0":
-            raise NotImplementedError("Explicit dynamic screening configuration currently requires G0W0")
+        if self.screening_config is not None and self.method == "scgw":
+            raise NotImplementedError("Matsubara scGW does not use the CD screening configuration")
         if self.qp_solver not in {"secant", "newton", "hybrid"}:
             raise ValueError("qp_solver must be secant, newton or hybrid")
         if self.method != "g0w0" and self.qp_solver != "secant":
@@ -324,15 +340,24 @@ class GW:
             raise NotImplementedError("Restricted GW facade requires real closed-shell orbitals")
         if not np.array_equal(mo_occ,np.r_[np.full(nocc,2.),np.zeros(len(mo_occ)-nocc)]):
             raise ValueError("Restricted GW requires integer closed-shell occupations, occupied first")
-        factors=self._df_factors()
+        if self._conventional and self.method not in {"g0w0", "evgw", "evgw0"}:
+            raise NotImplementedError("Conventional screening currently supports G0W0 and evGW")
+        factors = None if self._conventional else self._df_factors()
+        source = self._conventional_source() if self._conventional else dict(df_factors=factors)
+        matrix_method = self.method in {"qsgw", "scgw"}
         v_mf = None
-        if self.auxbasis is not None:
-            if self.method != "g0w0":
-                raise NotImplementedError("Independent GW auxiliary fitting currently requires G0W0")
+        if not matrix_method and (self.auxbasis is not None or self._conventional):
             from .integrals import starting_potential
             v_mf = starting_potential(mf, result.density_matrix,
                 result.fock_matrix, result.hcore_matrix, max_memory=self.max_memory)
-        if self.method in {"qsgw", "scgw"}:
+        from .._memory import tree_storage_bytes
+        excluded = (result.mo_energy, result.mo_coeff, factors, result.hcore_matrix,
+                    *jax.tree.leaves(source))
+        if not matrix_method:
+            excluded += (result.fock_matrix, result.density_matrix, v_mf)
+        extra = tree_storage_bytes(getattr(mf, "_scf_inputs", None), result,
+            getattr(mf, "reference", None), exclude=excluded)
+        if matrix_method:
             if orbs is not None or any(x is not None for x in
                     (self.g_orbitals, self.screening_occupied, self.screening_virtual)):
                 raise ValueError("qsGW/scGW require the complete orbital space.")
@@ -341,7 +366,8 @@ class GW:
                 nw=self.nw, max_iter=self.max_cycle, tol=self.conv_tol)
             if self.method == "qsgw":
                 from .qsgw import qsgw_cd_restricted
-                res = qsgw_cd_restricted(**common, eta=self.eta, damping=self.damp)
+                res = qsgw_cd_restricted(**common, eta=self.eta, damping=self.damp,
+                    max_memory=self.max_memory, reserved_bytes=extra, screening_config=self.screening_config)
                 # The driver certifies the entire static-Hamiltonian spectrum.
                 # Record that coverage explicitly for fixed-frame BSE consumers.
                 nmo = res.mo_energy.shape[0]
@@ -368,26 +394,23 @@ class GW:
             g_window = _window_indices(g_window, range(nmo), "g_orbitals")
             occupied_window = _window_indices(occupied_window, range(nocc), "screening_occupied")
             virtual_window = _window_indices(virtual_window, range(nocc, nmo), "screening_virtual")
-        from .._memory import tree_storage_bytes
-        extra = tree_storage_bytes(getattr(mf, "_scf_inputs", None), result,
-            getattr(mf, "reference", None), exclude=(result.mo_energy, result.mo_coeff,
-                factors, result.fock_matrix, result.hcore_matrix, result.density_matrix, v_mf))
         controls = dict(qp_solver=self.qp_solver, max_memory=self.max_memory,
             screening_config=self.screening_config,
             v_mf_matrix=v_mf, reserved_bytes=extra,
-            resolvent_expansion=self.screening_config is None and _use_cpu_resolvent((result.mo_energy, result.mo_coeff,
+            resolvent_expansion=factors is not None and self.screening_config is None and _use_cpu_resolvent((result.mo_energy, result.mo_coeff,
                 factors, result.fock_matrix, result.hcore_matrix, result.density_matrix),
                 nmo=nmo, transitions=len(occupied_window)*len(virtual_window),
                 max_memory=self.max_memory, nw=self.nw, reserved_bytes=extra)) if self.method == "g0w0" else dict(
             max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
-            update_w=self.method == "evgw")
+            update_w=self.method == "evgw", max_memory=self.max_memory,
+            screening_config=self.screening_config, reserved_bytes=extra, v_mf_matrix=v_mf)
         from .._memory import array_device
         with jax.default_device(array_device(result.mo_energy)):
             res = driver(
                 mo_energy=result.mo_energy,
                 mo_coeff=result.mo_coeff,
                 nocc=nocc,
-                df_factors=factors,
+                **source,
                 fock_matrix=result.fock_matrix,
                 hcore_matrix=result.hcore_matrix,
                 density_matrix=result.density_matrix,

@@ -153,6 +153,7 @@ def _qp_loop(
     qp_tol=1e-6,
     prepared=None,
     execution_plan=None,
+    transition=None,
 ) -> tuple[Array, ...]:
     """Solve the QP equation for every orbital in ``orbs`` (one spin channel).
 
@@ -179,6 +180,8 @@ def _qp_loop(
         "wts": wts,
         "conjugate": conjugate,
     }
+    if transition is not None:
+        shared["transition"] = transition
     if execution_plan is not None:
         shared["execution_plan"] = execution_plan
     if q0 is not None:
@@ -301,7 +304,7 @@ def g0w0_cd_restricted(
     mo_energy: Array,
     mo_coeff: Array,
     nocc: int,
-    df_factors: Array,
+    df_factors: Array | None = None,
     fock_matrix: Array,
     hcore_matrix: Array,
     density_matrix: Array,
@@ -327,6 +330,10 @@ def g0w0_cd_restricted(
     screening_config=None,
     v_mf_matrix=None,
     reserved_bytes: int = 0,
+    _preparation=None,
+    eri=None,
+    eri_pair_matrix=None,
+    direct_basis=None,
 ) -> GWResult:
     """Spin-restricted G0W0 with contour deformation.
 
@@ -345,6 +352,13 @@ def g0w0_cd_restricted(
         Coulomb factors ``(naux, nao, nao)`` from declared spectral
         factorization or explicit auxiliary-basis 2c/3c RI. The array driver
         does not silently change the integral approximation.
+    eri, eri_pair_matrix, direct_basis:
+        Alternative real four-center sources (full, packed, or native selected
+        AO2MO). Supply exactly one source when df_factors is omitted. This
+        conventional path does not build auxiliary or AO-pair spectral factors.
+        It retains the full OV Coulomb cache within max_memory; native direct
+        coordinates and JAX orbital/projection derivatives stay live. Native
+        primitive-parameter derivative limits belong to the integral supplier.
     fock_matrix, hcore_matrix, density_matrix:
         Converged mean-field quantities (AO basis).  The mean-field
         potential is reconstructed as ``v^mf = F - h - J[D]`` which equals
@@ -403,6 +417,31 @@ def g0w0_cd_restricted(
     -------
     :class:`gradscf.gw.types.GWResult`
     """
+    if not isfinite(qp_tol) or qp_tol <= 0:
+        raise ValueError("qp_tol must be positive and finite")
+    if qp_initial is not None:
+        qp_initial = jnp.asarray(qp_initial)
+        if qp_initial.shape != jnp.shape(mo_energy) or jnp.iscomplexobj(qp_initial):
+            raise ValueError("qp_initial must be a real (nmo,) spectrum")
+        if linearized or evaluate_only:
+            raise ValueError("qp_initial requires a nonlinear QP solve")
+    if df_factors is None:
+        if resolvent_expansion or any(x is not None for x in (wmn_fixed, wmn_static_fixed, resolvent_data_fixed)):
+            raise NotImplementedError("Conventional four-center GW does not accept factor-based cached/resolvent screening")
+        from .conventional import g0w0_conventional
+        return g0w0_conventional(mo_energy=mo_energy, mo_coeff=mo_coeff, nocc=nocc,
+            eri=eri, eri_pair_matrix=eri_pair_matrix, direct_basis=direct_basis,
+            fock_matrix=fock_matrix, hcore_matrix=hcore_matrix, density_matrix=density_matrix,
+            nw=nw, eta=eta, orbs=orbs, diff_mode=diff_mode, qp_solver=qp_solver,
+            mo_energy_poles=mo_energy_poles, screening_energy=screening_energy,
+            g_orbitals=g_orbitals, screening_occupied=screening_occupied,
+            screening_virtual=screening_virtual, linearized=linearized,
+            evaluate_only=evaluate_only, qp_initial=qp_initial, qp_tol=qp_tol,
+            max_memory=max_memory, reserved_bytes=reserved_bytes,
+            screening_config=screening_config, v_mf_matrix=v_mf_matrix,
+            _preparation=_preparation)
+    if any(x is not None for x in (eri, eri_pair_matrix, direct_basis)):
+        raise ValueError("Supply exactly one integral representation")
     mo_energy = jnp.asarray(mo_energy, dtype=jnp.float64)
     mo_coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
     df_factors = jnp.asarray(df_factors)
@@ -417,14 +456,6 @@ def g0w0_cd_restricted(
         if resolvent_expansion or resolvent_data_fixed is not None or wmn_fixed is not None or wmn_static_fixed is not None:
             raise ValueError("GMRES screening requires selected vertices, not full cached/resolvent screening")
     orbs = _requested_orbitals(orbs,nmo)
-    if not isfinite(qp_tol) or qp_tol <= 0:
-        raise ValueError("qp_tol must be positive and finite")
-    if qp_initial is not None:
-        qp_initial = jnp.asarray(qp_initial)
-        if qp_initial.shape != mo_energy.shape or jnp.iscomplexobj(qp_initial):
-            raise ValueError("qp_initial must be a real (nmo,) spectrum")
-        if linearized or evaluate_only:
-            raise ValueError("qp_initial requires a nonlinear QP solve")
 
     if not 0 < nocc < nmo:
         raise ValueError("Restricted GW requires occupied and virtual orbitals")
@@ -437,17 +468,14 @@ def g0w0_cd_restricted(
                     or jnp.iscomplexobj(df_factors))
     prepared = None
     if selected:
-        from ._memory import plan_gw
-        from .integrals import prepare_selected_factors
-        from .screened import screened_w_selected
-        reserved = reserved_bytes+array_storage_bytes(mo_energy, fock_matrix,
-            hcore_matrix, density_matrix, v_mf_matrix)
-        plan = plan_gw(df_factors, mo_coeff, nocc=nocc, n_targets=len(orbs),
-            n_g=len(gi), screening_shape=(len(oi), len(va)), nw=nw,
-            max_memory=max_memory, reserved_bytes=reserved, screening_config=screening_config)
-        vertices = prepare_selected_factors(df_factors, mo_coeff, nocc=nocc,
-            orbs=orbs, g_orbitals=gi, screening_occupied=oi, screening_virtual=va,
-            max_memory=max_memory, reserved_bytes=reserved)
+        from .integrals import prepare_restricted, screen_restricted
+        data = _preparation if _preparation is not None else prepare_restricted(
+            df_factors, mo_coeff, mo_energy, nocc=nocc, orbs=orbs, g_orbitals=gi,
+            screening_occupied=oi, screening_virtual=va, nw=nw,
+            fock=fock_matrix, hcore=hcore_matrix, density=density_matrix,
+            v_mf=v_mf_matrix, max_memory=max_memory, reserved_bytes=reserved_bytes,
+            screening_config=screening_config)
+        vertices, plan = data["vertices"], data["plan"]
         b_mn, b_ov = None, vertices["b_ov"]
     else:
         from ._memory import full_gw_working_bytes, factor_promotion_bytes
@@ -465,21 +493,16 @@ def g0w0_cd_restricted(
         b_mn = _mo_factors(df_factors, mo_coeff)
         b_ov = b_mn[:, oi_array[:, None], va_array[None, :]]
 
-    if v_mf_matrix is None:
-        j_mat = build_j_from_df(df_factors, jnp.asarray(density_matrix))
-        v_mf = jnp.asarray(fock_matrix) - jnp.asarray(hcore_matrix) - j_mat
-    else:
-        v_mf = jnp.asarray(v_mf_matrix)
-        if v_mf.shape != fock_matrix.shape:
-            raise ValueError("v_mf_matrix must match the AO Fock matrix")
     if selected:
-        targets = mo_coeff[:, jnp.asarray(orbs)]
-        delta = vertices["exchange"]-jnp.einsum("mp,mn,np->p", targets, v_mf, targets)
-        delta_v = jnp.zeros(nmo, dtype=delta.dtype).at[jnp.asarray(orbs)].set(delta)
+        delta_v = data["delta_v"]
     else:
-        v_mf_mo = mo_coeff.T @ v_mf @ mo_coeff
-        vk_mo = _exchange_mo(b_mn, nocc)
-        delta_v = jnp.diag(vk_mo - v_mf_mo)
+        if v_mf_matrix is None:
+            v_mf = jnp.asarray(fock_matrix)-jnp.asarray(hcore_matrix)-build_j_from_df(df_factors, density_matrix)
+        else:
+            v_mf = jnp.asarray(v_mf_matrix)
+            if v_mf.shape != fock_matrix.shape:
+                raise ValueError("v_mf_matrix must match the AO Fock matrix")
+        delta_v = jnp.diag(_exchange_mo(b_mn, nocc)-mo_coeff.T @ v_mf @ mo_coeff)
 
     poles = (
         mo_energy
@@ -503,9 +526,9 @@ def g0w0_cd_restricted(
     if resolvent_expansion and resolvent_data is None:
         resolvent_data = rpa_resolvent(jnp.concatenate(screen_pairs), b_ov, b_mn, eta=eta)
     if selected:
-        projected = screened_w_selected(vertices["b_mp"], response_fn,
-            jnp.concatenate([jnp.zeros(1), freqs]), plan,
-            channels=((screen_pairs, b_ov, 4.),))
+        projected = data.get("projected")
+        if projected is None:
+            projected = screen_restricted(data, screen_pairs, jnp.concatenate([jnp.zeros(1), freqs]))
         prepared = dict(wmn_p=projected[1:].transpose(1, 0, 2),
             wmn_static=projected[0], b_pm=vertices["b_pm"].transpose(1, 0, 2),
             b_mp=vertices["b_mp"].transpose(1, 0, 2), p_index=jnp.asarray(orbs))
@@ -777,3 +800,12 @@ def g0w0_cd_unrestricted(
 
 
 __all__ = ["g0w0_cd_restricted", "g0w0_cd_unrestricted"]
+
+
+# Shared by the facade and fixed-orbital outer methods. Physical preparation
+# remains a dynamic PyTree; only the declared algorithm/layout is static.
+_run_g0w0_numerics = jax.jit(g0w0_cd_restricted, static_argnames=(
+    "nocc", "nw", "orbs", "diff_mode", "qp_solver", "linearized", "evaluate_only",
+    "g_orbitals", "screening_occupied", "screening_virtual", "resolvent_expansion", "qp_tol",
+    "max_memory", "screening_config", "reserved_bytes",
+))
