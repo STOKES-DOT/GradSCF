@@ -1,5 +1,12 @@
 # Recovery and remaining acceptance
 
+**Resolved on 2026-10-30.** SSH was restored. The 27-file comparison passed
+with only the intended fixture difference; the corrected narrow gate passed
+35/35, geometry/compile 5/5 and GPU array/HVP 2/2. Fresh accepted benchmarks
+and complete raw records were retrieved. Allocation 113327 was released and
+absent from the subsequent squeue query. `manifest.json` and `report.md`
+contain final status. The historical checkpoint below is retained for audit.
+
 The original `/private/tmp/gradscf-g0w0-memory-20261030` directory disappeared
 between turns. No cause is inferred. Its committed baseline (`a799f0e`) and
 projected-residue change (`c79d488`) remain in Git.

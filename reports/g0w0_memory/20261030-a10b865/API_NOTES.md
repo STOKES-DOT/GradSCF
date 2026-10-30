@@ -12,6 +12,7 @@ mf = scf.RHF(mol, conv_tol=1e-12).direct_scf().run()
 qp = gw.GW(mf, nw=100, max_memory=60000).density_fit("weigend").run(orbs=(3, 4, 5, 6))
 print(qp.mo_energy)
 print(qp.result.qp_residual)
+print(qp.result.qp_computed_mask)
 ```
 
 `UGW` exposes the same budget and explicit auxiliary-basis entry. The supplied
@@ -19,6 +20,9 @@ SCF is neither replaced nor rerun by `density_fit`. Bare GW exchange uses the
 declared GW factors; the subtracted mean-field potential is reconstructed from
 the **original** SCF Coulomb representation. Selecting another auxiliary basis
 is an explicit approximation change, not an implementation speed comparison.
+Unrequested entries retain mean-field energies. Their zero residuals do not
+certify QP coverage; inspect the computed and convergence masks before using
+them in a downstream spectrum.
 
 `max_memory` is decimal MB, defaults to the MF value or the shared 60000 MB,
 and controls the known molecular G0W0 forward working arrays. It is not a hard
