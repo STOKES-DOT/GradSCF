@@ -11,9 +11,8 @@ Unlike G0W0/evGW there is no Dyson root search: the quasiparticle
 energies are the eigenvalues of the effective Fock, and the whole
 mean-field potential v^mf (v_xc or -K) is replaced by Sigma^x + v^qsGW.
 
-The off-diagonal self-energy is evaluated with the contour-deformation
-kernels (:func:`gradscf.gw.self_energy.sigma_imag_matrix` and
-:func:`gradscf.gw.self_energy.sigma_residue_matrix`). The endpoint average
+The off-diagonal self-energy uses streamed contour-deformation row/column
+products without a frequency-by-MO-cubed W cache. The endpoint average
 is the mode-A mapping of Kotani et al., PRB 76, 165106 (2007), Eq. (10).
 This driver supports real molecular orbitals; Re is the Hermitian part
 of the self-energy (elementwise real part for these symmetric matrices).
@@ -34,19 +33,25 @@ References
 
 from __future__ import annotations
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array
 
 from ..scf.autodiff import SCFDifferentiationConfig
+from .._memory import DEFAULT_MAX_MEMORY_MB, array_storage_bytes, validate_memory_mb, validate_reserved_bytes
+from ..ao2mo import transform_df_factors
+from ..solvers import LinearSolverConfig, solve_linear
 from ..solvers.nonlinear import attach_root
 from .outer_response import linear_config, require_occupation_gap, require_valid
 from gradscf.integrals.molecular.jk import build_j_from_df
 from .freq import scaled_legendre_grid
-from .g0w0 import _exchange_mo, _mo_factors
+from .g0w0 import _exchange_mo
+from ._memory import factor_promotion_bytes, plan_qsgw
 from .polarizability import rho_response_iw
-from .screened import screened_w_imag_axis_matrix
-from .self_energy import sigma_imag_matrix, sigma_residue_matrix
+from .screened import screened_action
+from .self_energy import _response_solve_one, _static_residue_weights
 from .types import GWResult
 
 
@@ -60,30 +65,98 @@ def _static_self_energy(
     freqs: Array,
     wts: Array,
     eta: float,
+    max_memory: float = DEFAULT_MAX_MEMORY_MB,
+    reserved_bytes: int = 0,
+    screening_config: LinearSolverConfig | None = None,
 ) -> Array:
-    """Mode-A endpoint average of the correlation self-energy (real MOs)."""
+    """Exact mode-A endpoint products without frequency or endpoint W cubes.
+
+    Imaginary screening is factored once per frequency and consumed in RHS
+    blocks. Static subtraction is collected algebraically in one zero-frequency
+    sweep; retarded residues retain their finite-eta and half-pole convention.
+    The two ordered raw-factor vertices are never identified or symmetrized.
+    """
+    b_mn, b_ov, mo_energy, freqs, wts = map(jnp.asarray, (b_mn, b_ov, mo_energy, freqs, wts))
+    dtype = jnp.result_type(b_mn, mo_energy, freqs, wts, jnp.float64)
+    plan = plan_qsgw(b_mn, b_ov, nw=len(freqs), max_memory=max_memory,
+                    reserved_bytes=reserved_bytes, screening_config=screening_config, dtype=dtype)
+    return _static_self_energy_kernel(b_mn, b_ov, mo_energy, ef, freqs, wts, eta,
+                                      nocc=int(nocc), plan=plan)
+
+
+@partial(jax.jit, static_argnames=("nocc", "plan"))
+def _static_self_energy_kernel(b_mn, b_ov, mo_energy, ef, freqs, wts, eta, *, nocc, plan):
+    """One reusable compiled contraction; every physical input remains dynamic."""
     nmo = mo_energy.shape[0]
-
-    def response_fn(omega):
-        return rho_response_iw(omega, mo_energy, b_ov, spin_factor=4.0)
-
-    wmn_full = screened_w_imag_axis_matrix(b_mn, response_fn, freqs)  # (nw, nq, m, n)
-    w_static = screened_w_imag_axis_matrix(b_mn, response_fn, jnp.zeros(1))[0]
-    static = dict(wmn_static=w_static,
-                  occupation_sign=jnp.where(jnp.arange(nmo) < nocc, -1., 1.))
+    dtype = jnp.result_type(b_mn, mo_energy, freqs, wts, jnp.float64)
+    width = plan.rhs_batch
+    naux = b_mn.shape[0]
+    direct = LinearSolverConfig(method="direct", rtol=1e-11, atol=1e-13, max_dense=max(1, naux))
+    imaginary_channels = ((mo_energy, b_ov, 4.0),)
     channels = ((mo_energy, b_ov, 2.0),)
+    sign = jnp.where(jnp.arange(nmo) < nocc, -1., 1.)
+    residue_weights = jax.vmap(lambda omega: _static_residue_weights(omega, mo_energy, ef, sign))(mo_energy)
+    differences = mo_energy[:, None]-mo_energy[None, :]
 
-    def at_endpoint(args):
-        m, omega = args
-        sigma = sigma_imag_matrix(omega, wmn_full, mo_energy, ef, freqs, wts, eta, **static)
-        sigma = sigma + sigma_residue_matrix(omega, mo_energy, b_mn, channels, ef, eta, **static)
-        # Re Sigma is the Hermitian part at this frequency. Retain only
-        # the required row instead of stacking nmo full self-energy matrices.
-        return 0.5 * (sigma[m] + sigma[:, m].conj()).real
+    def sweep(matrix, frequency, weights):
+        if plan.screening_config is None:
+            pi = rho_response_iw(frequency, mo_energy, b_ov)
+            dielectric = jnp.eye(naux, dtype=pi.dtype)-pi
+            cholesky = jnp.linalg.cholesky(dielectric)
+        def at_pole(q, matrix):
+            left = b_mn[:, :, q]
+            def block(matrix, start, count):
+                right = jax.lax.dynamic_slice(b_mn, (0, q, start), (naux, 1, count))[:, 0, :]
+                if plan.screening_config is None:
+                    solved = solve_linear(dielectric, jnp.dot(pi, right, precision='highest'),
+                                          config=direct, cholesky=cholesky).solution
+                else:
+                    solved = screened_action(frequency, imaginary_channels, right, config=plan.screening_config)
+                columns = jax.lax.dynamic_slice_in_dim(weights[:, q], start, count)
+                product = jnp.dot(left.T, solved, precision='highest') * .5 * (weights[:, q, None]+columns[None, :])
+                previous = jax.lax.dynamic_slice_in_dim(matrix, start, count, axis=1)
+                return jax.lax.dynamic_update_slice_in_dim(matrix, previous+product, start, axis=1)
+            def step(index, value):
+                return block(value, index*width, width)
+            count, tail = divmod(nmo, width)
+            matrix = jax.lax.fori_loop(0, count, jax.checkpoint(step), matrix)
+            return block(matrix, count*width, tail) if tail else matrix
+        return jax.lax.fori_loop(0, nmo, jax.checkpoint(at_pole), matrix)
 
-    # One evaluation per orbital energy, rather than nmo**2 midpoints.
-    rows = jax.lax.map(at_endpoint, (jnp.arange(nmo), mo_energy))
-    return 0.5 * (rows + rows.T)
+    def integrate(carry, quadrature):
+        matrix, summed_weights = carry
+        frequency, weight = quadrature
+        kernel = weight*differences/(differences**2+frequency**2)
+        return (sweep(matrix, frequency, -kernel/jnp.pi), summed_weights+kernel), None
+    zeros = jnp.zeros((nmo, nmo), dtype=dtype)
+    (matrix, summed_weights), _ = jax.lax.scan(jax.checkpoint(integrate), (zeros, zeros), (freqs, wts))
+    static_weights = summed_weights/jnp.pi+.5*sign[None, :]-residue_weights
+    matrix = sweep(matrix, jnp.asarray(0., dtype=dtype), static_weights)
+    # Every own pole uses this same finite-eta retarded dielectric.
+    own = jax.checkpoint(lambda right: _response_solve_one(jnp.asarray(0., dtype=dtype),
+        channels, eta, naux, jnp.complex128, False, right=right,
+        config=plan.screening_config).real)(jnp.diagonal(b_mn, axis1=1, axis2=2))
+
+    def endpoint(p):
+        def at_pole(q, row):
+            weight = residue_weights[p, q]
+            def evaluate(_):
+                right = jnp.stack((b_mn[:, p, q], b_mn[:, q, p]), axis=1)
+                # S is complex symmetric for real response vertices. Its two
+                # actions give the required row and column, not a full Sigma.
+                solved = _response_solve_one(jnp.abs(mo_energy[q]-mo_energy[p]), channels,
+                    eta, naux, jnp.complex128, False, right=right, config=plan.screening_config).real
+                values = (jnp.dot(solved[:, 0], b_mn[:, q, :], precision='highest')
+                          + jnp.dot(b_mn[:, :, q].T, solved[:, 1], precision='highest'))
+                return .5*weight*values
+            contribution = jax.lax.cond((weight != 0) & (q != p), evaluate,
+                                        lambda _: jnp.zeros(nmo, dtype=dtype), None)
+            return row+contribution
+        initial = .5*residue_weights[p, p]*(jnp.dot(own[:, p], b_mn[:, p, :], precision='highest')
+                    + jnp.dot(b_mn[:, :, p].T, own[:, p], precision='highest'))
+        return jax.lax.fori_loop(0, nmo, jax.checkpoint(at_pole), initial)
+    matrix += jax.lax.map(jax.checkpoint(endpoint), jnp.arange(nmo))
+    return .5*(matrix+matrix.T)
 
 
 def qsgw_cd_restricted(
@@ -100,6 +173,9 @@ def qsgw_cd_restricted(
     tol_density: float = 1e-5,
     damping: float = 0.0,
     differentiation: SCFDifferentiationConfig | None = None,
+    max_memory: float = DEFAULT_MAX_MEMORY_MB,
+    reserved_bytes: int = 0,
+    screening_config: LinearSolverConfig | None = None,
 ) -> GWResult:
     """Spin-restricted qsGW with contour deformation.
 
@@ -119,6 +195,9 @@ def qsgw_cd_restricted(
         Outer self-consistency controls. ``damping`` mixes eigenvalues;
         ``tol`` bounds the undamped energy update and the largest entry of
         ``F_MO - diag(energy)`` (Ha). ``tol_density`` bounds the density change.
+    max_memory, reserved_bytes, screening_config:
+        Shared decimal-MB working budget, caller-owned resident bytes, and
+        optional shared GMRES screening configuration. All orbitals are retained.
 
     Returns
     -------
@@ -148,10 +227,13 @@ def qsgw_cd_restricted(
         raise NotImplementedError("qsGW currently supports real molecular inputs only.")
     if max_iter < 1 or tol <= 0.0 or tol_density <= 0.0:
         raise ValueError("max_iter, tol and tol_density must be positive.")
+    max_memory = validate_memory_mb(max_memory)
+    reserved_bytes = validate_reserved_bytes(reserved_bytes)
     mo_energy = jnp.asarray(mo_energy, dtype=jnp.float64)
     coeff = jnp.asarray(mo_coeff, dtype=jnp.float64)
     hcore = jnp.asarray(hcore_matrix, dtype=jnp.float64)
     df_factors = jnp.asarray(df_factors)
+    reserved_bytes += factor_promotion_bytes(df_factors, coeff.dtype)
     nocc = int(nocc)
     if not 0 < nocc < mo_energy.size:
         raise ValueError('Restricted qsGW requires occupied and virtual orbitals.')
@@ -163,14 +245,17 @@ def qsgw_cd_restricted(
         return _implicit_qsgw(mo_energy=mo_energy, coeff=coeff, nocc=nocc,
             df_factors=df_factors, hcore=hcore, nw=int(nw), eta=float(eta),
             max_iter=int(max_iter), tol=float(tol), tol_density=float(tol_density),
-            damping=float(damping), config=differentiation)
+            damping=float(damping), config=differentiation, max_memory=max_memory,
+            reserved_bytes=reserved_bytes, screening_config=screening_config)
 
     freqs, wts = scaled_legendre_grid(nw)
+    initial_coeff = coeff
     energy = mo_energy
     last_delta = None
     for _ in range(int(max_iter)):
         require_occupation_gap(energy, nocc, "qsGW")
-        b_mn = _mo_factors(df_factors, coeff)
+        b_mn = transform_df_factors(df_factors, coeff, coeff, max_memory=max_memory,
+            reserved_bytes=reserved_bytes+array_storage_bytes(mo_energy, hcore, initial_coeff, energy))
         b_ov = b_mn[:, :nocc, nocc:]
         occ_coeff = coeff[:, :nocc]
         density = 2.0 * occ_coeff @ occ_coeff.T
@@ -181,7 +266,12 @@ def qsgw_cd_restricted(
         v_qsgw = _static_self_energy(
             b_mn=b_mn, b_ov=b_ov, mo_energy=energy, nocc=nocc, ef=ef,
             freqs=freqs, wts=wts, eta=float(eta),
+            max_memory=max_memory, screening_config=screening_config,
+            reserved_bytes=reserved_bytes+array_storage_bytes(df_factors, mo_energy, hcore,
+                initial_coeff, coeff, energy, density, j_mat, vx_mo),
         )
+        # Release the previous frame before allocating the next AO2MO output.
+        del b_mn, b_ov
         fock_mo = coeff.T @ (hcore + j_mat) @ coeff + vx_mo + v_qsgw
         fock_mo = 0.5 * (fock_mo + fock_mo.T)
         d_fock = float(jnp.max(jnp.abs(fock_mo - jnp.diag(energy))))
@@ -218,7 +308,8 @@ def qsgw_cd_restricted(
 
 
 def _implicit_qsgw(*, mo_energy, coeff, nocc, df_factors, hcore, nw, eta,
-                   max_iter, tol, tol_density, damping, config):
+                   max_iter, tol, tol_density, damping, config, max_memory,
+                   reserved_bytes, screening_config):
     """Gauge-free symmetric Fock root in the starting orthonormal MO frame.
 
     The input C0 defines the fixed metric/subspace (C0.T S C0 = I). All
@@ -229,9 +320,14 @@ def _implicit_qsgw(*, mo_energy, coeff, nocc, df_factors, hcore, nw, eta,
     response_config = linear_config(config)
     nmo = mo_energy.size
     rows, cols = jnp.triu_indices(nmo)
-    b_frame = _mo_factors(df_factors, coeff)
+    b_frame = transform_df_factors(df_factors, coeff, coeff, max_memory=max_memory,
+        reserved_bytes=reserved_bytes+array_storage_bytes(mo_energy, hcore))
     h_frame = coeff.T @ hcore @ coeff
     freqs, wts = scaled_legendre_grid(nw)
+    resident = reserved_bytes+array_storage_bytes(df_factors, mo_energy, coeff, hcore,
+        b_frame, h_frame, rows, cols, freqs, wts)+8*nmo*nmo*mo_energy.dtype.itemsize
+    plan = plan_qsgw(b_frame, b_frame[:, :nocc, nocc:], nw=nw, max_memory=max_memory,
+                    reserved_bytes=resident, screening_config=screening_config)
 
     def unpack(state):
         matrix = jnp.zeros((nmo, nmo), dtype=state.dtype).at[rows, cols].set(state)
@@ -241,11 +337,13 @@ def _implicit_qsgw(*, mo_energy, coeff, nocc, df_factors, hcore, nw, eta,
         fock = unpack(state)
         energy, rotation = jnp.linalg.eigh(fock)
         require_occupation_gap(energy, nocc, "qsGW")
-        b_mn = _mo_factors(b_frame, rotation)
+        b_mn = transform_df_factors(b_frame, rotation, rotation, max_memory=max_memory,
+                                    reserved_bytes=resident-array_storage_bytes(b_frame))
         density = 2 * rotation[:, :nocc] @ rotation[:, :nocc].T
         static = _static_self_energy(
             b_mn=b_mn, b_ov=b_mn[:, :nocc, nocc:], mo_energy=energy, nocc=nocc,
-            ef=.5 * (energy[nocc - 1] + energy[nocc]), freqs=freqs, wts=wts, eta=eta)
+            ef=.5 * (energy[nocc - 1] + energy[nocc]), freqs=freqs, wts=wts, eta=eta,
+            max_memory=max_memory, reserved_bytes=resident, screening_config=screening_config)
         new_fock = h_frame + build_j_from_df(b_frame, density)
         new_fock = new_fock + rotation @ (_exchange_mo(b_mn, nocc) + static) @ rotation.T
         return .5 * (new_fock + new_fock.T), energy, rotation, density
@@ -279,7 +377,9 @@ def _implicit_qsgw(*, mo_energy, coeff, nocc, df_factors, hcore, nw, eta,
     energies = jnp.linalg.eigvalsh(unpack(seed))
     gap_ok = jnp.all(jnp.diff(energies) > 1e-8 * (1 + jnp.max(jnp.abs(energies))))
     require_valid(done & gap_ok, error, 'qsGW (isolated orbital spectrum required)')
-    state = attach_root(residual, seed, config=response_config, converged=done & gap_ok)
+    state = attach_root(residual, seed, config=response_config, converged=done & gap_ok,
+        max_memory=max_memory, reserved_bytes=resident,
+        operator_min_bytes=plan.working_bytes+plan.resident_bytes-resident)
     energy, rotation = jnp.linalg.eigh(unpack(state))
     return GWResult(mo_energy=energy, mo_coeff=coeff @ rotation, converged=done,
                     sigma_qp=None, nw=nw, screening_energy=energy, method="qsgw")

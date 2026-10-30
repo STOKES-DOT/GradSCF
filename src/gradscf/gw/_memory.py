@@ -86,6 +86,49 @@ def plan_gw(factors, coefficients, *, nocc, n_targets, n_g, screening_shape, nw,
     return GWExecutionPlan(maximum, resident, working, frequencies, rhs, projected, screening_config)
 
 
+def plan_qsgw(factors, occupied_virtual, *, nw, max_memory=DEFAULT_MAX_MEMORY_MB,
+              reserved_bytes=0, screening_config=None, dtype=None):
+    """Stream exact endpoint products into an MO matrix, retaining no W cube.
+
+    The caller reserves AO/frame arrays; factors and the OV response remain
+    live here. Imaginary RHS columns are tiled; the shared retarded own-pole
+    solve retains a complete Q-by-MO block, including its complex workspace.
+    """
+    maximum = validate_memory_mb(max_memory)
+    reserved = validate_reserved_bytes(reserved_bytes)
+    nw = validate_reserved_bytes(nw, name="nw")
+    q, n, _ = factors.shape
+    if factors.shape != (q, n, n) or occupied_virtual.ndim != 3 or occupied_virtual.shape[0] != q:
+        raise ValueError("qsGW requires full MO factors and matching OV response factors")
+    no, nv = occupied_virtual.shape[1:]
+    item = np.dtype(np.result_type(factors.dtype, occupied_virtual.dtype,
+                                  factors.dtype if dtype is None else dtype)).itemsize
+    resident = reserved + array_storage_bytes(factors, occupied_virtual) + item*(8*n*n+4*n+2*nw)
+    device = array_device(factors, occupied_virtual)
+    available = workspace_bytes(maximum, resident_bytes=resident, device=device)
+    complex_item = 2*item
+    per_rhs = (4*q+4*n)*complex_item
+    # Independent non-own vertices and the shared full Q-by-MO own-pole RHS,
+    # screened RHS, solution, and real/complex solve/update copies coexist.
+    extra = 4*q*n*item+2*per_rhs+4*q*n*complex_item
+    if screening_config is not None:
+        from ..solvers import LinearSolverConfig
+        from ..solvers.memory import plan_linear
+        if not isinstance(screening_config, LinearSolverConfig) or screening_config.method != "gmres":
+            raise ValueError("qsGW screening_config must be a shared GMRES LinearSolverConfig")
+        per_rhs += 4*no*nv*complex_item
+        screening_config, minimum = plan_linear(2*q, np.dtype(f'f{item}'), screening_config,
+            maximum, resident_bytes=resident+extra+per_rhs,
+            operator_min_bytes=4*(q+no*nv)*n*complex_item, nrhs=n, device=device)
+    else:
+        minimum = (8*q*q+4*q*no*nv)*complex_item
+    minimum += extra
+    if minimum+per_rhs > available:
+        raise ValueError("qsGW minimum screening workspace exceeds the memory budget")
+    rhs = min(max(1, n), max(1, (available-minimum)//max(1, per_rhs)))
+    return GWExecutionPlan(maximum, resident, minimum+rhs*per_rhs, 1, rhs, True, screening_config)
+
+
 def full_gw_working_bytes(naux, nmo, nw, *, transitions=None, screening_size=0, itemsize=8):
     """Conservative known forward arrays for the retained full/reference route."""
     pairs = nmo*nmo
