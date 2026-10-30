@@ -11,12 +11,20 @@ from jax.interpreters import ad, batching, mlir
 from ..._native import register_integrals
 
 
+_DIRECT_JK_PRIVATE_MAX_BYTES = 64 * 1024**2
+_DIRECT_JK_PRIVATE_MAX_BATCH = 4
+
+
 def native_jk_workspace_bytes(provider, workers, cutoff):
-    """Bound one native call's batch-independent optimizer and shell arrays.
+    """Bound one native call's optimizer, shell arrays and private outputs.
 
     The pinned native ABI uses float64, int32 and 64-bit pointers. Return
     None for dimension-only placeholders without a complete shell topology.
     SCF and response share this estimate; no integrals are evaluated here.
+    Small native batches admit at most four densities and 64 MiB of private
+    worker outputs, reducing the active worker count to fit that cap. With no
+    batch/selection arguments, reserve both J and K at that batch limit;
+    larger batches keep the original output-row ownership and worker count.
     """
     topology = provider.plan.topology
     names = ("angular_momenta", "primitive_counts", "contraction_counts",
@@ -63,9 +71,13 @@ def native_jk_workspace_bytes(provider, workers, cutoff):
     tables = (4*(6*atoms + 8*shells + shells+1)
               + 8*(20 + 3*atoms + total_primitive + total_coefficients))
     bounds = 8*shells**2 if cutoff > 0 else 0
-    # Coordinate VJPs reduce one ENV-sized vector per worker. Charging another
-    # table bounds those vectors without introducing worker-sized J/K copies.
-    return optimizer + bounds + (2*workers+1)*tables + workers*scratch
+    # Coordinate VJPs reduce one ENV-sized vector per worker. Private value
+    # outputs have a separate native cap and are absent for one worker.
+    nao = sum(c*(f if topology.cart else 2*l+1)
+              for l, f, c in zip(angular, cart_dims, contractions))
+    private = (min(_DIRECT_JK_PRIVATE_MAX_BYTES,
+                   workers*2*_DIRECT_JK_PRIVATE_MAX_BATCH*nao**2*8) if workers > 1 else 0)
+    return optimizer + bounds + (2*workers+1)*tables + workers*scratch + private
 
 
 @jax.tree_util.register_pytree_node_class

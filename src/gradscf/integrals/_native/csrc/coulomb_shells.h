@@ -82,11 +82,14 @@ template<class Consume>
 static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consume,
                        int shell_begin=0, int shell_end=-1,
                        const std::vector<double>* prepared_bounds=nullptr,
-                       CINTOpt* prepared_optimizer=nullptr) {
+                       CINTOpt* prepared_optimizer=nullptr,
+                       int i_start=0, int i_stride=1) {
   if (!std::isfinite(cutoff) || cutoff<0) throw std::invalid_argument("Invalid Schwarz cutoff");
   if (shell_end<0) shell_end=t.nbas;
   if (shell_begin<0 || shell_begin>=shell_end || shell_end>t.nbas)
     throw std::invalid_argument("Invalid ERI output-shell range");
+  if (i_stride<1 || i_start<0 || i_start>=i_stride)
+    throw std::invalid_argument("Invalid ERI outer-shell partition");
   Intor f=cart ? int2e_cart : int2e_sph;
   LocalOptimizer opt(t,4,prepared_optimizer);
   std::vector<double> data,cache,owned_bounds;
@@ -97,7 +100,7 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
   const double largest_bound=cutoff>0 ? *std::max_element(bounds.begin(),bounds.end()) : 0.;
   ERICacheSizes sizes;
   auto owns=[&](int shell) {return shell_begin<=shell && shell<shell_end;};
-  for (int i=shell_begin;i<t.nbas;++i) for (int j=0;j<=i;++j) {
+  for (int i=shell_begin+i_start;i<t.nbas;i+=i_stride) for (int j=0;j<=i;++j) {
     // This upper bound rejects only pairs whose every inner quartet already
     // fails the same basis-only Schwarz test used below.
     if (cutoff>0 && bounds[size_t(i)*t.nbas+j]*largest_bound<cutoff) continue;

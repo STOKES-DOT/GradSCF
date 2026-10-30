@@ -1,4 +1,4 @@
-// Shell-direct J/K with disjoint output-row ownership.
+// Shell-direct J/K with bounded quartet parallelism or disjoint output rows.
 #include "coulomb_shells.h"
 #include <atomic>
 #include <memory>
@@ -23,11 +23,21 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
     const double* d=density.typed_data();double* out=result->typed_data();const size_t nn=size_t(n)*n;
     for (size_t i=0;i<density.element_count();++i) if (!std::isfinite(d[i])) throw std::invalid_argument("Nonfinite density");
     const size_t size=result->element_count();
-    const int workers=int(std::max<int64_t>(1,std::min<int64_t>(
+    const int row_workers=int(std::max<int64_t>(1,std::min<int64_t>(
         requested_workers,std::min<int64_t>(pool.num_threads(),tables->nbas))));
+    constexpr size_t kPrivateOutputBytes=64u*1024u*1024u;
+    constexpr int kPrivateBatchLimit=4;
+    // Divide before multiplying: admitted worker outputs cannot overflow size_t
+    // or exceed the fixed cap, regardless of the incoming batch dimensions.
+    const int private_workers=size>0 ? int(std::min<size_t>(
+        size_t(row_workers),kPrivateOutputBytes/sizeof(double)/size)) : 0;
+    const bool private_outputs=nb<=kPrivateBatchLimit && private_workers>=2;
+    const int workers=private_outputs ? private_workers : row_workers;
+    auto partials=std::make_shared<std::vector<double>>(
+        private_outputs ? size_t(workers)*size : 0,0.);
     std::fill(out,out+size,0.);
     // Ordinary int2e kernels read CINTOpt. One call-scoped owner retains its
-    // primitive-pair data until every worker has completed its output rows.
+    // primitive-pair data until every worker has completed its shell traversal.
     auto optimizer=std::make_shared<LocalOptimizer>(*tables,4);
     auto bounds=std::make_shared<std::vector<double>>(
         eri_schwarz_bounds(*tables,cart,cutoff,optimizer->value));
@@ -38,9 +48,10 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
         try {
           // Tables and shell scratch are private; optimizer data is read-only.
           IntegralTables local_tables=*tables;
-          const int shell_begin=worker*tables->nbas/workers;
-          const int shell_end=(worker+1)*tables->nbas/workers;
+          const int shell_begin=private_outputs ? 0 : worker*tables->nbas/workers;
+          const int shell_end=private_outputs ? tables->nbas : (worker+1)*tables->nbas/workers;
           const int row_begin=tables->ao[shell_begin],row_end=tables->ao[shell_end];
+          double* output=private_outputs ? partials->data()+size_t(worker)*size : out;
           auto owns=[&](int row) {return row_begin<=row && row<row_end;};
           unique_eri(local_tables,cart,cutoff,[&](int a,int b,int c,int e,double v) {
             const size_t ab=pair_index(a,b),ce=pair_index(c,e);
@@ -48,7 +59,7 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
             for (int batch=0;batch<nb;++batch) {
               const double* dm=d+size_t(batch)*nn;
               if (with_j) {
-                double* j=out+size_t(batch)*nn;
+                double* j=output+size_t(batch)*nn;
                 if (own_a || own_b) {
                   double j_ab=v*(dm[size_t(c)*n+e]+(c!=e ? dm[size_t(e)*n+c]:0.));
                   if(own_a)j[size_t(a)*n+b]+=j_ab;
@@ -61,7 +72,7 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
                 }
               }
               if (with_k) {
-                double* k=out+size_t(with_j*nb+batch)*nn;
+                double* k=output+size_t(with_j*nb+batch)*nn;
                 if(own_a)k[size_t(a)*n+c]+=v*dm[size_t(b)*n+e];
                 if(c!=e && own_a)k[size_t(a)*n+e]+=v*dm[size_t(b)*n+c];
                 if(a!=b && own_b)k[size_t(b)*n+c]+=v*dm[size_t(a)*n+e];
@@ -74,7 +85,8 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
                 }
               }
             }
-          },shell_begin,shell_end,bounds.get(),optimizer->value);
+          },shell_begin,shell_end,bounds.get(),optimizer->value,
+            private_outputs ? worker : 0,private_outputs ? workers : 1);
         } catch(const std::exception& e) {
           (*errors)[worker]=e.what();
         }
@@ -83,7 +95,13 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
             promise.SetError(ffi::Error::Internal(error));
             return;
           }
-          // Output rows are disjoint; no full worker matrices or reduction.
+          if (private_outputs) {
+            // All tasks have finished; reduce in worker order, never arrival
+            // order. Large batches retain disjoint rows and no private outputs.
+            std::copy(partials->begin(),partials->begin()+size,out);
+            for (int w=1;w<workers;++w) for (size_t i=0;i<size;++i)
+              out[i]+=(*partials)[size_t(w)*size+i];
+          }
           promise.SetAvailable();
         }
       };
