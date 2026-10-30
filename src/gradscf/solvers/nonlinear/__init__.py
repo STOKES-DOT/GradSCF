@@ -14,3 +14,6 @@ __all__ += ['ScalarRootConfig', 'ScalarRootResult', 'solve_scalar_roots', 'bisec
 
 from .eager import EagerIterationResult, iterate_eager
 __all__ += ['EagerIterationResult', 'iterate_eager']
+
+from .eager import minimize_eager
+__all__ += ['minimize_eager']

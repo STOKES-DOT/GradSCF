@@ -198,6 +198,9 @@ def make_molecular_train_step(
 
 
 _LOSS_FIELDS = {
+    'operator': {'mse': 'inverse_operator_mse_weight'},
+    'stationarity': {'norm2': 'inverse_stationarity_weight'},
+    'predicted_density': {'norm2': 'inverse_density_weight'},
     'energy': {'mse': 'e0_total_mse_weight', 'mae': 'e0_total_mae_weight'},
     'density': {'mse': 'grid_density_mse_weight'},
     'orbital_energy': {'mse': 'orbital_energy_mse_weight', 'mae': 'orbital_energy_mae_weight'},
@@ -313,7 +316,7 @@ class Trainer:
             values = jnp.asarray(raw[key])
             return jnp.sum(weights*values)/jnp.sum(weights)
         has_scf = raw['scf_converged'].size > 0
-        return dict(loss=jnp.asarray(raw['total_loss']).reshape(()),
+        result = dict(loss=jnp.asarray(raw['total_loss']).reshape(()),
             energy=raw['predicted_e0_total_h'],
             energy_mse=mean('e0_total_mse'), energy_mae=mean('e0_total_mae'),
             density_mse=mean('grid_density_mse'),
@@ -322,6 +325,12 @@ class Trainer:
                                 if raw['response_converged'].size else None),
             scf_converged=jnp.all(raw['scf_converged'] == 1) if has_scf else None,
             scf_cycles=jnp.max(raw['scf_cycles']) if has_scf else jnp.asarray(0))
+        if 'inverse_valid' in raw:
+            result['inverse_valid'] = jnp.all(raw['inverse_valid'])
+            for name in ('stationarity_norm2', 'predicted_density_norm2',
+                         'reference_density_norm2', 'operator_mse', 'xc_potential_mse'):
+                result[name] = mean(name)
+        return result
 
     def evaluate(self, data, *, mode=None, params=None):
         """Evaluate loss and diagnostics in the requested mode; no optimizer step."""

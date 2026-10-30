@@ -2125,6 +2125,7 @@ def _validate_training_datum(
 
 def _has_active_objective(config: MolecularTrainingConfig) -> bool:
     names = (
+        "inverse_operator_mse_weight", "inverse_stationarity_weight", "inverse_density_weight",
         "response_mse_weight", "response_mae_weight",
         "e0_total_mse_weight",
         "e0_total_mae_weight",
@@ -2184,6 +2185,15 @@ def molecular_loss(
         raise ValueError("MolecularTrainingConfig has no active loss component.")
     if sum(float(datum.weight) for datum in dataset) <= 0.0:
         raise ValueError("dataset must contain positive total sample weight.")
+
+    if any(datum.inverse is not None for datum in dataset):
+        if predictor is not None:
+            raise ValueError('Inverse references already specify the fixed predictor')
+        from ._inverse import inverse_loss
+        return inverse_loss(params, functional, dataset, training_config)
+    if (training_config.inverse_operator_mse_weight or training_config.inverse_stationarity_weight
+            or training_config.inverse_density_weight):
+        raise ValueError('These objectives require an inverse orbital reference')
 
     config = training_config
     response_options = _response_kernel_options_from_excited_config(config)

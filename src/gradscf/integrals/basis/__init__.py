@@ -10,3 +10,6 @@ __all__ = ["BasisTopology", "BasisParameters", "prepare_basis", "CartesianAO", "
     "ContractedShell", "PairBatchGroup", "ShellPairBatchGroup",
     "basis_from_spec", "basis_from_pyscf_spec", "basis_from_molecule_spec",
     "cartesian_angular_tuples"]
+
+from .representation import cartesian_to_spherical
+__all__ += ['cartesian_to_spherical']

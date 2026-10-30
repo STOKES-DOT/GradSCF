@@ -32,6 +32,15 @@ NNAO maintains its own training and workflows. The former top-level
 
 ## Three modes
 
+Inverse orbital references may be supplied as
+`Sample(state, inverse=reference, nuclear_repulsion=enuc)`. They use the existing
+fixed_density mode, with energy MSE/MAE and optional `operator: {'mse': w}`,
+`xc_potential: {'mse': w}`, `stationarity: {'norm2': w}`, or
+`predicted_density: {'norm2': w}`. The XC teacher is an explicitly labeled AO
+operator on the inverse reference. Ordinary samples keep their grid-potential
+target semantics. See the [iKS contracts](../../../dft/iks/README.md) for units,
+gauge, fractional-occupation and self-consistent-validation boundaries.
+
 | `trainer.mode` | Forward and derivative |
 |---|---|
 | `fixed_density` | Evaluate at the supplied fixed state |
