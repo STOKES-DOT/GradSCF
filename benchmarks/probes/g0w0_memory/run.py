@@ -1,0 +1,117 @@
+"""Bounded, synchronized G0W0 probes; run each variant in a fresh process."""
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import resource
+import sys
+import time
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("residue", "residue-ad", "water"))
+    parser.add_argument("output", type=Path)
+    parser.add_argument("--naux", type=int, default=128)
+    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--nw", type=int, default=32)
+    args = parser.parse_args()
+    allowed = sorted(os.sched_getaffinity(0))
+    os.sched_setaffinity(0, allowed[:args.threads])
+    import jax
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+    import numpy as np
+    import gradscf
+    from gradscf.gw.self_energy import sigma_residue_part
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    manifest = dict(python=sys.executable, source=gradscf.__file__,
+                    source_sha256=hashlib.sha256(Path(sigma_residue_part.__code__.co_filename).read_bytes()).hexdigest(),
+                    versions={p: importlib.metadata.version(p) for p in ("jax", "jaxlib", "numpy", "scipy")},
+                    devices=list(map(str, jax.devices())), affinity=sorted(os.sched_getaffinity(0)),
+                    threads={p: os.getenv(p) for p in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "GRADSCF_NATIVE_NUM_THREADS")},
+                    mode=args.mode, repeats=args.repeats, nw=args.nw,
+                    dtype="float64", native_libraries=[])
+    def record(**row):
+        with args.output.open("a") as stream:
+            stream.write(json.dumps(row, allow_nan=False)+"\n")
+    manifest_path = args.output.with_suffix(".manifest.json")
+    manifest_path.write_text(json.dumps(manifest, indent=2)+"\n")
+    if args.mode.startswith("residue"):
+        rng = np.random.default_rng(31)
+        nmo, nocc = 32, 8
+        energy = jnp.asarray(np.r_[np.linspace(-1.8, -.3, nocc), np.linspace(.12, 1.8, nmo-nocc)])
+        ov = jnp.asarray(rng.normal(size=(args.naux, nocc, nmo-nocc))*.025/np.sqrt(args.naux))
+        left = jnp.asarray(rng.normal(size=(args.naux, nmo))*.1/np.sqrt(args.naux))
+        right = jnp.asarray(rng.normal(size=(args.naux, nmo))*.1/np.sqrt(args.naux))
+        def evaluate(omega, scale):
+            return sigma_residue_part(omega, energy, left*scale, right,
+                ((energy, ov*scale, 2.),), -.09, .01)
+        target = jax.jit(evaluate if args.mode == "residue" else
+            lambda omega, scale: jax.value_and_grad(lambda s: evaluate(omega, s).real)(scale))
+        tick = time.perf_counter()
+        lowered = target.lower(jnp.asarray(.86), jnp.asarray(1.))
+        lower_seconds = time.perf_counter()-tick
+        tick = time.perf_counter()
+        executable = lowered.compile()
+        compile_seconds = time.perf_counter()-tick
+        analysis = executable.memory_analysis()
+        for repeat in range(args.repeats+1):
+            tick = time.perf_counter()
+            value = jax.block_until_ready(executable(jnp.asarray(.86), jnp.asarray(1.)))
+            record(case_id="synthetic-residue", stage="first_execution" if repeat == 0 else "warm_execution",
+                   repeat=repeat, wall_seconds=time.perf_counter()-tick,
+                   naux=args.naux, nmo=nmo, nocc=nocc, nvir=nmo-nocc,
+                   value_real=float(value.real) if args.mode == "residue" else float(value[0]),
+                   value_imag=float(value.imag) if args.mode == "residue" else None,
+                   parameter_gradient=None if args.mode == "residue" else float(value[1]),
+                   status="ok" if all(bool(jnp.all(jnp.isfinite(v))) for v in jax.tree.leaves(value)) else "error")
+        record(case_id="synthetic-residue", stage="compile", lower_seconds=lower_seconds,
+               wall_seconds=compile_seconds, naux=args.naux,
+               xla_temp_bytes=getattr(analysis, "temp_size_in_bytes", None),
+               xla_argument_bytes=getattr(analysis, "argument_size_in_bytes", None),
+               xla_output_bytes=getattr(analysis, "output_size_in_bytes", None), status="ok")
+    else:
+        from gradscf import gto, scf
+        from gradscf.gw.rgw import _run_g0w0_numerics
+        atom = "O 0 0 .117790; H 0 .755453 -.471161; H 0 -.755453 -.471161"
+        for repeat in range(args.repeats+1):
+            total = time.perf_counter()
+            mol = gto.M(atom=atom, basis="def2-svp", cart=True)
+            mf = scf.RHF(mol, conv_tol=1e-12).density_fit("weigend").run()
+            jax.block_until_ready(mf.scf_result)
+            scf_seconds = time.perf_counter()-total
+            r = mf.scf_result
+            tick = time.perf_counter()
+            result = _run_g0w0_numerics(mo_energy=r.mo_energy, mo_coeff=r.mo_coeff, nocc=5,
+                df_factors=mf._scf_inputs.df_factors, fock_matrix=r.fock_matrix,
+                hcore_matrix=r.hcore_matrix, density_matrix=r.density_matrix,
+                nw=args.nw, eta=.001, orbs=(3, 4, 5, 6), qp_tol=1e-10,
+                resolvent_expansion=False)
+            jax.block_until_ready(result)
+            gw_seconds = time.perf_counter()-tick
+            requested = np.array([3, 4, 5, 6])
+            passed = bool(mf.converged) and bool(np.asarray(result.converged_mask)[requested].all())
+            record(case_id="water-def2-svp-true-ri-direct-cd", stage="end_to_end",
+                   repeat=repeat, wall_seconds=time.perf_counter()-total,
+                   scf_seconds=scf_seconds, gw_seconds=gw_seconds,
+                   nao=int(r.mo_coeff.shape[0]), naux=int(mf._scf_inputs.df_factors.shape[0]), nw=args.nw,
+                   qp_energy_hartree=np.asarray(result.mo_energy)[requested].tolist(),
+                   qp_residual_hartree=np.asarray(result.qp_residual)[requested].tolist(),
+                   qp_weight=np.asarray(result.qp_weight)[requested].tolist(),
+                   qp_candidate_count=np.asarray(result.qp_candidate_count)[requested].tolist(),
+                   qp_branch_valid=np.asarray(result.qp_branch_valid)[requested].tolist(),
+                   scientific_pass=passed, status="ok" if passed else "nonconverged")
+        for path in Path(gradscf.__file__).parent.glob("integrals/_native/lib/*.so"):
+            manifest["native_libraries"].append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    record(stage="process_peak", cpu_peak_rss_bytes=1024*resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+           memory_metric="Linux ru_maxrss; includes preparation/compilation/execution", status="ok")
+    manifest_path.write_text(json.dumps(manifest, indent=2)+"\n")
+
+
+if __name__ == "__main__":
+    main()
