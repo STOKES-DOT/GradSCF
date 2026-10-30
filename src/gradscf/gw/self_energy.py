@@ -50,7 +50,8 @@ from .poles import screened_w_real_resolvent
 _BATCH_MEM_LIMIT = 1 << 31
 
 
-def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0):
+def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0,
+                        right=None):
     """RPA response at one frequency + (1-Pi)^{-1} - I (complex)."""
     pi = None
     for e_spin, b_ov_spin, spin_factor in channels:
@@ -60,7 +61,8 @@ def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_s
         pi = contrib if pi is None else pi + contrib
     pi = response_scale * pi
     eye = jnp.eye(naux, dtype=dtype)
-    return jnp.linalg.solve(eye - pi, pi)
+    rhs = pi if right is None else jnp.dot(pi, right, precision=Precision.HIGHEST)
+    return jnp.linalg.solve(eye - pi, rhs)
 
 
 
@@ -246,6 +248,26 @@ def sigma_residue_part(
 
     naux = b_pm.shape[0]
     dtype = jnp.complex128
+    if q0 is None and not conjugate:
+        # A molecular residue needs a bilinear product, not an auxiliary
+        # matrix for every G pole. Keep even externally-vmapped inactive
+        # probes at a regular frequency, and rematerialize the factorization
+        # in reverse AD instead of saving NG dense dielectric/LU arrays.
+        def project(values):
+            frequency, left, right, enabled = values
+            def evaluate(_):
+                solved = _response_solve_one(frequency, channels, eta, naux,
+                    dtype, conjugate, response_scale, right=right)
+                return jnp.dot(left, solved, precision=Precision.HIGHEST)
+            return jax.lax.cond(enabled, evaluate,
+                                lambda _: jnp.zeros((), dtype=dtype), None)
+        contrib = jax.lax.map(jax.checkpoint(project),
+            (probe_freqs, b_pm.T, b_mp.T, active))
+        if wmn_static is not None:
+            contrib = contrib - jnp.asarray(wmn_static)
+        result = jnp.sum(weights * contrib)
+        return result if wmn_static is not None else fm * result
+
     est_bytes = pole_freqs.shape[0] * naux * naux * 16 * 2
     solve_one = lambda w: _response_solve_one(
         w, channels, eta, naux, dtype, conjugate, response_scale

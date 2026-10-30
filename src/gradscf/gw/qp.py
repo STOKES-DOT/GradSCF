@@ -66,6 +66,14 @@ _STEP_CAP = 0.05
 _BATCH_MEM_LIMIT = 1 << 31
 
 
+def _projected_molecular_residue(shared):
+    # An outer vmap turns per-pole cond into select and evaluates inactive
+    # solves. Keep the direct molecular path sequential over external QPs;
+    # the bounded resolvent and periodic contractions retain their batching.
+    return ("resolvent_data" not in shared and "q0" not in shared
+            and not shared.get("conjugate", False))
+
+
 class QPRootResult(NamedTuple):
     """Selected fixed-G/W roots and stopped numerical selection diagnostics.
 
@@ -210,7 +218,7 @@ def sigma_cd_batch(omega: Array, shared: dict, stacked: dict) -> Array:
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
     est_bytes = omega.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
+    if est_bytes > _BATCH_MEM_LIMIT or _projected_molecular_residue(shared):
         return jax.lax.map(lambda a: fn(*a), args)
     return jax.vmap(fn)(*args)
 
@@ -250,7 +258,7 @@ def qp_residual_batch(
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
     est_bytes = omega.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
+    if est_bytes > _BATCH_MEM_LIMIT or _projected_molecular_residue(shared):
         return jax.lax.map(lambda a: fn(*a), args)
     return jax.vmap(fn)(*args)
 
@@ -274,7 +282,7 @@ def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
         args = args + (stacked["del_w"], stacked["p_index"])
     naux = stacked["b_pm"].shape[1]
     est_bytes = root.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
+    if est_bytes > _BATCH_MEM_LIMIT or _projected_molecular_residue(shared):
         return jax.lax.map(lambda a: fn(*a), args)
     return jax.vmap(fn)(*args)
 
