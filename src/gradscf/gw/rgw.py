@@ -29,6 +29,7 @@ from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_fact
 from .g0w0 import g0w0_cd_restricted, _mo_factors, _requested_orbitals, _window_indices
 from .evgw import evgw_cd_restricted
 from ..scf.reference import reference_state_signature, _array_signature
+from .._memory import DEFAULT_MAX_MEMORY_MB
 
 
 # Cache executables by orbital layout and solver policy. All spectra, factors,
@@ -37,10 +38,13 @@ from ..scf.reference import reference_state_signature, _array_signature
 _run_g0w0_numerics = jax.jit(g0w0_cd_restricted, static_argnames=(
     "nocc", "nw", "orbs", "diff_mode", "qp_solver", "linearized", "evaluate_only",
     "g_orbitals", "screening_occupied", "screening_virtual", "resolvent_expansion", "qp_tol",
+    "max_memory",
+    "screening_config",
+    "reserved_bytes",
 ))
 
 
-def _use_cpu_resolvent(arrays, *, nmo, transitions):
+def _use_cpu_resolvent(arrays, *, nmo, transitions, max_memory=DEFAULT_MAX_MEMORY_MB, nw=100, reserved_bytes=0):
     """Reuse exact RPA factors only for bounded, explicitly CPU data."""
     if not (0 < transitions <= 256 and transitions*nmo*nmo <= 20_000_000):
         return False
@@ -55,7 +59,16 @@ def _use_cpu_resolvent(arrays, *, nmo, transitions):
         devices = value.devices()
         if not devices or any(device.platform != "cpu" for device in devices):
             return False
-    return True
+    from ._memory import full_gw_working_bytes, factor_promotion_bytes
+    from .._memory import workspace_bytes, array_storage_bytes
+    try:
+        available = workspace_bytes(max_memory,
+            resident_bytes=reserved_bytes+array_storage_bytes(*jax.tree.leaves(arrays))+
+                factor_promotion_bytes(arrays[2], jnp.result_type(arrays[2], jnp.float64)),
+            device=arrays[0].device)
+    except ValueError:
+        return False
+    return full_gw_working_bytes(arrays[2].shape[0], nmo, nw, transitions=transitions) <= available
 
 
 class GW:
@@ -91,12 +104,20 @@ class GW:
     beta, mixing:
         scGW inverse temperature (Ha^-1) and accepted fixed-point mixing.
         Matsubara scGW does not supply inferred QP energies for static BSE.
+    max_memory:
+        Known G0W0 working arrays in decimal MB, inherited from mf or the
+        shared 60000 MB default. Other GW methods and arbitrary outer
+        AD/model/compiler residency are not newly budgeted here.
+    screening_config:
+        Optional shared GMRES config for G0W0. Omit for bounded dense/small
+        CPU RPA screening. Use density_fit(auxbasis) for independent RI.
     """
 
     def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3,
                  method: str = "g0w0", max_cycle: int = 20, conv_tol: float = 1e-6,
                  damp: float = 0.0, g_orbitals=None, screening_occupied=None,
-                 screening_virtual=None, qp_solver="secant", beta=100., mixing=.5):
+                 screening_virtual=None, qp_solver="secant", beta=100., mixing=.5,
+                 max_memory=None, screening_config=None):
         if getattr(mf, "mo_energy", None) is None:
             raise RuntimeError("GW requires a converged mean-field object; call mf.kernel() first.")
         self.qp_solver = qp_solver
@@ -107,6 +128,11 @@ class GW:
         self.screening_occupied = None if screening_occupied is None else tuple(screening_occupied)
         self.screening_virtual = None if screening_virtual is None else tuple(screening_virtual)
         self._scf = mf
+        from .._memory import resolve_memory_mb
+        self.max_memory = resolve_memory_mb(max_memory, mf)
+        self.screening_config = screening_config
+        self.auxbasis = None
+        self._ri_key = self._ri_factors = None
         self.nw = int(nw)
         self.eta = float(eta)
         self.mo_energy = None
@@ -146,6 +172,7 @@ class GW:
             self.eta,
             self.method, self.max_cycle, self.conv_tol, self.damp, self.qp_solver,
             self.beta, self.mixing,
+            self.max_memory, self.screening_config, self.auxbasis,
             tuple(None if x is None else tuple(x) for x in
                   (self.g_orbitals, self.screening_occupied, self.screening_virtual)),
             reference_state_signature(mf, allow_range_separated=True),
@@ -234,6 +261,16 @@ class GW:
         )
 
     def _df_factors(self):
+        if self.auxbasis is not None:
+            from .integrals import auxiliary_factors
+            key = self._scf._scf_signature(), self.auxbasis
+            if key != self._ri_key or self._ri_factors is None:
+                self._ri_factors = self._ao_factors = None
+                self._ri_key = None
+                self._ri_factors = auxiliary_factors(self._scf, self.auxbasis,
+                                                    max_memory=self.max_memory)
+                self._ri_key = key
+            return self._ri_factors
         inputs = getattr(self._scf, "_scf_inputs", None)
         factors = getattr(inputs, "df_factors", None) if inputs is not None else None
         if factors is not None:
@@ -251,12 +288,24 @@ class GW:
         nao = int(np.asarray(self._scf.mo_coeff).shape[0])
         return eri_pair_matrix_to_df_factors(pair, nao=nao, tol=1e-12)
 
+    def density_fit(self, auxbasis="def2-universal-jkfit"):
+        """Use independent fixed-geometry libcint RI for G0W0, leaving SCF intact."""
+        if not isinstance(auxbasis, str) or not auxbasis.strip():
+            raise ValueError("auxbasis must name an explicit auxiliary basis")
+        if self.method != "g0w0":
+            raise NotImplementedError("Independent GW auxiliary fitting currently requires G0W0")
+        self.auxbasis = auxbasis
+        self._ri_key = self._ri_factors = None
+        return self
+
     def kernel(self, orbs: Sequence[int] | None = None):
         self.result = None
         self.converged = False
         self._source_key = None
         if self.method not in {"g0w0", "evgw", "evgw0", "qsgw", "scgw"}:
             raise ValueError("GW method must be g0w0, evgw, evgw0, qsgw or scgw")
+        if self.screening_config is not None and self.method != "g0w0":
+            raise NotImplementedError("Explicit dynamic screening configuration currently requires G0W0")
         if self.qp_solver not in {"secant", "newton", "hybrid"}:
             raise ValueError("qp_solver must be secant, newton or hybrid")
         if self.method != "g0w0" and self.qp_solver != "secant":
@@ -276,6 +325,13 @@ class GW:
         if not np.array_equal(mo_occ,np.r_[np.full(nocc,2.),np.zeros(len(mo_occ)-nocc)]):
             raise ValueError("Restricted GW requires integer closed-shell occupations, occupied first")
         factors=self._df_factors()
+        v_mf = None
+        if self.auxbasis is not None:
+            if self.method != "g0w0":
+                raise NotImplementedError("Independent GW auxiliary fitting currently requires G0W0")
+            from .integrals import starting_potential
+            v_mf = starting_potential(mf, result.density_matrix,
+                result.fock_matrix, result.hcore_matrix, max_memory=self.max_memory)
         if self.method in {"qsgw", "scgw"}:
             if orbs is not None or any(x is not None for x in
                     (self.g_orbitals, self.screening_occupied, self.screening_virtual)):
@@ -312,28 +368,37 @@ class GW:
             g_window = _window_indices(g_window, range(nmo), "g_orbitals")
             occupied_window = _window_indices(occupied_window, range(nocc), "screening_occupied")
             virtual_window = _window_indices(virtual_window, range(nocc, nmo), "screening_virtual")
-        controls = dict(qp_solver=self.qp_solver,
-            resolvent_expansion=_use_cpu_resolvent((result.mo_energy, result.mo_coeff,
+        from .._memory import tree_storage_bytes
+        extra = tree_storage_bytes(getattr(mf, "_scf_inputs", None), result,
+            getattr(mf, "reference", None), exclude=(result.mo_energy, result.mo_coeff,
+                factors, result.fock_matrix, result.hcore_matrix, result.density_matrix, v_mf))
+        controls = dict(qp_solver=self.qp_solver, max_memory=self.max_memory,
+            screening_config=self.screening_config,
+            v_mf_matrix=v_mf, reserved_bytes=extra,
+            resolvent_expansion=self.screening_config is None and _use_cpu_resolvent((result.mo_energy, result.mo_coeff,
                 factors, result.fock_matrix, result.hcore_matrix, result.density_matrix),
-                nmo=nmo, transitions=len(occupied_window)*len(virtual_window))) if self.method == "g0w0" else dict(
+                nmo=nmo, transitions=len(occupied_window)*len(virtual_window),
+                max_memory=self.max_memory, nw=self.nw, reserved_bytes=extra)) if self.method == "g0w0" else dict(
             max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
             update_w=self.method == "evgw")
-        res = driver(
-            mo_energy=result.mo_energy,
-            mo_coeff=result.mo_coeff,
-            nocc=nocc,
-            df_factors=factors,
-            fock_matrix=result.fock_matrix,
-            hcore_matrix=result.hcore_matrix,
-            density_matrix=result.density_matrix,
-            nw=self.nw,
-            eta=self.eta,
-            orbs=orbs,
-            g_orbitals=g_window,
-            screening_occupied=occupied_window,
-            screening_virtual=virtual_window,
-            **controls,
-        )
+        from .._memory import array_device
+        with jax.default_device(array_device(result.mo_energy)):
+            res = driver(
+                mo_energy=result.mo_energy,
+                mo_coeff=result.mo_coeff,
+                nocc=nocc,
+                df_factors=factors,
+                fock_matrix=result.fock_matrix,
+                hcore_matrix=result.hcore_matrix,
+                density_matrix=result.density_matrix,
+                nw=self.nw,
+                eta=self.eta,
+                orbs=orbs,
+                g_orbitals=g_window,
+                screening_occupied=occupied_window,
+                screening_virtual=virtual_window,
+                **controls,
+            )
         self.result = res
         self.converged = res.converged
         self.mo_energy = res.mo_energy

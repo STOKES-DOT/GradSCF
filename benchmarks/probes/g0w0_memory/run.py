@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import signal
 import sys
 import time
 
@@ -18,27 +19,44 @@ def main():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--nw", type=int, default=32)
+    parser.add_argument("--case-input", type=Path)
+    parser.add_argument("--device", choices=("cpu", "gpu"))
+    parser.add_argument("--screening-solver", choices=("direct", "gmres"), default="direct")
     args = parser.parse_args()
     allowed = sorted(os.sched_getaffinity(0))
+    if args.threads > len(allowed):
+        raise ValueError("Requested threads exceed the Slurm step CPU affinity")
     os.sched_setaffinity(0, allowed[:args.threads])
     import jax
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     import numpy as np
     import gradscf
+    target_device = jax.devices(args.device)[0] if args.device else jax.devices()[0]
+    jax.config.update("jax_default_device", target_device)
     from gradscf.gw.self_energy import sigma_residue_part
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     manifest = dict(python=sys.executable, source=gradscf.__file__,
                     source_sha256=hashlib.sha256(Path(sigma_residue_part.__code__.co_filename).read_bytes()).hexdigest(),
                     versions={p: importlib.metadata.version(p) for p in ("jax", "jaxlib", "numpy", "scipy")},
-                    devices=list(map(str, jax.devices())), affinity=sorted(os.sched_getaffinity(0)),
-                    threads={p: os.getenv(p) for p in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "GRADSCF_NATIVE_NUM_THREADS")},
+                    devices=list(map(str, jax.devices())), device_kinds={str(d): d.device_kind for d in jax.devices()}, affinity=sorted(os.sched_getaffinity(0)),
+                    threads={p: os.getenv(p) for p in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "GRADSCF_NATIVE_THREADS")},
                     mode=args.mode, repeats=args.repeats, nw=args.nw,
+                    source_hashes={str(p.relative_to(Path(gradscf.__file__).parent)): hashlib.sha256(p.read_bytes()).hexdigest()
+                                   for p in (Path(gradscf.__file__).parent/"gw").glob("*.py")},
+                    case_input_sha256=None if args.case_input is None else hashlib.sha256(args.case_input.read_bytes()).hexdigest(),
+                    compilation_cache_enabled=bool(jax.config.jax_enable_compilation_cache),
                     dtype="float64", native_libraries=[])
     def record(**row):
         with args.output.open("a") as stream:
             stream.write(json.dumps(row, allow_nan=False)+"\n")
+    topology = []
+    for logical in os.sched_getaffinity(0):
+        base = Path(f"/sys/devices/system/cpu/cpu{logical}/topology")
+        topology.append(dict(logical_cpu=logical, physical_package=(base/"physical_package_id").read_text().strip(),
+                             core_id=(base/"core_id").read_text().strip()))
+    manifest["cpu_topology"] = topology
     manifest_path = args.output.with_suffix(".manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2)+"\n")
     if args.mode.startswith("residue"):
@@ -78,27 +96,48 @@ def main():
     else:
         from gradscf import gto, scf
         from gradscf.gw.rgw import _run_g0w0_numerics
-        atom = "O 0 0 .117790; H 0 .755453 -.471161; H 0 -.755453 -.471161"
+        case = json.loads(args.case_input.read_text()) if args.case_input else {}
+        atom = case.get("atom", "O 0 0 .117790; H 0 .755453 -.471161; H 0 -.755453 -.471161")
         for repeat in range(args.repeats+1):
+            signal.signal(signal.SIGALRM, signal.SIG_DFL)
+            signal.alarm(6000)
             total = time.perf_counter()
-            mol = gto.M(atom=atom, basis="def2-svp", cart=True)
-            mf = scf.RHF(mol, conv_tol=1e-12).density_fit("weigend").run()
+            mol = gto.M(atom=atom, basis=case.get("basis", "def2-svp"), cart=True)
+            mf = scf.RHF(mol, conv_tol=1e-12).density_fit(case.get("auxbasis", "weigend")).run()
             jax.block_until_ready(mf.scf_result)
             scf_seconds = time.perf_counter()-total
             r = mf.scf_result
+            nocc = int(np.count_nonzero(np.asarray(r.mo_occ)))
+            requested = np.array(case.get("orbs", [3, 4, 5, 6]), dtype=int)
             tick = time.perf_counter()
-            result = _run_g0w0_numerics(mo_energy=r.mo_energy, mo_coeff=r.mo_coeff, nocc=5,
-                df_factors=mf._scf_inputs.df_factors, fock_matrix=r.fock_matrix,
-                hcore_matrix=r.hcore_matrix, density_matrix=r.density_matrix,
-                nw=args.nw, eta=.001, orbs=(3, 4, 5, 6), qp_tol=1e-10,
-                resolvent_expansion=False)
+            inputs = (r.mo_energy, r.mo_coeff, mf._scf_inputs.df_factors,
+                      r.fock_matrix, r.hcore_matrix, r.density_matrix)
+            transfer_bytes = sum(x.nbytes for x in inputs if getattr(x, "device", None) != target_device)
+            energy, coefficients, factors, fock, hcore, density = jax.block_until_ready(jax.device_put(inputs, target_device))
+            transfer_seconds = time.perf_counter()-tick
+            controls = {}
+            if args.screening_solver == "gmres":
+                from gradscf.solvers import LinearSolverConfig
+                controls["screening_config"] = LinearSolverConfig(method="gmres", rtol=1e-11, atol=1e-13, restart=40)
+            tick = time.perf_counter()
+            result = _run_g0w0_numerics(mo_energy=energy, mo_coeff=coefficients, nocc=nocc,
+                df_factors=factors, fock_matrix=fock,
+                hcore_matrix=hcore, density_matrix=density,
+                nw=args.nw, eta=case.get("eta_hartree", .001), orbs=tuple(map(int, requested)), qp_tol=1e-10,
+                resolvent_expansion=False, **controls)
             jax.block_until_ready(result)
+            signal.alarm(0)
             gw_seconds = time.perf_counter()-tick
-            requested = np.array([3, 4, 5, 6])
-            passed = bool(mf.converged) and bool(np.asarray(result.converged_mask)[requested].all())
-            record(case_id="water-def2-svp-true-ri-direct-cd", stage="end_to_end",
+            passed = (bool(mf.converged) and bool(np.asarray(result.converged_mask)[requested].all())
+                      and bool(np.asarray(result.qp_branch_valid)[requested].all())
+                      and bool(np.asarray(result.qp_computed_mask)[requested].all())
+                      and bool(np.all(np.isfinite(np.asarray(result.qp_weight)[requested])))
+                      and bool(np.all(np.asarray(result.qp_weight)[requested] > 0))
+                      and float(np.max(np.abs(np.asarray(result.qp_residual)[requested]))) < 1e-10)
+            record(case_id=case.get("case_id", "water-def2-svp-true-ri-direct-cd"), stage="end_to_end",
                    repeat=repeat, wall_seconds=time.perf_counter()-total,
-                   scf_seconds=scf_seconds, gw_seconds=gw_seconds,
+                   scf_seconds=scf_seconds, gw_seconds=gw_seconds, transfer_seconds=transfer_seconds,
+                   transfer_bytes_estimate=transfer_bytes, screening_solver=args.screening_solver, device=str(target_device),
                    nao=int(r.mo_coeff.shape[0]), naux=int(mf._scf_inputs.df_factors.shape[0]), nw=args.nw,
                    qp_energy_hartree=np.asarray(result.mo_energy)[requested].tolist(),
                    qp_residual_hartree=np.asarray(result.qp_residual)[requested].tolist(),
@@ -110,6 +149,15 @@ def main():
             manifest["native_libraries"].append(dict(path=str(path), sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     record(stage="process_peak", cpu_peak_rss_bytes=1024*resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
            memory_metric="Linux ru_maxrss; includes preparation/compilation/execution", status="ok")
+    manifest["gpu_memory"] = []
+    for device in jax.devices():
+        if device.platform == "cpu":
+            continue
+        statistics = device.memory_stats() or {}
+        manifest["gpu_memory"].append(dict(device=str(device), metrics={
+            key: int(statistics[key]) if statistics.get(key) is not None else None
+            for key in ("bytes_in_use", "peak_bytes_in_use", "pool_bytes", "peak_pool_bytes", "bytes_limit")},
+            notes="Allocator counters; pool/reserved is not active allocation. Missing counters are unknown."))
     manifest_path.write_text(json.dumps(manifest, indent=2)+"\n")
 
 

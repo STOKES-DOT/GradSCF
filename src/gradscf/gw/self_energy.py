@@ -51,8 +51,12 @@ _BATCH_MEM_LIMIT = 1 << 31
 
 
 def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0,
-                        right=None):
-    """RPA response at one frequency + (1-Pi)^{-1} - I (complex)."""
+                        right=None, config=None):
+    """Complex RPA screened matrix, or its action on a supplied right vertex."""
+    if right is not None and config is not None and config.method == "gmres":
+        from .screened import screened_action
+        return screened_action(omega, channels, right, eta=eta, config=config,
+                                conjugate=conjugate, response_scale=response_scale)
     pi = None
     for e_spin, b_ov_spin, spin_factor in channels:
         contrib = rho_response_real(
@@ -171,6 +175,7 @@ def sigma_residue_part(
     resolvent_data: dict | None = None,
     g_indices: Array | None = None,
     del_w_static: Array | None = None,
+    execution_plan=None,
 ) -> Array:
     """Residue part of Sigma_p(omega) from poles inside the contour.
 
@@ -248,7 +253,7 @@ def sigma_residue_part(
 
     naux = b_pm.shape[0]
     dtype = jnp.complex128
-    if q0 is None and not conjugate:
+    if q0 is None and not conjugate and (execution_plan is None or execution_plan.projected_residue):
         # A molecular residue needs a bilinear product, not an auxiliary
         # matrix for every G pole. Keep even externally-vmapped inactive
         # probes at a regular frequency, and rematerialize the factorization
@@ -257,7 +262,8 @@ def sigma_residue_part(
             frequency, left, right, enabled = values
             def evaluate(_):
                 solved = _response_solve_one(frequency, channels, eta, naux,
-                    dtype, conjugate, response_scale, right=right)
+                    dtype, conjugate, response_scale, right=right,
+                    config=None if execution_plan is None else execution_plan.screening_config)
                 return jnp.dot(left, solved, precision=Precision.HIGHEST)
             return jax.lax.cond(enabled, evaluate,
                                 lambda _: jnp.zeros((), dtype=dtype), None)
@@ -412,6 +418,7 @@ def sigma_cd(omega: float | Array, ctx: dict) -> Array:
         occupation_sign=ctx.get("occupation_sign"),
         p_index=ctx.get("p_index"),
         resolvent_data=ctx.get("resolvent_data"),
+        execution_plan=ctx.get("execution_plan"),
         g_indices=ctx.get("g_indices"),
         del_w_static=ctx.get("del_w_static"),
     )

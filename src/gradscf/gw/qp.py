@@ -70,8 +70,10 @@ def _projected_molecular_residue(shared):
     # An outer vmap turns per-pole cond into select and evaluates inactive
     # solves. Keep the direct molecular path sequential over external QPs;
     # the bounded resolvent and periodic contractions retain their batching.
-    return ("resolvent_data" not in shared and "q0" not in shared
-            and not shared.get("conjugate", False))
+    plan = shared.get("execution_plan")
+    return (shared.get("resolvent_data") is None and shared.get("q0") is None
+            and not shared.get("conjugate", False)
+            and (plan is None or plan.projected_residue))
 
 
 class QPRootResult(NamedTuple):
@@ -192,6 +194,8 @@ def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array,
         ctx["g_indices"] = shared["g_indices"]
     if "resolvent_data" in shared:
         ctx["resolvent_data"] = shared["resolvent_data"]
+    if "execution_plan" in shared:
+        ctx["execution_plan"] = shared["execution_plan"]
     return ctx
 
 

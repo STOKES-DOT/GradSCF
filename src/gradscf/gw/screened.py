@@ -34,6 +34,61 @@ from ..scf._pytree import pytree_dataclass
 from ..solvers.diagnostics import require_converged_derivative
 
 
+def screened_action(frequency, channels, rhs, *, eta=None, config=None,
+                     conjugate=False, response_scale=1.):
+    """Return (epsilon^-1-I) rhs, with a checked matrix-free GMRES option.
+
+    The channel spin factors refer to the chosen frequency axis. eta=None
+    selects imaginary-frequency weights; retarded eta keeps the asymmetric
+    2i*eta convention. No auxiliary-square or transition Gram is formed for
+    GMRES. Numerical iteration stays in the shared implicit complex solver.
+    """
+    rhs = jnp.asarray(rhs)
+    if config is not None and not isinstance(config, LinearSolverConfig):
+        raise TypeError("config must be a shared LinearSolverConfig")
+    if config is not None and config.method != "gmres":
+        raise ValueError("Explicit dynamic screening config currently supports GMRES; omit it for dense screening")
+    prepared = []
+    for energy, factors, spin in channels:
+        factors = jnp.asarray(factors)
+        if isinstance(energy, tuple):
+            occupied, virtual = energy
+        else:
+            occupied, virtual = energy[:factors.shape[1]], energy[factors.shape[1]:]
+        differences = jnp.asarray(occupied)[:, None]-jnp.asarray(virtual)[None, :]
+        weights = (differences/(frequency**2+differences**2) if eta is None else
+            1/(frequency+differences+2j*eta)+1/(-frequency+differences))
+        prepared.append((factors.reshape(factors.shape[0], -1),
+                         (spin*response_scale*weights).reshape(-1)))
+    def multiply(factors, values):
+        # Keep real molecular Q*ov factors real even for retarded/GMRES
+        # vectors. Generic real@complex promotion can allocate a Q*ov copy.
+        if not jnp.iscomplexobj(factors) and jnp.iscomplexobj(values):
+            return factors@values.real+1j*(factors@values.imag)
+        return factors@values
+    def polarization(values):
+        result = jnp.zeros_like(values, dtype=jnp.result_type(values, *[w.dtype for _, w in prepared]))
+        for factors, weights in prepared:
+            second = factors.conj() if conjugate else factors
+            projected = multiply(second.T, values)
+            weighted = (weights*projected if values.ndim == 1 else
+                        weights[:, None]*projected)
+            result = result+multiply(factors, weighted)
+        return result
+    if config is None:
+        pi = polarization(jnp.eye(rhs.shape[0], dtype=rhs.dtype))
+        return jnp.linalg.solve(jnp.eye(rhs.shape[0], dtype=pi.dtype)-pi, pi@rhs)
+    if not isinstance(config, LinearSolverConfig) or config.method != "gmres":
+        raise ValueError("Use a shared direct or GMRES LinearSolverConfig")
+    dtype = jnp.result_type(rhs, *[w.dtype for _, w in prepared], 1j)
+    apply = lambda x: x-polarization(x)
+    operator = LinearOperator((rhs.shape[0], rhs.shape[0]), dtype, apply, matmat=apply)
+    solved = solve_complex(operator, polarization(rhs), config=config)
+    real_problem = eta is None and not conjugate and not jnp.iscomplexobj(rhs) and all(
+        not jnp.iscomplexobj(factors) for factors, _ in prepared)
+    return solved.solution.real if real_problem else solved.solution
+
+
 @pytree_dataclass(static_fields=("config",))
 @dataclass(frozen=True)
 class StaticScreening:
@@ -221,6 +276,51 @@ def screened_w_imag_axis(
     if est_bytes > (1 << 31):
         return jax.lax.map(at_frequency, freqs)
     return jax.vmap(at_frequency)(freqs)
+
+
+def screened_w_selected(factors, response_fn, frequencies, plan, *, channels=None):
+    """Imaginary W for selected (G,external) vertices, without all MO pairs.
+
+    factors has shape (P,target,G). The two imaginary-axis vertices are the
+    SAME ordered factor, matching screened_w_imag_axis even for raw factors
+    that are not symmetric. Residue vertices remain separately ordered.
+    Each real positive-definite dielectric is factored once, then consumed by
+    bounded RHS blocks using the shared implicit linear-solve derivative.
+    """
+    factors = jnp.asarray(factors)
+    shape = factors.shape[1:]
+    q = factors.shape[0]
+    rhs = factors.reshape(q, -1)
+    if not rhs.shape[1]:
+        return jnp.zeros((len(frequencies),)+shape, dtype=factors.dtype)
+    width = min(plan.rhs_batch, rhs.shape[1])
+    config = LinearSolverConfig(method="direct", rtol=1e-11, atol=1e-13,
+                                max_dense=max(1, q))
+    def at_frequency(frequency):
+        iterative = plan.screening_config is not None and plan.screening_config.method == "gmres"
+        if not iterative:
+            pi = response_fn(frequency)
+            dielectric = jnp.eye(q, dtype=pi.dtype)-pi
+            cholesky = jnp.linalg.cholesky(dielectric)
+        def product(block):
+            if iterative:
+                solved = screened_action(frequency, channels, block,
+                                          config=plan.screening_config)
+            else:
+                solved = solve_linear(dielectric, pi@block, config=config,
+                                       cholesky=cholesky).solution
+            return jnp.sum(block*solved, axis=0)
+        def step(index, values):
+            block = jax.lax.dynamic_slice_in_dim(rhs, index*width, width, axis=1)
+            return jax.lax.dynamic_update_slice_in_dim(values, product(block), index*width, axis=0)
+        count, tail = divmod(rhs.shape[1], width)
+        result = jax.lax.fori_loop(0, count, jax.checkpoint(step),
+                                   jnp.zeros(rhs.shape[1], dtype=factors.dtype))
+        if tail:
+            result = result.at[count*width:].set(product(rhs[:, count*width:]))
+        return result.reshape(shape)
+    return jax.lax.map(jax.checkpoint(at_frequency), jnp.asarray(frequencies),
+                       batch_size=min(len(frequencies), plan.frequency_batch))
 
 
 __all__ = ["screened_w_imag_axis", "screened_w_imag_axis_matrix",
