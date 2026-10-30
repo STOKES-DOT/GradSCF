@@ -19,6 +19,9 @@ def main():
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--nw", type=int, default=32)
+    parser.add_argument("--method", choices=("g0w0", "evgw", "evgw0"), default="g0w0")
+    parser.add_argument("--conventional", choices=("packed", "direct"))
+    parser.add_argument("--max-memory", type=float, default=60000.)
     parser.add_argument("--case-input", type=Path)
     parser.add_argument("--device", choices=("cpu", "gpu"))
     parser.add_argument("--screening-solver", choices=("direct", "gmres"), default="direct")
@@ -42,7 +45,8 @@ def main():
                     versions={p: importlib.metadata.version(p) for p in ("jax", "jaxlib", "numpy", "scipy")},
                     devices=list(map(str, jax.devices())), device_kinds={str(d): d.device_kind for d in jax.devices()}, affinity=sorted(os.sched_getaffinity(0)),
                     threads={p: os.getenv(p) for p in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "GRADSCF_NATIVE_THREADS")},
-                    mode=args.mode, repeats=args.repeats, nw=args.nw,
+                    mode=args.mode, method=args.method, conventional=args.conventional,
+                    repeats=args.repeats, nw=args.nw,
                     source_hashes={str(p.relative_to(Path(gradscf.__file__).parent)): hashlib.sha256(p.read_bytes()).hexdigest()
                                    for p in (Path(gradscf.__file__).parent/"gw").glob("*.py")},
                     case_input_sha256=None if args.case_input is None else hashlib.sha256(args.case_input.read_bytes()).hexdigest(),
@@ -51,6 +55,11 @@ def main():
     def record(**row):
         with args.output.open("a") as stream:
             stream.write(json.dumps(row, allow_nan=False)+"\n")
+    from gradscf.integrals._native import register_integrals
+    handle = register_integrals()
+    actual_library = Path(handle._name).resolve()
+    manifest["loaded_native_library"] = dict(path=str(actual_library),
+        sha256=hashlib.sha256(actual_library.read_bytes()).hexdigest())
     topology = []
     for logical in os.sched_getaffinity(0):
         base = Path(f"/sys/devices/system/cpu/cpu{logical}/topology")
@@ -102,29 +111,46 @@ def main():
             signal.signal(signal.SIGALRM, signal.SIG_DFL)
             signal.alarm(6000)
             total = time.perf_counter()
-            mol = gto.M(atom=atom, basis=case.get("basis", "def2-svp"), cart=True)
-            mf = scf.RHF(mol, conv_tol=1e-12).density_fit(case.get("auxbasis", "weigend")).run()
+            with jax.default_device(jax.devices("cpu")[0]):
+                mol = gto.M(atom=atom, basis=case.get("basis", "def2-svp"), cart=True)
+                mf = scf.RHF(mol, conv_tol=1e-12)
+                if args.conventional == "direct":
+                    mf = mf.direct_scf()
+                elif args.conventional is None:
+                    mf = mf.density_fit(case.get("auxbasis", "weigend"))
+                mf.run()
             jax.block_until_ready(mf.scf_result)
             scf_seconds = time.perf_counter()-total
             r = mf.scf_result
             nocc = int(np.count_nonzero(np.asarray(r.mo_occ)))
             requested = np.array(case.get("orbs", [3, 4, 5, 6]), dtype=int)
             tick = time.perf_counter()
-            inputs = (r.mo_energy, r.mo_coeff, mf._scf_inputs.df_factors,
+            source = ({"eri_pair_matrix": mf._scf_inputs.eri_pair_matrix} if args.conventional == "packed"
+                else {"direct_basis": mf._scf_inputs.direct_basis} if args.conventional == "direct"
+                else {"df_factors": mf._scf_inputs.df_factors})
+            inputs = (r.mo_energy, r.mo_coeff, source,
                       r.fock_matrix, r.hcore_matrix, r.density_matrix)
-            transfer_bytes = sum(x.nbytes for x in inputs if getattr(x, "device", None) != target_device)
-            energy, coefficients, factors, fock, hcore, density = jax.block_until_ready(jax.device_put(inputs, target_device))
+            transfer_bytes = sum(x.nbytes for x in jax.tree.leaves(inputs) if getattr(x, "device", None) != target_device)
+            energy, coefficients, source, fock, hcore, density = jax.block_until_ready(jax.device_put(inputs, target_device))
             transfer_seconds = time.perf_counter()-tick
             controls = {}
             if args.screening_solver == "gmres":
                 from gradscf.solvers import LinearSolverConfig
                 controls["screening_config"] = LinearSolverConfig(method="gmres", rtol=1e-11, atol=1e-13, restart=40)
+            driver = _run_g0w0_numerics
+            if args.method != "g0w0":
+                from gradscf.gw.evgw import evgw_cd_restricted
+                driver = evgw_cd_restricted
+                controls.update(max_iter=60, tol=1e-8, damping=.2, update_w=args.method == "evgw")
+            else:
+                controls.update(qp_tol=1e-10, resolvent_expansion=False)
+            if args.conventional:
+                controls["max_memory"] = args.max_memory
             tick = time.perf_counter()
-            result = _run_g0w0_numerics(mo_energy=energy, mo_coeff=coefficients, nocc=nocc,
-                df_factors=factors, fock_matrix=fock,
+            result = driver(mo_energy=energy, mo_coeff=coefficients, nocc=nocc,
+                **source, fock_matrix=fock,
                 hcore_matrix=hcore, density_matrix=density,
-                nw=args.nw, eta=case.get("eta_hartree", .001), orbs=tuple(map(int, requested)), qp_tol=1e-10,
-                resolvent_expansion=False, **controls)
+                nw=args.nw, eta=case.get("eta_hartree", .001), orbs=tuple(map(int, requested)), **controls)
             jax.block_until_ready(result)
             signal.alarm(0)
             gw_seconds = time.perf_counter()-tick
@@ -133,12 +159,14 @@ def main():
                       and bool(np.asarray(result.qp_computed_mask)[requested].all())
                       and bool(np.all(np.isfinite(np.asarray(result.qp_weight)[requested])))
                       and bool(np.all(np.asarray(result.qp_weight)[requested] > 0))
-                      and float(np.max(np.abs(np.asarray(result.qp_residual)[requested]))) < 1e-10)
-            record(case_id=case.get("case_id", "water-def2-svp-true-ri-direct-cd"), stage="end_to_end",
+                      and float(np.max(np.abs(np.asarray(result.qp_residual)[requested]))) < (1e-10 if args.method == "g0w0" else 1e-8))
+            record(case_id=case.get("case_id", "water-def2-svp-true-ri-direct-cd"), stage="end_to_end", method=args.method, integral_representation=args.conventional or "ri",
                    repeat=repeat, wall_seconds=time.perf_counter()-total,
                    scf_seconds=scf_seconds, gw_seconds=gw_seconds, transfer_seconds=transfer_seconds,
                    transfer_bytes_estimate=transfer_bytes, screening_solver=args.screening_solver, device=str(target_device),
-                   nao=int(r.mo_coeff.shape[0]), naux=int(mf._scf_inputs.df_factors.shape[0]), nw=args.nw,
+                   nao=int(r.mo_coeff.shape[0]), naux=None if args.conventional else int(mf._scf_inputs.df_factors.shape[0]),
+                   nocc=nocc, nvir=int(r.mo_coeff.shape[1])-nocc, nw=args.nw,
+                   mf_energy_hartree=np.asarray(r.mo_energy)[requested].tolist(),
                    qp_energy_hartree=np.asarray(result.mo_energy)[requested].tolist(),
                    qp_residual_hartree=np.asarray(result.qp_residual)[requested].tolist(),
                    qp_weight=np.asarray(result.qp_weight)[requested].tolist(),
