@@ -193,6 +193,23 @@ def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_confi
     return dimension, rotate, density_from, evaluate, energy
 
 
+def _brillouin_gradient(method, occupation_rows, coeff, density_from, evaluate, args, *,
+                       known_variational=False):
+    """Real body-frame residual from the scalar objective's variational Fock."""
+    density = density_from(coeff)
+    fock = (evaluate(density, args)[1] if known_variational else
+            jax.grad(lambda d: evaluate(d, args, compute_potential=False)[0])(density))
+    fock = .5*(fock+jnp.swapaxes(fock, -1, -2))
+    blocks = jnp.broadcast_to(coeff, fock.shape)
+    fock_mo = jnp.einsum('spi,spq,sqj->sij', blocks, fock, blocks, precision='highest')
+    occupations = jnp.asarray(occupation_rows)
+    gradient = 2*(occupations[:, None, :]-occupations[:, :, None])*fock_mo
+    pairs = _rotation_pairs(method, occupation_rows)
+    if method == 'roks':
+        return gradient.sum(axis=0)[pairs[0]]
+    return jnp.concatenate([block[pair] for block, pair in zip(gradient, pairs)])
+
+
 def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
               grid_weights, mo_coeff, mo_occ, xc_spec, collinear, max_iterations,
               gradient_tolerance, gradient_mode, differentiation, orthonormalize_initial,
@@ -276,6 +293,8 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     topology = tuple(tuple(float(x) for x in row) for row in occ)
     uks_config = UKSConfig(xc_spec=xc_spec, jk_backend=jk_backend,
                            direct_scf_tol=direct_scf_tol, direct_scf_workers=direct_scf_workers)
+    from ..integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
+    known_variational = type(direct_basis) in (NativeDirectBasis, ProjectedNativeDirectBasis)
     dimension, rotate, density_from, evaluate, energy = _problem_functions(
         method, xc_spec, collinear, topology, uks_config=uks_config)
     diagonal = (_gap_function(method, topology, density_from, evaluate)
@@ -309,8 +328,12 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     else:
         final = solve_coeff
         origin = jnp.zeros(dimension, dtype=coeff.real.dtype)
-        norm = (.5*jnp.linalg.norm(jax.grad(energy)(origin, final, solve_args))
-                if dimension else jnp.asarray(0., dtype=coeff.real.dtype))
+        norm = jnp.asarray(0., dtype=coeff.real.dtype)
+        if dimension:
+            gradient = (jax.grad(energy)(origin, final, solve_args) if method == 'gks' else
+                        _brillouin_gradient(method, topology, final, density_from, evaluate, solve_args,
+                                            known_variational=known_variational))
+            norm = .5*jnp.linalg.norm(gradient)
         iterations, evaluations, stages, history = jnp.asarray(0), jnp.asarray(1), (), ()
     if maximum is not None:
         # The same initial observable follows the fixed-buffer preflight;
@@ -323,10 +346,18 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         def tangent_energy(angles, root_inputs):
             parameters, anchor = root_inputs
             return energy(angles, _orthonormalize(anchor,parameters['metric']), parameters)
+        def tangent_residual(angles, root_inputs):
+            parameters, anchor = root_inputs
+            current = rotate(angles, _orthonormalize(anchor, parameters['metric']))
+            return _brillouin_gradient(method, topology, current, density_from, evaluate, parameters,
+                                       known_variational=known_variational)
+        # Unchecked/regularized response retains its original chart semantics.
+        use_brillouin = method != 'gks' and config.require_converged and config.regularization == 0.
+        residual = tangent_residual if use_brillouin else jax.grad(tangent_energy)
         memory = ({} if maximum is None else dict(max_memory=maximum,
             reserved_bytes=reserved+tree_storage_bytes(sources, coeff, metric, initial, initial_energy, forward,
                 exclude=(args, anchor, origin)), operator_min_bytes=native))
-        angles = attach_scf_backward((args, anchor), solution=origin, residual=jax.grad(tangent_energy),
+        angles = attach_scf_backward((args, anchor), solution=origin, residual=residual,
                                      config=config, converged=stationary, **memory)
         final = rotate(angles, _orthonormalize(anchor,metric))
     elif config.mode == 'implicit':
