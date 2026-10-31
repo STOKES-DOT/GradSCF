@@ -66,6 +66,16 @@ _STEP_CAP = 0.05
 _BATCH_MEM_LIMIT = 1 << 31
 
 
+def _projected_molecular_residue(shared):
+    # An outer vmap turns per-pole cond into select and evaluates inactive
+    # solves. Keep the direct molecular path sequential over external QPs;
+    # the bounded resolvent and periodic contractions retain their batching.
+    plan = shared.get("execution_plan")
+    return (shared.get("resolvent_data") is None and shared.get("q0") is None
+            and not shared.get("conjugate", False)
+            and (plan is None or plan.projected_residue))
+
+
 class QPRootResult(NamedTuple):
     """Selected fixed-G/W roots and stopped numerical selection diagnostics.
 
@@ -156,127 +166,34 @@ def qp_residual(omega: Array, e_mf: Array, delta_v: Array, ctx: dict) -> Array:
     return omega - e_mf - (jnp.real(sigma) + delta_v)
 
 
-def _ctx_from_parts(shared: dict, wmn_p: Array, b_pm: Array, b_mp: Array,
-                    wmn_static=None, p_index=None) -> dict:
-    ctx = {
-        "mo_energy": shared["mo_energy"],
-        "wmn_p": wmn_p,
-        "b_pm": b_pm,
-        "b_mp": b_mp,
-        "channels": shared["channels"],
-        "ef": shared["ef"],
-        "eta": shared["eta"],
-        "freqs": shared["freqs"],
-        "wts": shared["wts"],
-        "conjugate": shared.get("conjugate", False),
-    }
-    if wmn_static is not None:
-        ctx["wmn_static"] = wmn_static
-        if "occupation_sign" in shared:
-            ctx["occupation_sign"] = shared["occupation_sign"]
-    if p_index is not None:
-        ctx["p_index"] = p_index
-        if "del_w_static" in shared:
-            ctx["del_w_static"] = shared["del_w_static"][p_index]
-    if "q0" in shared:
-        ctx["q0"] = shared["q0"]
-    if "g_indices" in shared:
-        ctx["g_indices"] = shared["g_indices"]
-    if "resolvent_data" in shared:
-        ctx["resolvent_data"] = shared["resolvent_data"]
-    return ctx
-
-
 def sigma_cd_batch(omega: Array, shared: dict, stacked: dict) -> Array:
-    """Vectorized self-energy Sigma_p(omega) for a batch of orbitals.
-
-    Returns complex ``(norb,)``.  Same stacking conventions as
-    :func:`qp_residual_batch`.
-    """
-
-    def fn(w, wp, bp, bm, ws, pidx, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None, pidx)
-        ctx["p_index"] = pidx
-        if extra:
-            ctx["del_w"], ctx["p_index"] = extra
-            if "q0" in shared:
-                ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
+    """Independent QP lanes with representation-specific, live PyTree vertices."""
+    stacked = {"p_index": jnp.arange(omega.size), **stacked}
+    def evaluate(w, local):
+        ctx = {**shared, **local}
+        p = local.get("p_index")
+        if p is not None and "del_w_static" in shared:
+            ctx["del_w_static"] = shared["del_w_static"][p]
+        if "del_w" in local and "q0" in shared:
+            ctx["q0"] = {**shared["q0"], "p_index": p}
         return sigma_cd(w, ctx)
-
-    args = (omega, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
-            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
-            stacked.get("p_index", jnp.arange(omega.shape[0])))
-    if "del_w" in stacked:
-        args = args + (stacked["del_w"], stacked["p_index"])
-    naux = stacked["b_pm"].shape[1]
-    est_bytes = omega.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
-        return jax.lax.map(lambda a: fn(*a), args)
-    return jax.vmap(fn)(*args)
+    naux = stacked["b_pm"].shape[1] if "b_pm" in stacked else 0
+    sequential = ("transition" in shared or _projected_molecular_residue(shared)
+                  or omega.size*naux*naux*32 > _BATCH_MEM_LIMIT)
+    if sequential:
+        return jax.lax.map(lambda args: evaluate(*args), (omega, stacked))
+    return jax.vmap(evaluate)(omega, stacked)
 
 
-def qp_residual_batch(
-    omega: Array, e_mf: Array, delta_v: Array, shared: dict, stacked: dict
-) -> Array:
-    """Vectorized Dyson residual for a batch of orbitals.
-
-    ``omega``, ``e_mf``, ``delta_v`` have shape ``(norb,)``; ``stacked``
-    holds ``wmn_p`` ``(norb, nw, nmo)``, ``b_pm``/``b_mp``
-    ``(norb, naux, nmo)``; ``shared`` holds the orbital-independent
-    quantities (see :func:`gradscf.gw.self_energy.sigma_cd`).
-
-    Falls back to a sequential ``lax.map`` when the batched residue
-    intermediates would exceed ``_BATCH_MEM_LIMIT``.
-
-    When ``stacked`` carries ``del_w`` ``(norb, nw)`` and ``p_index``
-    ``(norb,)`` (periodic q -> 0 correction), they are mapped over the
-    orbital batch as well.
-    """
-    has_q0 = "del_w" in stacked
-
-    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None, pidx)
-        ctx["p_index"] = pidx
-        if extra:
-            ctx["del_w"], ctx["p_index"] = extra
-            if "q0" in shared:
-                ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
-        return qp_residual(w, e, dv, ctx)
-
-    args = (omega, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
-            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
-            stacked.get("p_index", jnp.arange(omega.shape[0])))
-    if has_q0:
-        args = args + (stacked["del_w"], stacked["p_index"])
-    naux = stacked["b_pm"].shape[1]
-    est_bytes = omega.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
-        return jax.lax.map(lambda a: fn(*a), args)
-    return jax.vmap(fn)(*args)
+def qp_residual_batch(omega, e_mf, delta_v, shared, stacked):
+    """The same Dyson residual for factor and conventional Coulomb products."""
+    return omega-e_mf-delta_v-jnp.real(sigma_cd_batch(omega, shared, stacked))
 
 
 def _df_dw_batch(root, e_mf, delta_v, shared, stacked):
-    """Per-orbital df/dw at the roots (inverse Z factors), memory-bounded."""
-
-    def fn(w, e, dv, wp, bp, bm, ws, pidx, *extra):
-        ctx = _ctx_from_parts(shared, wp, bp, bm, ws if "wmn_static" in stacked else None, pidx)
-        ctx["p_index"] = pidx
-        if extra:
-            ctx["del_w"], ctx["p_index"] = extra
-            if "q0" in shared:
-                ctx["q0"] = {**shared["q0"], "p_index": extra[1]}
-        return jax.grad(lambda ww: qp_residual(ww, e, dv, ctx))(w)
-
-    args = (root, e_mf, delta_v, stacked["wmn_p"], stacked["b_pm"], stacked["b_mp"],
-            stacked.get("wmn_static", jnp.zeros_like(stacked["wmn_p"][:, 0, :])),
-            stacked.get("p_index", jnp.arange(root.shape[0])))
-    if "del_w" in stacked:
-        args = args + (stacked["del_w"], stacked["p_index"])
-    naux = stacked["b_pm"].shape[1]
-    est_bytes = root.shape[0] * naux * naux * 16 * 2
-    if est_bytes > _BATCH_MEM_LIMIT:
-        return jax.lax.map(lambda a: fn(*a), args)
-    return jax.vmap(fn)(*args)
+    """Each QP lane depends only on its own frequency; this JVP is diagonal."""
+    return jax.jvp(lambda w: qp_residual_batch(w, e_mf, delta_v, shared, stacked),
+                   (root,), (jnp.ones_like(root),))[1]
 
 
 def _qp_forward(f, x0, *, tol, maxiter, method, scan=False, reference=None,

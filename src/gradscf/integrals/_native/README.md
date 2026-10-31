@@ -93,6 +93,24 @@ Repeated shell emissions are deduplicated separately from physical derivative
 multiplicities. Packed geometry and direct J/K keep their own output/reduction
 ownership; no full tensor or Jacobian is added to those consumers.
 
+Direct J/K uses the caller's worker limit and JAX's FFI pool, without an
+additional OpenMP team. For small density batches, workers accumulate private
+outputs before a fixed-order reduction. SCF input assembly and orbital
+optimization bind this storage to their existing `max_memory` allowance,
+after charging resident arrays and fixed native work. Standalone providers
+retain a 64 MiB quota. Large batches keep bounded output-row ownership.
+The quota controls execution only; geometry, coefficients and projection
+matrices retain their existing differentiable dependencies. `max_memory`
+is a planning allowance, not a process RSS hard limit.
+
+Coordinate J/K pullbacks distribute canonical outer shell pairs cyclically,
+instead of assigning contiguous first-shell intervals. Each worker retains
+its own small ENV adjoint, and reductions use a fixed worker order. Both
+first and directional second coordinate products use this partition.
+Rebuild after this interface update: the loader requires
+`GradSCFDirectJKBudget` (`gradscf_direct_jk_cpu_v2`) and reports a stale library
+explicitly. Restart Python after replacing a loaded shared library.
+
 Run `tests/integrals/test_native_parallel.py` for serial/parallel checks. The
 standalone `tools/benchmark_native_basis_vjp.py` compares thread counts in the
 current library with identical CPU float64 inputs and reports warm timings

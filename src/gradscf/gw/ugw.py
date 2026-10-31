@@ -29,15 +29,25 @@ class UGW:
         orbital energies/coefficients, densities and ``h1e``.
     nw, eta:
         Imaginary-grid size and broadening.
+    max_memory, screening_config:
+        Inherited decimal-MB G0W0 budget and optional shared GMRES config.
+        Omit the config for dense screening. density_fit(auxbasis) supplies
+        independent fixed-geometry RI without replacing the SCF state.
     """
 
     def __init__(self, mf, *, nw: int = 100, eta: float = 1e-3, qp_solver="secant",
-                 method="g0w0", max_cycle=20, conv_tol=1e-6, damp=0.):
+                 method="g0w0", max_cycle=20, conv_tol=1e-6, damp=0.,
+                 max_memory=None, screening_config=None):
         if getattr(mf, "mo_energy", None) is None:
             raise RuntimeError("UGW requires a converged mean-field object; call mf.kernel() first.")
         self.qp_solver = qp_solver
         self.method, self.max_cycle, self.conv_tol, self.damp = method, max_cycle, conv_tol, damp
         self._scf = mf
+        from .._memory import resolve_memory_mb
+        self.max_memory = resolve_memory_mb(max_memory, mf)
+        self.screening_config = screening_config
+        self.auxbasis = None
+        self._ri_key = self._ri_factors = None
         self.nw = int(nw)
         self.eta = float(eta)
         self.mo_energy = None
@@ -63,6 +73,7 @@ class UGW:
             value = getattr(reference, name, None)
             arrays.append(None if value is None else _array_signature(value))
         return (self.nw, self.eta, self.qp_solver, self.method, self.max_cycle,
+                self.max_memory, self.screening_config, self.auxbasis,
                 self.conv_tol, self.damp,
                 reference_state_signature(mf, allow_range_separated=True), tuple(arrays))
 
@@ -103,6 +114,16 @@ class UGW:
             screening_occupied=None, screening_virtual=None)
 
     def _df_factors(self, reference):
+        if self.auxbasis is not None:
+            from .integrals import auxiliary_factors
+            key = self._scf._scf_signature(), self.auxbasis
+            if key != self._ri_key or self._ri_factors is None:
+                self._ri_factors = self._ao_factors = None
+                self._ri_key = None
+                self._ri_factors = auxiliary_factors(self._scf, self.auxbasis,
+                                                    max_memory=self.max_memory)
+                self._ri_key = key
+            return self._ri_factors
         factors = getattr(reference, "df_factors", None)
         if factors is not None:
             return factors
@@ -127,10 +148,22 @@ class UGW:
         pair = eri_pair_matrix_packed(basis)
         return eri_pair_matrix_to_df_factors(pair, nao=basis.nao, tol=1e-12)
 
+    def density_fit(self, auxbasis="def2-universal-jkfit"):
+        """Use independent fixed-geometry auxiliary RI, preserving the UHF/UKS state."""
+        if not isinstance(auxbasis, str) or not auxbasis.strip():
+            raise ValueError("auxbasis must name an explicit auxiliary basis")
+        if self.method != "g0w0":
+            raise NotImplementedError("Independent GW auxiliary fitting currently requires G0W0")
+        self.auxbasis = auxbasis
+        self._ri_key = self._ri_factors = None
+        return self
+
     def kernel(self, orbs: Sequence[int] | None = None):
         self.result, self._source_key, self.converged = None, None, False
         if self.method not in {"g0w0", "evgw", "evgw0"}:
             raise ValueError("GW method must be g0w0, evgw or evgw0")
+        if self.screening_config is not None and self.method != "g0w0":
+            raise NotImplementedError("Explicit dynamic screening configuration currently requires G0W0")
         if self.method != "g0w0" and self.qp_solver != "secant":
             raise ValueError("qp_solver selects the G0W0 root, not the evGW outer fixed point")
         mf = self._scf
@@ -141,14 +174,14 @@ class UGW:
                 "Unrestricted GW expects the UKS unrestricted reference "
                 "(mf.reference); run mf.kernel() first."
             )
-        mo_energy = np.asarray(reference.mo_energy)
-        mo_coeff = np.asarray(reference.mo_coeff)
+        mo_energy = jnp.asarray(reference.mo_energy)
+        mo_coeff = jnp.asarray(reference.mo_coeff)
         mo_occ = np.asarray(reference.mo_occ)
         if mo_energy.shape[0] != 2:
             raise RuntimeError("mf.reference does not look unrestricted (expected spin axis 0 of size 2).")
         nocc_a = int(np.count_nonzero(mo_occ[0] > 0.0))
         nocc_b = int(np.count_nonzero(mo_occ[1] > 0.0))
-        rdm1 = np.asarray(reference.rdm1)
+        rdm1 = jnp.asarray(reference.rdm1)
         df_factors = self._df_factors(reference)
 
         # F-h-J contains the whole starting potential, including semilocal,
@@ -159,22 +192,37 @@ class UGW:
             raise ValueError("A DFT GW starting point requires actual spin Fock matrices.")
         from .evgw import evgw_cd_unrestricted
         driver = g0w0_cd_unrestricted if self.method == "g0w0" else evgw_cd_unrestricted
-        controls = dict(qp_solver=self.qp_solver) if self.method == "g0w0" else dict(
+        potential = None
+        if self.auxbasis is not None:
+            if self.method != "g0w0" or fock is None:
+                raise NotImplementedError("Independent UGW RI needs G0W0 and actual converged spin Focks")
+            from .integrals import starting_potential
+            potential = starting_potential(mf, jnp.asarray(rdm1).sum(axis=0),
+                jnp.asarray(fock), reference.h1e, max_memory=self.max_memory)
+        from .._memory import tree_storage_bytes
+        extra = tree_storage_bytes(reference, getattr(mf, "_scf_inputs", None),
+            exclude=(df_factors, potential))
+        controls = dict(qp_solver=self.qp_solver, max_memory=self.max_memory,
+            screening_config=self.screening_config, reserved_bytes=extra,
+            v_mf_matrix=potential) if self.method == "g0w0" else dict(
             max_iter=self.max_cycle, tol=self.conv_tol, damping=self.damp,
             update_w=self.method == "evgw")
-        res = driver(
-            mo_energy=(jnp.asarray(mo_energy[0]), jnp.asarray(mo_energy[1])),
-            mo_coeff=(jnp.asarray(mo_coeff[0]), jnp.asarray(mo_coeff[1])),
-            nocc=(nocc_a, nocc_b),
-            df_factors=df_factors,
-            fock_matrix=None if fock is None else tuple(jnp.asarray(f) for f in fock),
-            hcore_matrix=None if fock is None else jnp.asarray(reference.h1e),
-            density_matrix=(jnp.asarray(rdm1[0]), jnp.asarray(rdm1[1])),
-            nw=self.nw,
-            eta=self.eta,
-            orbs=orbs,
-            **controls,
-        )
+        from .._memory import array_device
+        import jax
+        with jax.default_device(array_device(reference.mo_energy)):
+            res = driver(
+                mo_energy=(jnp.asarray(mo_energy[0]), jnp.asarray(mo_energy[1])),
+                mo_coeff=(jnp.asarray(mo_coeff[0]), jnp.asarray(mo_coeff[1])),
+                nocc=(nocc_a, nocc_b),
+                df_factors=df_factors,
+                fock_matrix=None if fock is None else tuple(jnp.asarray(f) for f in fock),
+                hcore_matrix=None if fock is None else jnp.asarray(reference.h1e),
+                density_matrix=(jnp.asarray(rdm1[0]), jnp.asarray(rdm1[1])),
+                nw=self.nw,
+                eta=self.eta,
+                orbs=orbs,
+                **controls,
+            )
         self.result = res
         self.converged = res.converged
         self.mo_energy = res.mo_energy

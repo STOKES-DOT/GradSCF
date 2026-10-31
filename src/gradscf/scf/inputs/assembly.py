@@ -61,6 +61,18 @@ def _eri_workspace_bytes(nao, cfg, *, mode, rsh, geometry_is_traced,
     return required
 
 
+def _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices):
+    bundle = context.grid_ao_bundle
+    arrays = () if bundle is None else (bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian)
+    resident = _grid._grid_resident_bytes(context.basis, context.coords,
+        context.grid_weights, *arrays, scf_max_cycle=cfg.max_cycle,
+        scf_history_matrices=scf_history_matrices)
+    provider = context.grid_ao
+    ao_workspace = (0 if provider is None else provider.block_size *
+                    _grid.ao_point_bytes(provider, deriv=2 if needs_ao_laplacian else 1))
+    return resident, ao_workspace
+
+
 def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
                        scf_history_matrices, required_bytes=None):
     """Reject a known oversized integral representation before evaluating it."""
@@ -70,17 +82,9 @@ def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
         required_bytes = _eri_workspace_bytes(context.basis.nao, cfg, mode=mode, rsh=rsh,
             geometry_is_traced=context.geometry_is_traced,
             itemsize=max(8, np.dtype(context.coords.dtype).itemsize))
-    bundle = context.grid_ao_bundle
-    arrays = () if bundle is None else (bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian)
-    resident = _grid._grid_resident_bytes(context.basis, context.coords,
-        context.grid_weights, *arrays, scf_max_cycle=cfg.max_cycle,
-        scf_history_matrices=scf_history_matrices)
-    device = _grid._grid_device(context.coords)
+    resident, ao_workspace = _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices)
     available = workspace_bytes(getattr(cfg, "max_memory", DEFAULT_MAX_MEMORY_MB),
-                                resident_bytes=resident, device=device)
-    provider = context.grid_ao
-    ao_workspace = (0 if provider is None else provider.block_size *
-                    _grid.ao_point_bytes(provider, deriv=2 if needs_ao_laplacian else 1))
+        resident_bytes=resident, device=_grid._grid_device(context.coords))
     if required_bytes + ao_workspace > available:
         remedy = ("reduce direct_scf_workers or increase max_memory."
                   if cfg.jk_backend == "direct" else "use jk_backend='direct' or increase max_memory.")
@@ -89,6 +93,18 @@ def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
             f"plus {ao_workspace / 1e6:.1f} MB of AO workspace, exceeding "
             f"the remaining max_memory budget ({available / 1e6:.1f} MB); {remedy}"
         )
+
+
+def _budgeted_direct_basis(spec, basis, cfg, context, *, scf_history_matrices):
+    from gradscf.integrals.backends.native.jk import NativeDirectBasis
+    from gradscf.integrals.backends.native.workspace import bind_jk_workspace
+    top, parameters = prepare_basis(spec, basis, cart=True)
+    provider = NativeDirectBasis(make_plan(top), parameters)
+    resident, ao_workspace = _grid_work_bytes(context, cfg,
+        xc_type(local_xc_spec(cfg.xc_spec)) == 'MGGA', scf_history_matrices)
+    return bind_jk_workspace(provider, workers=cfg.direct_scf_workers,
+        max_memory=cfg.max_memory, resident_bytes=resident+ao_workspace,
+        cutoff=cfg.direct_scf_tol)
 
 
 def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
@@ -210,9 +226,7 @@ def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     nelectron = int(np.asarray(spec.charges).sum())-int(spec.charge)
     direct=None
     if cfg.jk_backend=='direct':
-        from gradscf.integrals.backends.native.jk import NativeDirectBasis
-        top,parameters=prepare_basis(spec,basis,cart=True)
-        direct=NativeDirectBasis(make_plan(top),parameters)
+        direct=_budgeted_direct_basis(spec,basis,cfg,ctx,scf_history_matrices=2)
     return RKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=eri if eri_lr is not None else None,
         eri_pair_matrix=pair if cfg.jk_backend == "full" else None,df_factors=factors,
         direct_basis=direct,nelectron=nelectron,
@@ -243,9 +257,7 @@ def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     nalpha,nbeta=_unrestricted_spin_electron_counts(total,int(spec.spin))
     direct=None
     if cfg.jk_backend == "direct":
-        from gradscf.integrals.backends.native.jk import NativeDirectBasis
-        top,parameters=prepare_basis(spec,basis,cart=True)
-        direct=NativeDirectBasis(make_plan(top),parameters)
+        direct=_budgeted_direct_basis(spec,basis,cfg,ctx,scf_history_matrices=6)
         eri=jnp.zeros((0,0,0,0),dtype=h.dtype)
     elif cfg.jk_backend == "df":
         eri=jnp.zeros((0,0,0,0),dtype=h.dtype)

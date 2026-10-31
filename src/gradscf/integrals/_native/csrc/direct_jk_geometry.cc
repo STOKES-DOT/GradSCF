@@ -11,7 +11,7 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
     ffi::BufferR3<ffi::F64> density,ffi::BufferR1<ffi::F64> direction,
     ffi::Buffer<ffi::F64> vector,Output result,
     int32_t order,int32_t cart,int32_t with_j,int32_t with_k,
-    int first_shell=0,int last_shell=-1) {
+    int first_shell=0,int last_shell=-1,int first_task=0,int task_stride=1) {
     if ((order!=1 && order!=2) || (with_j!=0 && with_j!=1) ||
         (with_k!=0 && with_k!=1) || !(with_j || with_k))
       throw std::invalid_argument("Invalid direct J/K geometry product");
@@ -86,7 +86,7 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
       auto add=[&](size_t index,int coordinate,double value) {
         consume(index,coordinate,transpose ? value:value*u[coordinate]);
       };
-      for_each_eri_geometry_entry(t,cart,add,nullptr,first_shell,last_shell);
+      for_each_eri_geometry_entry(t,cart,add,nullptr,first_shell,last_shell,first_task,task_stride);
     } else {
       auto evaluate=[&](Intor kernel,int* shells,size_t size,
                         std::vector<double>& block,std::vector<double>& cache,int) {
@@ -95,7 +95,8 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
       auto add=[&](size_t index,int a,int b,double value) {
         consume(index,a,transpose ? value*u[b]:value*u[a]*input[b]);
       };
-      for_each_geometry_hessian_entry(t,4,cart,evaluate,add,nullptr,first_shell,last_shell);
+      for_each_geometry_hessian_entry(t,4,cart,evaluate,add,nullptr,
+                                      first_shell,last_shell,first_task,task_stride);
     }
 }
 
@@ -151,7 +152,7 @@ static ffi::Future ParallelDirectJKGeometryVJP(ffi::ThreadPool pool,
           } local{*result,(*partials)[worker].data()};
           DirectJKGeometryCompute<true>(atoms,basis,environment,density,direction,
               vector,&local,order,cart,with_j,with_k,
-              worker*shells/workers,(worker+1)*shells/workers);
+              0,-1,worker,workers);
         } catch(const std::invalid_argument& error) {
           (*errors)[worker]={true,error.what()};
         } catch(const std::exception& error) {

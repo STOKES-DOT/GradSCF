@@ -11,12 +11,29 @@ from jax.interpreters import ad, batching, mlir
 from ..._native import register_integrals
 
 
-def native_jk_workspace_bytes(provider, workers, cutoff):
-    """Bound one native call's batch-independent optimizer and shell arrays.
+_DIRECT_JK_PRIVATE_MAX_BYTES = 64 * 1024**2
+_DIRECT_JK_PRIVATE_MAX_BATCH = 4
+
+
+def _private_output_limit(value):
+    if value is None:
+        return _DIRECT_JK_PRIVATE_MAX_BYTES
+    if (isinstance(value, bool) or not isinstance(value, Integral)
+            or value < 0 or value > np.iinfo(np.int64).max):
+        raise ValueError('private_output_bytes must be a nonnegative int64 byte count.')
+    return int(value)
+
+
+def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes=None):
+    """Bound one native call's optimizer, shell arrays and private outputs.
 
     The pinned native ABI uses float64, int32 and 64-bit pointers. Return
     None for dimension-only placeholders without a complete shell topology.
     SCF and response share this estimate; no integrals are evaluated here.
+    Small native batches admit at most four densities and a private-output
+    quota (64 MiB when unbound), reducing active workers to fit. With no
+    batch/selection arguments, reserve both J and K at that batch limit;
+    larger batches keep the original output-row ownership and worker count.
     """
     topology = provider.plan.topology
     names = ("angular_momenta", "primitive_counts", "contraction_counts",
@@ -63,9 +80,15 @@ def native_jk_workspace_bytes(provider, workers, cutoff):
     tables = (4*(6*atoms + 8*shells + shells+1)
               + 8*(20 + 3*atoms + total_primitive + total_coefficients))
     bounds = 8*shells**2 if cutoff > 0 else 0
-    # Coordinate VJPs reduce one ENV-sized vector per worker. Charging another
-    # table bounds those vectors without introducing worker-sized J/K copies.
-    return optimizer + bounds + (2*workers+1)*tables + workers*scratch
+    # Coordinate VJPs reduce one ENV-sized vector per worker. Private value
+    # outputs have a separate native cap and are absent for one worker.
+    nao = sum(c*(f if topology.cart else 2*l+1)
+              for l, f, c in zip(angular, cart_dims, contractions))
+    limit = _private_output_limit(getattr(provider, 'private_output_bytes', None)
+        if private_output_bytes is None else private_output_bytes)
+    private = (min(limit,
+                   workers*2*_DIRECT_JK_PRIVATE_MAX_BATCH*nao**2*8) if workers > 1 else 0)
+    return optimizer + bounds + (2*workers+1)*tables + workers*scratch + private
 
 
 @jax.tree_util.register_pytree_node_class
@@ -80,16 +103,21 @@ class NativeDirectBasis:
 
     plan: object
     parameters: object
+    private_output_bytes: int | None = None
+
+    def __post_init__(self):
+        if self.private_output_bytes is not None:
+            object.__setattr__(self, 'private_output_bytes', _private_output_limit(self.private_output_bytes))
 
     def tree_flatten(self):
-        return (self.parameters,), (self.plan.topology, self.plan.backend)
+        return (self.parameters,), (self.plan.topology, self.plan.backend, self.private_output_bytes)
 
     @classmethod
     def tree_unflatten(cls, metadata, children):
         from ...plan import make_plan
 
-        topology, backend = metadata
-        return cls(make_plan(topology, backend=backend), children[0])
+        topology, backend, *quota = metadata
+        return cls(make_plan(topology, backend=backend), children[0], quota[0] if quota else None)
 
     @property
     def nao(self):
@@ -103,7 +131,8 @@ class NativeDirectBasis:
         range_options = {"omega": omega} if omega else {}
         return self.plan.get_jk(
             self.parameters, density, screening_threshold=screening_threshold,
-            workers=workers, with_j=with_j, with_k=with_k, **range_options,
+            workers=workers, with_j=with_j, with_k=with_k,
+            private_output_bytes=self.private_output_bytes, **range_options,
         )
 
     def response_eri_pair_matrix(self):
@@ -198,8 +227,8 @@ class ProjectedNativeDirectBasis:
         primitive_density = jnp.einsum(
             "pi,...ij,qj->...pq", transform, density, transform
         )
-        primitive_j, primitive_k = self.primitive_basis.plan.get_jk(
-            self.primitive_basis.parameters, primitive_density,
+        primitive_j, primitive_k = self.primitive_basis.get_jk(
+            primitive_density,
             screening_threshold=screening_threshold,
             workers=workers, with_j=with_j, with_k=with_k, **range_options,
         )
@@ -250,7 +279,7 @@ def _zero_basis_tangent(message="Direct J/K supports density AD only; basis/geom
 
 
 @lru_cache(maxsize=32)
-def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k):
+def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes):
     from .autodiff.common import register_cpu_product
 
     atoms = np.asarray(atoms_key, dtype=np.int32)
@@ -261,7 +290,7 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
     def apply(env, density):
         register_integrals()
         call = jax.ffi.ffi_call(
-            "gradscf_direct_jk_cpu_v1",
+            "gradscf_direct_jk_cpu_v2",
             jax.ShapeDtypeStruct((nops, *density.shape), jnp.float64),
             vmap_method="sequential",
         )
@@ -275,6 +304,7 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
             workers=np.int32(workers),
             with_j=np.int32(with_j),
             with_k=np.int32(with_k),
+            private_output_bytes=np.int64(private_output_bytes),
         )
 
     # Keep the shell engine on CPU when response arrays live on CUDA. Only
@@ -318,14 +348,14 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
 
 
 @lru_cache(maxsize=32)
-def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k):
+def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes):
     from functools import partial
     from .autodiff.common import batch_product
     from .autodiff.direct_jk import geometry_products
 
     atoms = np.asarray(atoms_key, dtype=np.int32)
     offsets = atoms[:, 1, None] + np.arange(3)[None, :]
-    operator = _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k)
+    operator = _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes)
     geometry = geometry_products(atoms_key, basis_key, cart, with_j, with_k, workers=workers)
 
     def pack(env, coordinates):
@@ -397,7 +427,7 @@ def _validate_selection(with_j, with_k):
 
 
 def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
-              with_j=True, with_k=True, coordinates=None):
+              with_j=True, with_k=True, coordinates=None, private_output_bytes=None):
     """Contract J/K; IntegralPlan supplies coordinates separately for geometry AD.
 
     A raw packed ENV remains a fixed-basis input. Separating fixed ENV and
@@ -407,6 +437,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
     _validate_selection(with_j, with_k)
     if isinstance(workers, bool) or not isinstance(workers, Integral) or workers < 1:
         raise ValueError("workers must be a positive integer.")
+    private_output_bytes = _private_output_limit(private_output_bytes)
     d = jnp.asarray(density)
     n = d.shape[-1]
     if d.shape[-2:] != (n, n) or d.dtype not in (jnp.float64, jnp.complex128):
@@ -423,6 +454,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
         float(cutoff),
         int(workers),
         bool(with_j), bool(with_k),
+        private_output_bytes,
     )
     flat = d.reshape(-1, n, n)
     count = len(flat)
@@ -438,7 +470,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
         out = _direct_geometry_value(
             tuple(map(tuple, np.asarray(atm).tolist())),
             tuple(map(tuple, np.asarray(bas).tolist())), bool(cart), float(cutoff),
-            int(workers), bool(with_j), bool(with_k))(env, coordinates, real)
+            int(workers), bool(with_j), bool(with_k), private_output_bytes)(env, coordinates, real)
     if jnp.iscomplexobj(d):
         out = out[:, :count] + 1j * out[:, count:]
     out = out.reshape(int(with_j) + int(with_k), *d.shape)

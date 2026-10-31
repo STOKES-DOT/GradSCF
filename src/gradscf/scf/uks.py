@@ -264,13 +264,12 @@ def _spin_jk_matrices(
             return density_tot, coulomb.sum(axis=0), exchange[0], exchange[1]
         zero = jnp.zeros_like(coulomb)
         return density_tot, coulomb, zero, zero
-    j_tot, _ = _build_jk(eri, density_tot)
+    j_tot, _ = _build_jk(eri, density_tot, with_k=False)
     if not bool(with_k):
         zero_k = jnp.zeros_like(j_tot)
         return density_tot, j_tot, zero_k, zero_k
-    _, k_a = _build_jk(eri, density_a)
-    _, k_b = _build_jk(eri, density_b)
-    return density_tot, j_tot, k_a, k_b
+    _, exchange = _build_jk(eri, jnp.stack([density_a, density_b]), with_j=False)
+    return density_tot, j_tot, exchange[0], exchange[1]
 
 
 def _unrestricted_vxc_matrices(
@@ -418,8 +417,9 @@ def _raw_fock_and_energy_for_state(
         )
         if rsh is not None:
             sr, delta = rsh.default_sr_hf_fraction, rsh.default_lr_hf_fraction-rsh.default_sr_hf_fraction
-            k_a = sr*k_a + delta*_build_jk(eri_lr, density_a)[1]
-            k_b = sr*k_b + delta*_build_jk(eri_lr, density_b)[1]
+            _, long_range = _build_jk(eri_lr, jnp.stack([density_a, density_b]), with_j=False)
+            k_a = sr*k_a + delta*long_range[0]
+            k_b = sr*k_b + delta*long_range[1]
     extra_fock_a = extra_fock_b = jnp.zeros_like(h)
     include_hf_energy = bound_xc is None
     if bound_xc is None:

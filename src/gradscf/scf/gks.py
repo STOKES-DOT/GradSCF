@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax.lax import Precision
 from jaxtyping import Array
 
-from ..dft.xc import grid_value_and_grad, hybrid_coeff, parse_recipe, xc_type
+from ..dft.xc import grid_energy, grid_value_and_grad, hybrid_coeff, parse_recipe, xc_type
 from .core import _contains_jax_tracer, _host_float_unless_traced
 from .facade import _BaseKS
 from gradscf.scf.inputs.assembly import build_uks_integral_inputs
@@ -71,7 +71,7 @@ def _validate_mode(config: GKSConfig) -> str:
     return kind
 
 
-def generalized_jk(eri: Array, density: Array) -> tuple[Array, Array]:
+def generalized_jk(eri: Array, density: Array, *, with_k=True) -> tuple[Array, Array]:
     """Build spin-diagonal Coulomb and all four complex exchange blocks.
 
     Spatial AO ERIs use chemists' notation. The spatial AOs and ERIs are real;
@@ -83,18 +83,22 @@ def generalized_jk(eri: Array, density: Array) -> tuple[Array, Array]:
     total = density[:n, :n] + density[n:, n:]
     if eri.ndim in (1,2):
         from gradscf.integrals.molecular.jk import build_jk_from_packed
-        coulomb,_=build_jk_from_packed(eri,total.T)
-        _,exchange=build_jk_from_packed(eri,density.reshape(2,n,2,n).transpose(0,2,1,3))
+        coulomb,_=build_jk_from_packed(eri,total.T,with_k=False)
+        if not with_k:
+            return _hermitian(_spin_diagonal(coulomb)), jnp.zeros_like(density)
+        _,exchange=build_jk_from_packed(eri,density.reshape(2,n,2,n).transpose(0,2,1,3),with_j=False)
         exchange=exchange.transpose(0,2,1,3).reshape(2*n,2*n)
         return _hermitian(_spin_diagonal(coulomb)),_hermitian(exchange)
     coulomb = jnp.einsum("pqrs,sr->pq", eri, total, precision=Precision.HIGHEST)
+    if not with_k:
+        return _hermitian(_spin_diagonal(coulomb)), jnp.zeros_like(density)
     blocks = density.reshape(2, n, 2, n)
     from gradscf.integrals.molecular.jk import exchange_matrix
     exchange = exchange_matrix(eri, blocks.transpose(0,2,1,3)).transpose(0,2,1,3)
     return _hermitian(_spin_diagonal(coulomb)), _hermitian(exchange.reshape(2*n, 2*n))
 
 
-def _generalized_xc(density, ao, deriv, weights, cfg, kind):
+def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential=True):
     n = ao.shape[1]
     if kind == "HF":
         return jnp.asarray(0., dtype=density.real.dtype), jnp.zeros_like(density)
@@ -104,7 +108,10 @@ def _generalized_xc(density, ao, deriv, weights, cfg, kind):
             density_a=density[:n, :n].real, density_b=density[n:, n:].real,
             xc_spec=cfg.xc_spec, density_floor=cfg.density_floor,
             potential_clip=cfg.potential_clip, xc_kind=kind,
+            compute_potential=compute_potential,
         )
+        if not compute_potential:
+            return exc, None
         a, b = _unrestricted_vxc_matrices(
             ao=ao, ao_deriv1=deriv, ao_laplacian=jnp.zeros_like(ao), weights=weights,
             vxc_rho_a=va, vxc_rho_b=vb, vxc_grad_a=ga, vxc_grad_b=gb, xc_kind=kind,
@@ -124,6 +131,8 @@ def _generalized_xc(density, ao, deriv, weights, cfg, kind):
     safe_norm = jnp.sqrt(jnp.maximum(norm2, cutoff**2))
     magnitude = jnp.where(norm2 >= cutoff**2, safe_norm, 0.)
     rho = jnp.stack([(total + magnitude) * .5, (total - magnitude) * .5], axis=1)
+    if not compute_potential:
+        return jnp.dot(weights, grid_energy(cfg.xc_spec, "LDA")(rho)), None
     values, potentials = grid_value_and_grad(cfg.xc_spec, "LDA")(rho)
     potentials = jnp.where((total > cfg.density_floor)[:, None], potentials, 0.)
     if cfg.potential_clip is not None:
@@ -144,19 +153,24 @@ def _generalized_xc(density, ao, deriv, weights, cfg, kind):
 def generalized_energy_and_fock(
     *, density: Array, hcore: Array, eri: Array, nuclear_repulsion: float | Array,
     ao: Array, ao_deriv1: Array, grid_weights: Array, config: GKSConfig,
-) -> tuple[Array, Array, Array]:
-    """Return total energy, semilocal XC energy, and Hermitian spinor Fock."""
+    compute_potential: bool = True,
+) -> tuple[Array, Array, Array | None]:
+    """Return energy/XC/Fock; energy-only requests return None for the Fock."""
 
     kind = _validate_mode(config)
     density, h = jnp.asarray(density), jnp.asarray(hcore)
     if h.shape[0] == density.shape[0] // 2:
         h = _spin_diagonal(h)
-    j, k = generalized_jk(eri, density)
+    alpha = hybrid_coeff(config.xc_spec)
+    j, k = generalized_jk(eri, density, with_k=alpha != 0.)
     exc, vxc = _generalized_xc(density, jnp.asarray(ao), jnp.asarray(ao_deriv1),
-                             jnp.asarray(grid_weights), config, kind)
-    potential = j - hybrid_coeff(config.xc_spec) * k
+                             jnp.asarray(grid_weights), config, kind,
+                             compute_potential=compute_potential)
+    potential = j - alpha * k
     energy = (jnp.einsum("pq,qp->", density, h + .5 * potential,
                         precision=Precision.HIGHEST).real + exc + nuclear_repulsion)
+    if not compute_potential:
+        return energy, exc, None
     return energy, exc, _hermitian(h + potential + vxc)
 
 

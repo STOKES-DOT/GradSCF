@@ -207,23 +207,30 @@ def jaxpr_temporary_bytes(jaxpr, *, primitive_bytes=None) -> int:
     library scratch and compiler/allocator state remain outside this estimate.
     Inspecting a graph initializes no device or numerical backend.
     """
-    if hasattr(jaxpr, 'jaxpr'):
-        jaxpr = jaxpr.jaxpr
     charges = _primitive_byte_charges(primitive_bytes)
-    total = 0
-    for equation in jaxpr.eqns:
-        if charges:
+    memo = {}
+    def estimate(graph):
+        graph = getattr(graph, 'jaxpr', graph)
+        key = id(graph)
+        if key in memo:
+            return memo[key]
+        total = 0
+        for equation in graph.eqns:
             total += charges.get(equation.primitive.name, 0)
-        for variable in equation.outvars:
-            aval = getattr(variable, 'aval', None)
-            if hasattr(aval, 'shape') and hasattr(aval, 'dtype'):
-                total += prod(aval.shape)*np.dtype(aval.dtype).itemsize
-        for value in equation.params.values():
-            values = value if isinstance(value, (tuple, list)) else (value,)
-            for nested in values:
-                if hasattr(nested, 'eqns') or hasattr(nested, 'jaxpr'):
-                    total += jaxpr_temporary_bytes(nested, primitive_bytes=charges)
-    return total
+            for variable in equation.outvars:
+                aval = getattr(variable, 'aval', None)
+                if hasattr(aval, 'shape') and hasattr(aval, 'dtype'):
+                    total += prod(aval.shape)*np.dtype(aval.dtype).itemsize
+            for value in equation.params.values():
+                values = value if isinstance(value, (tuple, list)) else (value,)
+                for nested in values:
+                    if hasattr(nested, 'eqns') or hasattr(nested, 'jaxpr'):
+                        # Reuse the metadata calculation, but still charge
+                        # the complete body at every occurrence as before.
+                        total += estimate(nested)
+        memo[key] = total
+        return total
+    return estimate(jaxpr)
 
 
 def jaxpr_live_bytes(jaxpr, *, primitive_bytes=None) -> int:

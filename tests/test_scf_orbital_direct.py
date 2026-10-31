@@ -211,11 +211,11 @@ def test_molecular_energy_direct_seed_requires_explicit_opt_in(native_problem):
     assert direct.inputs(direct.coordinates)["eri"] is None
 
 
-@pytest.mark.parametrize("xc", ["pbe", "wb97xd"])
-def test_molecular_energy_direct_is_explicitly_hf_only(native_problem, xc):
+@pytest.mark.parametrize("xc", ["scan", "tpss"])
+def test_molecular_energy_direct_rejects_meta_gga(native_problem, xc):
     reference = copy(native_problem[0])
     reference.xc = xc
-    with pytest.raises(NotImplementedError, match="(?i)(HF|Hartree.Fock)"):
+    with pytest.raises(NotImplementedError, match="MGGA"):
         MolecularEnergy(reference, jk_backend="direct")
 
 

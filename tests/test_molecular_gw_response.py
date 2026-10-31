@@ -64,8 +64,8 @@ def test_complete_bse_geometry_chain_and_transition_operator(reference, tda):
 def test_molecular_gw_rejects_unvalidated_reference(reference):
     from copy import copy
     other = copy(reference)
-    other.xc = "pbe"
-    with pytest.raises(NotImplementedError, match="RHF"):
+    other.mo_coeff = np.asarray(reference.mo_coeff, dtype=complex)
+    with pytest.raises(NotImplementedError, match="real restricted"):
         MolecularGW(other)
 
 

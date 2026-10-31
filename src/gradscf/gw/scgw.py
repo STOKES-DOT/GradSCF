@@ -119,30 +119,17 @@ def _solve_chemical_potential(fock, sigma, guess, grid, target, particle_tol):
         return count, green, density
 
     count, green, density = evaluate(guess)
-    if abs(count - target) < particle_tol:
+    if abs(count-target) < particle_tol:
         return guess, green, density
-    span = max(1.0, float(np.ptp(np.linalg.eigvalsh(np.asarray(fock)))), float(jnp.max(jnp.abs(sigma))))
-    for _ in range(20):
-        lower, upper = guess - span, guess + span
-        nlower, _, _ = evaluate(lower)
-        nupper, _, _ = evaluate(upper)
-        if nlower <= target <= nupper:
-            break
-        span *= 2
-    else:
-        raise ArithmeticError("Could not bracket the scGW electron number; check the frequency grid and inputs.")
-    for _ in range(80):
-        mu = 0.5 * (lower + upper)
-        count, green, density = evaluate(mu)
-        if abs(count - target) < particle_tol:
-            return mu, green, density
-        if not nlower - particle_tol <= count <= nupper + particle_tol:
-            raise ArithmeticError("Non-monotone scGW particle number on this grid; increase nw.")
-        if count < target:
-            lower, nlower = mu, count
-        else:
-            upper, nupper = mu, count
-    raise ArithmeticError("scGW chemical potential did not meet particle_tol; increase nw or check the inputs.")
+    # Share the already established canonical bracket/bisection algorithm.
+    # One compiled search avoids per-probe Python dispatch/device round trips;
+    # the common initial-hit case keeps its single original Dyson evaluation.
+    from .scgw_response import _chemical_potential
+    mu, valid = _chemical_potential(fock, sigma, jnp.asarray(guess), grid, target, particle_tol)
+    if not bool(valid):
+        raise ArithmeticError("scGW chemical potential failed the bracket/particle-number check; increase nw.")
+    _, green, density = evaluate(mu)
+    return float(mu), green, density
 
 
 def _assemble_scgw_result(*, coeff, hcore, b, nuclear_repulsion, fock, sigma, moment,
