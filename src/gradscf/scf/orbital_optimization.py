@@ -17,6 +17,7 @@ from ..solvers.nonlinear import stationary_value
 from .autodiff import SCFDifferentiationConfig, attach_scf_backward, normalize_scf_gradient_mode
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
 from ..dft.xc import hybrid_coeff, xc_type
+from ..integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
 from .rsh import local_xc_spec, rsh_preset, validate_rsh_inputs
 from .._memory import (jaxpr_temporary_bytes, tree_storage_bytes,
     validate_memory_mb, validate_reserved_bytes, workspace_bytes)
@@ -177,6 +178,27 @@ def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_confi
             raise NotImplementedError('Orbital minimization supports HF, LDA and GGA/global hybrids.')
         cfg = uks_config or UKSConfig(xc_spec=xc_spec)
         def evaluate(density, args, *, compute_potential=True):
+            if (compute_potential and method == 'roks' and cfg.jk_backend == 'direct'
+                    and occupation_rows[0] == occupation_rows[1]
+                    and type(args.get('direct_basis')) in (NativeDirectBasis, ProjectedNativeDirectBasis)):
+                # The shared-orbital tangent remains spin unpolarized. Reuse
+                # the SCF one-density builder instead of two identical spins.
+                from .rks import RKSConfig, _make_jk_builder, _energy_and_raw_fock_for_density
+                restricted = RKSConfig(xc_spec=xc_spec, jk_backend='direct',
+                    direct_scf_tol=cfg.direct_scf_tol, direct_scf_workers=cfg.direct_scf_workers,
+                    density_floor=cfg.density_floor, potential_clip=cfg.potential_clip)
+                alpha = 1. if rsh_preset(xc_spec) is not None else float(hybrid_coeff(xc_spec))
+                builder = _make_jk_builder(None, restricted, direct_basis=args['direct_basis'],
+                                           with_k=abs(alpha) > 1e-14)
+                total, _, fock, _, _ = _energy_and_raw_fock_for_density(
+                    density=density.sum(axis=0), mo_coeff=None, mo_occ=None, mo_energy=None,
+                    jk_builder=builder, ao=args['ao'], ao_deriv1=args['ao_deriv1'],
+                    weights=args['grid_weights'], h=args['hcore'], enuc=args['nuclear_repulsion'],
+                    alpha=jnp.asarray(alpha, dtype=density.dtype), cfg=restricted, xc_kind=kind,
+                    grid_ao=args.get('grid_ao'))
+                if args.get('dispersion_energy') is not None:
+                    total = total+args['dispersion_energy']
+                return total, jnp.stack([fock, fock]) if compute_potential else None
             total, _, fa, fb = _raw_fock_and_energy_for_state(
                 density_a=density[0], density_b=density[1], ao=args['ao'],
                 ao_deriv1=args['ao_deriv1'], weights=args['grid_weights'], h=args['hcore'],
@@ -293,7 +315,6 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     topology = tuple(tuple(float(x) for x in row) for row in occ)
     uks_config = UKSConfig(xc_spec=xc_spec, jk_backend=jk_backend,
                            direct_scf_tol=direct_scf_tol, direct_scf_workers=direct_scf_workers)
-    from ..integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
     known_variational = type(direct_basis) in (NativeDirectBasis, ProjectedNativeDirectBasis)
     dimension, rotate, density_from, evaluate, energy = _problem_functions(
         method, xc_spec, collinear, topology, uks_config=uks_config)
