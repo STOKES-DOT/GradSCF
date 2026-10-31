@@ -305,13 +305,16 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     if maximum is not None:
         resident = reserved+tree_storage_bytes(sources, coeff, metric)
         workspace_bytes(maximum, resident_bytes=resident)
-        native = _native_workspace(direct_basis, direct_scf_workers, direct_scf_tol)
         # Initial transport, density/Fock outputs and returned coefficients
         # are complete mandatory matrices, including a zero-angle space.
         matrix = jax.ShapeDtypeStruct(coeff.shape, coeff.dtype)
         spin = jax.ShapeDtypeStruct((2, n, n), coeff.dtype)
         outputs = tree_storage_bytes(matrix)+2*tree_storage_bytes(spin)
         transport = jaxpr_temporary_bytes(jax.make_jaxpr(_orthonormalize)(coeff, metric))
+        from ..integrals.backends.native.workspace import bind_jk_workspace
+        direct_basis = bind_jk_workspace(direct_basis, workers=direct_scf_workers,
+            max_memory=maximum, resident_bytes=resident+outputs+transport, cutoff=direct_scf_tol)
+        native = _native_workspace(direct_basis, direct_scf_workers, direct_scf_tol)
         workspace_bytes(maximum, resident_bytes=resident+native+outputs+transport)
     gram = coeff.conj().swapaxes(-1,-2) @ metric @ coeff
     concrete = _concrete(gram)

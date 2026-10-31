@@ -47,7 +47,7 @@ def register_integrals():
                "gradscf_coefficient_hessian_jvp_cpu_v1": "GradSCFCoefficientHessianJVP",
                "gradscf_coefficient_hessian_vjp_cpu_v1": "GradSCFCoefficientHessianVJP",
                "gradscf_compact_cpu_v1": "GradSCFCompact",
-               "gradscf_direct_jk_cpu_v1": "GradSCFDirectJK",
+               "gradscf_direct_jk_cpu_v2": "GradSCFDirectJKBudget",
                "gradscf_direct_jk_geometry_jvp_cpu_v1": "GradSCFDirectJKGeometryJVP",
                "gradscf_direct_jk_geometry_vjp_cpu_v1": "GradSCFDirectJKGeometryVJP",
                "gradscf_direct_jk_geometry_vjp_cpu_v2": "GradSCFDirectJKGeometryVJPParallel",
@@ -68,8 +68,8 @@ def register_integrals():
                     "gradscf_eri_slice_exponent_vjp_cpu_v1": "GradSCFERISliceExponentVJP"})
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
-            raise RuntimeError("Native integral library is stale; rebuild with "
-                               "python -m gradscf.integrals._native.build")
+            raise RuntimeError(f"The libcint library is stale (missing {symbol}); rebuild with "
+                               "python -m gradscf.integrals._native.build and restart the process")
         jax.ffi.register_ffi_target(target, jax.ffi.pycapsule(getattr(handle, symbol)),
                                     platform="cpu", api_version=1)
     return handle

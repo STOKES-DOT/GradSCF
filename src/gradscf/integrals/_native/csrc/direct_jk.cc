@@ -8,11 +8,12 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
     ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
     ffi::BufferR1<ffi::F64> env,ffi::BufferR3<ffi::F64> density,
     ffi::ResultBufferR4<ffi::F64> result,int32_t cart,double cutoff,int32_t requested_workers,
-    int32_t with_j,int32_t with_k) {
+    int32_t with_j,int32_t with_k,int64_t private_output_bytes) {
   ffi::Promise promise;
   ffi::Future future(promise);
   try {
     if (requested_workers<1) throw std::invalid_argument("Direct J/K workers must be positive");
+    if (private_output_bytes<0) throw std::invalid_argument("Direct J/K private workspace must be nonnegative");
     if ((with_j!=0 && with_j!=1) || (with_k!=0 && with_k!=1) || !(with_j || with_k))
       throw std::invalid_argument("Direct J/K requires at least one selected operator");
     auto tables=std::make_shared<IntegralTables>(atoms,basis,env,4,cart,true);
@@ -25,12 +26,11 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
     const size_t size=result->element_count();
     const int row_workers=int(std::max<int64_t>(1,std::min<int64_t>(
         requested_workers,std::min<int64_t>(pool.num_threads(),tables->nbas))));
-    constexpr size_t kPrivateOutputBytes=64u*1024u*1024u;
     constexpr int kPrivateBatchLimit=4;
     // Divide before multiplying: admitted worker outputs cannot overflow size_t
-    // or exceed the fixed cap, regardless of the incoming batch dimensions.
+    // or exceed the caller's quota, regardless of incoming batch dimensions.
     const int private_workers=size>0 ? int(std::min<size_t>(
-        size_t(row_workers),kPrivateOutputBytes/sizeof(double)/size)) : 0;
+        size_t(row_workers),size_t(private_output_bytes)/sizeof(double)/size)) : 0;
     const bool private_outputs=nb<=kPrivateBatchLimit && private_workers>=2;
     const int workers=private_outputs ? private_workers : row_workers;
     auto partials=std::make_shared<std::vector<double>>(
@@ -112,9 +112,9 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
   return future;
 }
 
-extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJK(XLA_FFI_CallFrame*);
-XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJK,DirectJK,
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKBudget(XLA_FFI_CallFrame*);
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKBudget,DirectJK,
     ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().Arg<ffi::BufferR2<ffi::S32>>().Arg<ffi::BufferR2<ffi::S32>>()
       .Arg<ffi::BufferR1<ffi::F64>>().Arg<ffi::BufferR3<ffi::F64>>().Ret<ffi::BufferR4<ffi::F64>>()
       .Attr<int32_t>("cart").Attr<double>("cutoff").Attr<int32_t>("workers")
-      .Attr<int32_t>("with_j").Attr<int32_t>("with_k"));
+      .Attr<int32_t>("with_j").Attr<int32_t>("with_k").Attr<int64_t>("private_output_bytes"));

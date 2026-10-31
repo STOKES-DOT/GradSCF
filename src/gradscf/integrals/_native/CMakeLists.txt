@@ -45,6 +45,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(gradscf_integrals PRIVATE Threads::Threads)
 
 if(APPLE)
+  set_property(TARGET gradscf_integrals APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/exports.macos")
   find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
   target_link_libraries(gradscf_integrals PRIVATE m ${ACCELERATE_FRAMEWORK})
 else()
@@ -65,6 +66,7 @@ if(APPLE)
   target_link_options(gradscf_integrals PRIVATE
     "LINKER:-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.macos")
 elseif(UNIX)
+  set_property(TARGET gradscf_integrals APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
   target_link_options(gradscf_integrals PRIVATE
     "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
     "LINKER:-z,defs")

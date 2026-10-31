@@ -179,15 +179,17 @@ def test_no_requested_operator_does_not_construct_native_ffi(basis, monkeypatch)
         np.testing.assert_array_equal(result, 0.0)
 
 
-def test_native_direct_worker_outputs_have_a_fixed_cap_and_row_fallback():
+def test_native_direct_worker_outputs_obey_quota_and_keep_row_fallback():
     # Source guards retain the prohibition on unbounded worker matrices; these
     # are admission/ownership checks, not a measurement of peak process RSS.
     path = Path(__file__).parents[2] / "src/gradscf/integrals/_native/csrc/direct_jk.cc"
     source = re.sub(r"//[^\n]*", "", path.read_text())
-    assert re.search(r"kPrivateOutputBytes\s*=\s*64u\*1024u\*1024u", source)
+    from gradscf.integrals.backends.native.jk import _private_output_limit
+    assert _private_output_limit(None) == 64*1024**2
+    assert 'private_output_bytes<0' in source
     assert re.search(r"kPrivateBatchLimit\s*=\s*4", source)
     assert "nb<=kPrivateBatchLimit" in source
-    assert "size_t(row_workers),kPrivateOutputBytes/sizeof(double)/size" in source
+    assert "size_t(row_workers),size_t(private_output_bytes)/sizeof(double)/size" in source
     assert "private_workers>=2" in source
     assert "private_outputs ? private_workers : row_workers" in source
     assert "private_outputs ? size_t(workers)*size : 0" in source
