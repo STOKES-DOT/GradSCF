@@ -15,6 +15,8 @@ export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export GRADSCF_NATIVE_THREADS=32
 hostname
 lscpu > "hardware-accept-$SLURM_JOB_ID.txt"
+printf '%s  %s\n' 5b5abca5a79d9362515820b9530d64b5790504cb9cbf3c98ae520bee47534853 \
+    harness/stationarity-v9.py | sha256sum -c - || exit 2
 
 # Consume a completed gradient only; FD endpoints run fresh SCF solves.
 if "$python" -c 'import json; from pathlib import Path; rows=[json.loads(x) for x in Path("results/phi-grid-gradient.jsonl").read_text().splitlines()]; assert any(r.get("stage")=="derivative" and r.get("scientific_pass") for r in rows)'; then
@@ -48,7 +50,7 @@ for variant in candidate-brillouin candidate-grid; do
         exit 2
     fi
     srun --exact --gres=none -N1 -n1 -c64 "$python" harness/bounded.py \
-        --seconds 6000 "$output.process.json" -- "$python" harness/stationarity.py \
+        --seconds 6000 "$output.process.json" -- "$python" harness/stationarity-v9.py \
         results/phi-tzvp-pbe0.npz phenanthrene-def2-tzvp.json \
         results/phi-tzvp-pbe0-g0w0-gpu.jsonl "$output.json" \
         --threads 32 --fock-repeats 3 > "$output.log" 2>&1

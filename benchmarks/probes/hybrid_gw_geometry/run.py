@@ -219,6 +219,23 @@ def main():
                     overlap=np.asarray(inputs.overlap), hcore=np.asarray(mf.scf_result.hcore_matrix),
                     fock=np.asarray(mf.scf_result.fock_matrix),
                     density=np.asarray(mf.scf_result.density_matrix))
+                if args.case_input and args.backend == 'direct' and args.screening == 0.:
+                    from gradscf.scf.rks import _mo_residual_norm
+                    state = mf.scf_result
+                    metadata = dict(scf_stage_complete=bool(mf.converged),
+                        checkpoint_sha256=hashlib.sha256(args.checkpoint.read_bytes()).hexdigest(),
+                        xc=args.xc, basis=args.basis, grid_level=args.grid,
+                        grid_block_size=args.grid_block_size, native_sha256=manifest['native_sha256'],
+                        input_sha256=dict(case=hashlib.sha256(args.case_input.read_bytes()).hexdigest(),
+                            checkpoint=manifest['restart_sha256']),
+                        source_manifest=str(args.output.with_suffix('.manifest.json')),
+                        origin='Independent current-source SCF; restart supplied only an initial density.',
+                        zero_screening_scf=dict(converged=bool(mf.converged),
+                            cycles=int(state.cycles), energy=float(mf.e_tot), seconds=scf_seconds,
+                            residual_norm=float(_mo_residual_norm(state.fock_matrix, mf.mo_coeff, mf.mo_occ)),
+                            tolerance_energy=1e-12, tolerance_density=1e-11,
+                            tolerance_gradient=1e-10, direct_cutoff=0.))
+                    args.checkpoint.with_suffix('.json').write_text(json.dumps(metadata,indent=2)+'\n')
             record(stage='end_to_end', repeat=repeat, wall_seconds=time.perf_counter()-start,
                 scf_seconds=scf_seconds, ri_seconds=fit_seconds, gw_seconds=solve_seconds,
                 nao=mf.mo_coeff.shape[0], scientific_pass=passed, **output)
@@ -308,7 +325,14 @@ def main():
             for step in ((args.fd_step,) if args.fd_step is not None else (3e-4,1e-4)):
                 tick=time.perf_counter()
                 plus=jax.block_until_ready(evaluate(coordinates+step*direction))
+                record(stage='fd_endpoint',sense='plus',step_bohr=step,
+                    wall_seconds=time.perf_counter()-tick,energy_hartree=float(plus),
+                    scientific_pass=bool(np.isfinite(float(plus))))
+                endpoint_tick=time.perf_counter()
                 minus=jax.block_until_ready(evaluate(coordinates-step*direction))
+                record(stage='fd_endpoint',sense='minus',step_bohr=step,
+                    wall_seconds=time.perf_counter()-endpoint_tick,energy_hartree=float(minus),
+                    scientific_pass=bool(np.isfinite(float(minus))))
                 finite=float((plus-minus)/(2*step)); error=abs(automatic-finite)
                 record(stage='directional_fd', step_bohr=step,
                     wall_seconds=time.perf_counter()-tick, automatic=automatic,

@@ -20,7 +20,13 @@ parser.add_argument("--reconverged", type=Path)
 parser.add_argument("--grid-block-size", type=int, default=0)
 parser.add_argument("--diagnostic-cycles", type=int, default=0)
 parser.add_argument("--preserve-origin", action="store_true")
+parser.add_argument("--trace-forward", action="store_true")
+parser.add_argument("--displacement", type=float, default=0.)
 args = parser.parse_args()
+if args.trace_forward and (not args.solve_zero or args.diagnostic_cycles < 1):
+    parser.error('--trace-forward is a truncated --solve-zero diagnostic with --diagnostic-cycles')
+if args.displacement and not args.trace_forward:
+    parser.error('A displaced point requires the explicitly traced forward diagnostic')
 allowed = sorted(os.sched_getaffinity(0))
 assert 0 < args.threads <= len(allowed)
 os.sched_setaffinity(0, allowed[:args.threads])
@@ -72,9 +78,13 @@ mf.mo_coeff, mf.mo_occ, mf.mo_energy = (jnp.asarray(saved[name]) for name in ("m
 mf.converged = True  # Verified saved provenance; context for input assembly only.
 mf.direct_scf_workers = args.threads
 model = MolecularEnergy(mf, jk_backend="direct", max_memory=60000.)
+point = model.coordinates
+if args.displacement:
+    direction = jnp.sin(jnp.arange(point.size, dtype=point.dtype)+1).reshape(point.shape)
+    point = point+args.displacement*direction/jnp.linalg.norm(direction)
 started = perf_counter()
-inputs = jax.block_until_ready(model.inputs(model.coordinates))
-assembly_seconds = perf_counter() - started
+inputs = None if args.trace_forward else jax.block_until_ready(model.inputs(point))
+assembly_seconds = None if args.trace_forward else perf_counter() - started
 zero_scf = None
 if args.solve_zero:
     from gradscf.scf.orbital_optimization import _orthonormalize
@@ -84,11 +94,12 @@ if args.solve_zero:
         # timings. The original production step supplies every updated array.
         from gradscf.scf import rks
         original, counter = rks._advance_scf_iteration_with_fock_builder, [0]
-        def event(stage, converged, change, norm):
+        def event(stage, converged, change, norm, density_rms=None):
             counter[0] += stage == "iteration"
             row = dict(stage=stage, iteration=counter[0], converged=bool(converged),
                 energy_change=float(change) if np.isfinite(change) else None,
-                orbital_norm=float(norm) if np.isfinite(norm) else None)
+                orbital_norm=float(norm) if np.isfinite(norm) else None,
+                density_rms=None if density_rms is None else float(density_rms))
             with args.output.with_suffix(".scf-events.jsonl").open("a") as stream:
                 stream.write(json.dumps(row)+"\n")
             print(json.dumps(row), flush=True)
@@ -102,16 +113,31 @@ if args.solve_zero:
                         result[0]-options["energy"], norm, ordered=True)
                 return result
             result = original(**{**options, "energy_and_fock_builder": observed})
-            jax.debug.callback(lambda c, e, n: event("iteration", c, e, n), result[0],
+            jax.debug.callback(lambda c, e, n, d: event("iteration", c, e, n, d), result[0],
                 result[4]-options["energy"],
-                _mo_residual_norm(result[6], result[2], options["mo_occ_fixed"]), ordered=True)
+                _mo_residual_norm(result[6], result[2], options["mo_occ_fixed"]),
+                jnp.sqrt(jnp.mean((result[1]-options['density'])**2)), ordered=True)
             return result
         rks._advance_scf_iteration_with_fock_builder = watched
+    def numerical(r, coefficients):
+        current = model.inputs(r) if inputs is None else inputs
+        current, coefficients = jax.tree.map(jax.lax.stop_gradient, (current, coefficients))
+        state = run_rks_from_integrals_traceable(**current,
+            nelectron=int(np.sum(saved['mo_occ'])),
+            init_mo_coeff=_orthonormalize(coefficients[None], current['overlap'])[0],
+            config=model.scf_config)
+        return state, current['overlap']
+    if args.trace_forward:
+        started = perf_counter(); lowered = jax.jit(numerical).lower(point, mf.mo_coeff)
+        lower_seconds = perf_counter()-started
+        started = perf_counter(); execute = lowered.compile()
+        print(json.dumps(dict(stage='diagnostic_compile', lower_seconds=lower_seconds,
+            compile_seconds=perf_counter()-started)), flush=True)
+    else:
+        execute = numerical
     started = perf_counter()
-    zero = jax.block_until_ready(run_rks_from_integrals_traceable(
-        **inputs, nelectron=int(np.sum(saved["mo_occ"])),
-        init_mo_coeff=_orthonormalize(mf.mo_coeff[None], inputs["overlap"])[0],
-        config=model.scf_config))
+    zero, current_overlap = jax.block_until_ready(execute(point, mf.mo_coeff))
+    jax.effects_barrier()
     zero_scf = dict(converged=bool(zero.converged), cycles=int(zero.cycles),
         energy=float(zero.total_energy), seconds=perf_counter()-started,
         residual_norm=float(_mo_residual_norm(zero.fock_matrix, zero.mo_coeff, zero.mo_occ)),
@@ -122,7 +148,25 @@ if args.solve_zero:
     np.savez(args.output.with_suffix(".npz"), mo_coeff=np.asarray(zero.mo_coeff),
         mo_occ=np.asarray(zero.mo_occ), mo_energy=np.asarray(zero.mo_energy),
         density=np.asarray(zero.density_matrix), fock=np.asarray(zero.fock_matrix),
-        overlap=np.asarray(inputs["overlap"]))
+        overlap=np.asarray(current_overlap))
+    if args.trace_forward:
+        from gradscf.integrals._native import register_integrals
+        library = Path(register_integrals()._name).resolve()
+        payload = dict(scope='truncated traced numerical SCF diagnostic; not an accepted geometry FD',
+            zero_screening_scf=zero_scf, displacement_bohr=args.displacement,
+            coordinates_bohr=np.asarray(point).tolist(), scientific_pass=None,
+            accepted_for_comparison=False, affinity=sorted(os.sched_getaffinity(0)),
+            native_path=str(library), native_sha256=hashlib.sha256(library.read_bytes()).hexdigest(),
+            restored_context_only=True, reconverged_source=reconverged_source,
+            grid_level=reference['grid_level'], grid_block_size=args.grid_block_size,
+            input_sha256={name: hashlib.sha256(getattr(args, name).read_bytes()).hexdigest()
+                          for name in ('checkpoint', 'case', 'jsonl')},
+            source={name: dict(path=inspect.getfile(obj),
+                sha256=hashlib.sha256(Path(inspect.getfile(obj)).read_bytes()).hexdigest())
+                for name, obj in (('molecular', MolecularEnergy),
+                                  ('rks', run_rks_from_integrals_traceable))})
+        args.output.write_text(json.dumps(payload, indent=2)+'\n')
+        raise SystemExit(0)
     if not zero_scf["converged"]:
         args.output.write_text(json.dumps(dict(zero_screening_scf=zero_scf), indent=2)+"\n")
         raise SystemExit(2)
