@@ -107,6 +107,7 @@ class _ResponseMemoryPlan(NamedTuple):
     action_bytes: int = 0
     orbital_grid_cache_bytes: int = 0
     packed_jk_workspace_bytes: int = 0
+    native_private_output_bytes: int | None = None
 
 
 def _response_memory_inputs(molecule, resolved_xc, *, spin_channels=1):
@@ -231,12 +232,21 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
     if isinstance(direct_workers, bool) or not isinstance(direct_workers, Integral) or direct_workers < 1:
         raise ValueError("direct_workers must be a positive integer.")
     native_fixed = 0
+    native_private = None
     legacy_native = native
     if native:
-        workspace = _native_direct_workspace_bytes(direct_basis, direct_workers, direct_tol)
-        if workspace is not None:
+        base = _native_direct_workspace_bytes(direct_basis, direct_workers, direct_tol,
+                                               private_output_bytes=0)
+        if base is not None:
+            from ..integrals.backends.native.jk import _private_output_limit
+            # A reference's SCF quota is an upper bound, not a reservation
+            # against this response's possibly smaller remaining allowance.
+            native_private = min(_private_output_limit(direct_basis.private_output_bytes),
+                                 max(0, (budget-fixed-3*base)//12))
+            workspace = _native_direct_workspace_bytes(direct_basis, direct_workers, direct_tol,
+                                                       private_output_bytes=native_private)
             # Primal/JVP/VJP calls can overlap. Each owns one shared optimizer,
-            # shell scratch and tables; output rows need no worker J/K copies.
+            # shell scratch/tables and its admitted private accumulation.
             native_fixed = 3*workspace
             legacy_native = False
     # Keep the old conservative worker estimate for dimension-only providers.
@@ -306,4 +316,4 @@ def plan_response_memory(nao, dim, nroots, dtype, max_memory,
         width -= 1
     return _ResponseMemoryPlan(
         width, batch_size, cache_bytes, grid_width, fixed+action_budget, orbital_cache,
-        packed_workspace)
+        packed_workspace, native_private)

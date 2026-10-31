@@ -562,7 +562,8 @@ def _build_unrestricted_response_operator_data(
                           for o, v in zip(fock_occupied, fock_virtual))
     memory_plan = _unrestricted_memory_plan(
         molecule, resolved_xc, de_a, de_b, response_options, rpa=need_b_terms)
-    molecule = _response_grid_view(molecule, memory_plan.grid_block_size)
+    molecule = _response_grid_view(molecule, memory_plan.grid_block_size,
+        native_private_output_bytes=memory_plan.native_private_output_bytes)
     hybrid_fraction_raw = getattr(molecule, "exact_exchange_fraction", 0.0)
     hybrid_fraction: Any = (
         float(hybrid_fraction_raw)

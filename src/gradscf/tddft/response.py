@@ -282,13 +282,22 @@ class _RestrictedResponseFactors:
     channels: tuple[tuple[tuple[float, Array, Array], ...], ...]
 
 
-def _response_grid_view(molecule, block_size):
-    """Limit preparation work without changing the reference's quadrature."""
+def _response_grid_view(molecule, block_size, *, native_private_output_bytes=None):
+    """Bind action work without mutating the reference or its physical leaves."""
     provider = getattr(molecule, "grid_ao", None)
-    if provider is None or block_size < 1 or provider.block_size <= block_size:
+    updates = {}
+    if provider is not None and 0 < block_size < provider.block_size:
+        updates['grid_ao'] = replace(provider, block_size=int(block_size))
+    if native_private_output_bytes is not None:
+        from ..integrals.backends.native.jk import NativeDirectBasis
+        basis = getattr(molecule, 'direct_basis', None)
+        if type(basis) is NativeDirectBasis:
+            updates['direct_basis'] = replace(basis, private_output_bytes=native_private_output_bytes)
+    if not updates:
         return molecule
     view = copy(molecule)
-    object.__setattr__(view, "grid_ao", replace(provider, block_size=int(block_size)))
+    for name, value in updates.items():
+        object.__setattr__(view, name, value)
     return view
 
 
@@ -1081,7 +1090,8 @@ def _build_restricted_response_operator_data(
                          if resolved_xc is not None and not standard_hf else 0),
         **_response_memory_inputs(molecule, resolved_xc),
     )
-    molecule = _response_grid_view(molecule, memory_plan.grid_block_size)
+    molecule = _response_grid_view(molecule, memory_plan.grid_block_size,
+        native_private_output_bytes=memory_plan.native_private_output_bytes)
     if standard_hf:
         # HF has no quadrature contribution. Even a zero local kernel would
         # otherwise construct a useless grid-by-occupied-by-virtual tensor.
