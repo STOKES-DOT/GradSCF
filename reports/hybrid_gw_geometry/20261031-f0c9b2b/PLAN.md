@@ -34,11 +34,11 @@ settings and must not be presented as identical mathematical speed comparisons.
   - [x] Test four GW methods with JIT JVP/VJP, translation and two reconverged FD steps (two XC each).
   - [x] Use the same declared integral approximation for value/AD/FD; reject unsupported RI geometry.
   - [ ] Complete phenanthrene/def2-TZVP nuclear gradient and its original FD gates.
-- [ ] HG-05: Accept only measured local gains and preserve clean handoff.
+- [x] HG-05: Accept only measured local gains and preserve clean handoff.
   - [x] Matched native-kernel timing and final-direct initial-density experiment, actual RSS and QP gates.
   - [x] Repeat the closed RKS Fock comparison fully serially, with three warm samples and full-array gates.
   - [x] Narrow related regressions and existing custom/neural parameter protections.
-  - [ ] Local focused commits/report, original workspace verification, release own resources.
+  - [x] Local focused commits/report, original workspace verification, release own resources.
 
 - [x] HG-06: Include UKS/GKS execution in the same optimization round (user scope extension).
   - [x] Remove measured redundant spin J/K and unused GKS XC-potential preparation using public operators.
@@ -138,3 +138,9 @@ pair hit remaining-lease timeout2035.165s with no completed endpoint.
 Finisher124/release marker verified; allocation114012 no longer running.
 HG02/HG04's original two-step acceptance stays open; merge accepts the
 verified implementation and preserves this explicit boundary.
+
+Local integration 2026-11-01: merge b4b26c5 preserves iKS and user changes.
+Exact merged-source snapshot: 81 tests passed, 0 failed/skipped, remote CPU
+Slurm 114180. Local extension build/export/load checks passed; no local
+numerical test. User patch/index/status fingerprints match before/after.
+HG02/HG04's second FD step remains unaccepted; integration does not close it.

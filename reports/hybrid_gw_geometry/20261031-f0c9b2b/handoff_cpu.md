@@ -2,7 +2,8 @@
 
 Worktree: `/Users/jiaoyuan/Documents/GitHub/GradSCF/artifacts/side/g0w0-memory-recovery-20261030`.
 Branch: `perf/hybrid-gw-geometry-20261031`. The main release workspace and
-its pre-existing changes were preserved. No merge or push is authorized here.
+its pre-existing changes were preserved. Local merge was authorized and performed
+on 2026-11-01; no push was requested.
 
 Accepted production commits:
 
@@ -68,3 +69,18 @@ Commands are in `commands_cpu.txt`; scripts live in
 Remaining capability limits: GKS direct/RSH/MGGA and noncollinear GGA were not
 added; native RI geometry is unsupported; large matrix qsGW/scGW memory/work
 limits remain open. CPU work and the spin changes do not certify these methods.
+
+## Local integration verified on 2026-11-01
+
+Merged into `release/v1.0.0` as `b4b26c5`, preserving the main branch's iKS
+changes. The exact merged-source archive passed 81 remote CPU tests, with
+no failures or skips, in 366.74 s (Slurm 114180, CPU8, 32 GiB, no GPU).
+The unchanged native source tree permitted reuse of the verified Linux
+library. Actual import/library paths and the archive hash were checked.
+
+The local arm64 extension was rebuilt against the existing Conda JAX 0.8.1
+headers, all 51 exports verified, then atomically installed with a backup.
+Its dynamic-loader check passed without calling an integral. No local
+numerical test was run. Existing Python sessions must restart to load the
+new FFI interface. See `merge_verification.json` and `merge_preservation.json`.
+The second-step large-molecule FD limitation remains open. No push was made.
