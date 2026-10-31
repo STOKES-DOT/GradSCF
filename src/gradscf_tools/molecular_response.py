@@ -29,7 +29,7 @@ class MolecularEnergy:
     The initial orbitals seed each forward solve; they are not a frozen density.
     Every call transports the AO metric and relaxes the orbitals again. The
     implicit backward follows this stationary branch, including in nested AD.
-    ``forward="scf"`` uses DIIS as the restricted numerical forward solve,
+    ``forward="scf"`` uses DIIS as the numerical forward solve,
     validates its stationarity without orbital optimization or Newton polishing,
     and attaches the same live implicit response as ``forward="minimize"``.
     ``forward="reference"`` attaches local implicit response to a supplied
@@ -100,12 +100,18 @@ class MolecularEnergy:
         if forward == "reference" and self.differentiation.mode != "implicit":
             raise ValueError("forward='reference' requires implicit response.")
         if forward == "scf":
-            if self.unrestricted or self.differentiation.mode != "implicit":
-                raise ValueError("forward='scf' requires a restricted implicit solve.")
-            self.nelectron = int(np.sum(occupations))
-            self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
-                                                        np.flatnonzero(occupations == 0)])
-            self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
+            if self.differentiation.mode != "implicit":
+                raise ValueError("forward='scf' requires implicit response.")
+            if self.unrestricted:
+                self.nelectron = tuple(int(row.sum()) for row in occupations)
+                self.scf_order = tuple(tuple(int(i) for i in np.r_[np.flatnonzero(row),
+                    np.flatnonzero(row == 0)]) for row in occupations)
+                self.scf_inverse = tuple(tuple(int(i) for i in np.argsort(row)) for row in self.scf_order)
+            else:
+                self.nelectron = int(np.sum(occupations))
+                self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
+                                                            np.flatnonzero(occupations == 0)])
+                self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
         if self.kind != "HF" or forward == "scf":
             self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
             if self.max_memory is not None:
@@ -217,6 +223,16 @@ class MolecularEnergy:
         from gradscf.scf.rks import run_rks_from_integrals_traceable
 
         numerical, coefficients = jax.tree.map(jax.lax.stop_gradient, (inputs, self.coefficients))
+        if self.unrestricted:
+            from gradscf.scf.uks import run_uks_from_integrals
+            coefficients = _orthonormalize(coefficients, numerical['overlap'])
+            ordered = tuple(c[:, jnp.asarray(order)] for c, order in zip(coefficients, self.scf_order))
+            state = run_uks_from_integrals(**numerical,
+                nalpha=self.nelectron[0], nbeta=self.nelectron[1],
+                init_mo_coeff_alpha=ordered[0], init_mo_coeff_beta=ordered[1], config=self.scf_config)
+            coefficients = jnp.stack([c[:, jnp.asarray(order)] for c, order in zip(
+                (state.mo_coeff_alpha, state.mo_coeff_beta), self.scf_inverse)])
+            return jax.lax.stop_gradient(jnp.where(state.converged, coefficients, jnp.nan))
         reordered = self.scf_order != tuple(range(coefficients.shape[-1]))
         if reordered:
             coefficients = coefficients[:, jnp.asarray(self.scf_order)]

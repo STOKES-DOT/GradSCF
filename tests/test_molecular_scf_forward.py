@@ -37,12 +37,12 @@ def test_scf_seed_strategy_does_not_redefine_explicit_iteration_derivatives():
         MolecularEnergy(mf,mode='explicit',forward='scf')
 
 
-def test_scf_seed_strategy_rejects_unrestricted_reference():
+def test_scf_seed_strategy_accepts_unrestricted_reference():
     from gradscf import gto,scf
     from gradscf_tools.molecular_response import MolecularEnergy
     mf=scf.UHF(gto.M(atom='H 0 0 0',basis='sto-3g',spin=1,cart=True)).run()
-    with pytest.raises(ValueError,match='restricted'):
-        MolecularEnergy(mf,forward='scf')
+    model=MolecularEnergy(mf,forward='scf')
+    np.testing.assert_allclose(model(model.coordinates),mf.e_tot,atol=3e-10,rtol=0)
 
 
 @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
