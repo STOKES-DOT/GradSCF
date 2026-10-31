@@ -750,6 +750,7 @@ def _advance_scf_iteration_with_fock_builder(
     density_tol: Any = 1e-8,
     energy_only_convergence: Any = False,
     eigenvalue_jitter: float = 0.0,
+    refresh_on_convergence: bool = False,
 ) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array]:
     mo_energy_new, mo_coeff_new = _diagonalize_fock(
         fock_eff,
@@ -772,13 +773,23 @@ def _advance_scf_iteration_with_fock_builder(
         j_mat,
         k_mat,
     )
-    converged_step = convergence_reached(
-        total_new - energy,
-        jnp.sqrt(jnp.mean(jnp.abs(density_new - density) ** 2)),
-        _mo_residual_norm(raw_fock_new, mo_coeff_new, mo_occ_fixed),
-        conv_tol=tol_e, conv_tol_density=density_tol, conv_tol_grad=grad_tol,
-        energy_only=energy_only_convergence,
-    )
+    density_rms = jnp.sqrt(jnp.mean(jnp.abs(density_new-density)**2))
+    def check(values):
+        return convergence_reached(values[0]-energy, density_rms,
+            _mo_residual_norm(values[2], mo_coeff_new, mo_occ_fixed),
+            conv_tol=tol_e, conv_tol_density=density_tol, conv_tol_grad=grad_tol,
+            energy_only=energy_only_convergence)
+    values = total_new, xc_energy_new, raw_fock_new, j_new, k_new
+    converged_step = check(values)
+    if refresh_on_convergence:
+        # Accumulated delta-J/K roundoff can pass a strict orbital gate while
+        # the same density's fresh Fock fails it. Preserve the selected state;
+        # failed checks continue the original DIIS loop with rebuilt matrices.
+        values = jax.lax.cond(converged_step, lambda _: energy_and_fock_builder(
+            density_new, mo_coeff_new, mo_occ, mo_energy_new, None, None, None),
+            lambda _: values, operand=None)
+        converged_step = check(values)
+    total_new, xc_energy_new, raw_fock_new, j_new, k_new = values
     return (
         converged_step,
         density_new,
@@ -812,6 +823,7 @@ def _run_scf_iterations_lax_core(
     force_density_damping: bool = False,
     density_convergence_tol: float | None = None,
     eigenvalue_jitter: float = 0.0,
+    refresh_on_convergence: bool = False,
 ) -> tuple[
     Array,
     Array,
@@ -933,6 +945,7 @@ def _run_scf_iterations_lax_core(
             density_tol=density_tol,
             energy_only_convergence=energy_only_convergence,
             eigenvalue_jitter=eigenvalue_jitter,
+            refresh_on_convergence=refresh_on_convergence or cfg.jk_backend == "direct",
         )
         converged_step = jnp.logical_and(
             converged_step,
@@ -1061,6 +1074,8 @@ def _run_rks_iterations(
         skip_first_fock_damping=skip_first_fock_damping,
         density=density, mo_coeff=mo_coeff, mo_occ=mo_occ,
         mo_energy=mo_energy, raw_fock=raw_fock, j_mat=j_mat, k_mat=k_mat,
+        refresh_on_convergence=(direct_basis is not None and eri is None
+                                and eri_pair_matrix is None and df_factors is None),
     )
 
 
