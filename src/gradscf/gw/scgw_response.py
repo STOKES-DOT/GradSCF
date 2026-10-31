@@ -99,7 +99,26 @@ def _chemical_potential(fock, sigma, guess, grid, target, particle_tol):
         )
         return out[4], out[5] & out[6]
 
-    return jax.lax.cond(initial_ok, lambda _: (guess, jnp.array(True)), search, operand=None)
+    chemical, valid = jax.lax.cond(initial_ok, lambda _: (guess, jnp.array(True)), search, operand=None)
+
+    def polish(_, chemical):
+        count, slope = jax.value_and_grad(number)(chemical)
+        usable = jnp.isfinite(count) & jnp.isfinite(slope) & (slope > 0.)
+        correction = jnp.where(usable, count - target, 0.) / jnp.where(usable, slope, 1.)
+        trial = chemical - correction
+        finite = jnp.isfinite(trial)
+        trial_count = number(jnp.where(finite, trial, chemical))
+        accept = usable & finite & jnp.isfinite(trial_count)
+        accept &= jnp.abs(trial_count - target) <= jnp.abs(count - target)
+        return jnp.where(accept, trial, chemical)
+
+    # A cold gap can pass the particle gate before mu itself is resolved.
+    # Refine only certified coarse roots, preserving their bracket/charge gate.
+    chemical = jax.lax.cond(valid, lambda mu: jax.lax.fori_loop(0, 2, polish, mu),
+                            lambda mu: mu, chemical)
+    count = number(chemical)
+    valid &= jnp.isfinite(chemical) & jnp.isfinite(count) & (jnp.abs(count - target) < particle_tol)
+    return chemical, valid
 
 
 @partial(jax.jit, static_argnames=("nocc", "max_iter", "tol", "mixing", "particle_tol"))
