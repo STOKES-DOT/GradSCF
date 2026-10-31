@@ -47,11 +47,13 @@ done
 exit
 fi
 
-# Never start a stage whose full declared timeout cannot fit the live lease.
+# Bind each stage's actual timeout to the live lease, capped at 6000 seconds.
 deadline=$(squeue -h -j "$allocation" -o '%e')
 remaining=$(( $(date -d "$deadline" +%s) - $(date +%s) ))
-if test "$remaining" -lt 6120; then
-    echo 'Insufficient live allocation time for a fresh 6000-second stage.' >&2
+limit=$((remaining-120))
+if test "$limit" -gt 6000; then limit=6000; fi
+if test "$limit" -lt 600; then
+    echo 'Insufficient live allocation time for a bounded acceptance stage.' >&2
     exit 2
 fi
 
@@ -60,7 +62,7 @@ if test "$stage" = reference; then
 output="results/phi-quota-reference-$allocation"
 test ! -e "$output.jsonl"
 srun --jobid="$allocation" --exact --gres=none -N1 -n1 -c64 \
-    "$python" harness/bounded.py --seconds 6000 "$output.process.json" -- \
+    "$python" harness/bounded.py --seconds "$limit" "$output.process.json" -- \
     "$python" harness/run-quota-v1.py forward "$output.jsonl" \
     --case-input phenanthrene-def2-tzvp.json --xc pbe0 --method dft \
     --backend direct --grid 1 --grid-block-size 4096 --threads 32 \
@@ -72,7 +74,7 @@ fi
 if test "$stage" = gradient; then
 output="results/phi-quota-gradient-$allocation"
 srun --jobid="$allocation" --exact --gres=none -N1 -n1 -c64 \
-    "$python" harness/bounded.py --seconds 6000 "$output.process.json" -- \
+    "$python" harness/bounded.py --seconds "$limit" "$output.process.json" -- \
     "$python" harness/run-quota-v1.py geometry "$output.jsonl" \
     --case-input phenanthrene-def2-tzvp.json --xc pbe0 --method dft \
     --backend direct --grid 1 --grid-block-size 4096 --threads 32 \
@@ -89,7 +91,7 @@ case "$stage" in
 esac
     output="results/phi-quota-fd-$step-$allocation"
     srun --jobid="$allocation" --exact --gres=none -N1 -n1 -c64 \
-        "$python" harness/bounded.py --seconds 6000 "$output.process.json" -- \
+        "$python" harness/bounded.py --seconds "$limit" "$output.process.json" -- \
         "$python" harness/run-quota-v1.py geometry "$output.jsonl" \
         --case-input phenanthrene-def2-tzvp.json --xc pbe0 --method dft \
         --backend direct --grid 1 --grid-block-size 4096 --threads 32 \
