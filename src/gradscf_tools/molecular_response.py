@@ -32,6 +32,11 @@ class MolecularEnergy:
     ``forward="scf"`` uses DIIS as the restricted numerical forward solve,
     validates its stationarity without orbital optimization or Newton polishing,
     and attaches the same live implicit response as ``forward="minimize"``.
+    ``forward="reference"`` attaches local implicit response to a supplied
+    numerical ``solution`` (orbital array), defaulting to the seed orbitals.
+    This separates an already completed SCF from response compilation. The
+    current stationarity/metric checks still apply; use a fresh solution at
+    each geometry. This mode retains orbital response rather than freezing it.
 
     Native full J/K is the default geometry-AD representation. Supported HF
     and DFT references may opt into ``jk_backend="direct"`` to use moving
@@ -47,8 +52,8 @@ class MolecularEnergy:
 
     def __init__(self, mf, *, mode="implicit", forward="minimize", gradient_tolerance=1e-9,
                  jk_backend="full", max_memory=None, reserved_bytes=0):
-        if forward not in ("minimize", "scf"):
-            raise ValueError("forward must be 'minimize' or 'scf'.")
+        if forward not in ("minimize", "scf", "reference"):
+            raise ValueError("forward must be 'minimize', 'scf' or 'reference'.")
         if jk_backend not in ("full", "direct"):
             raise ValueError("jk_backend must be 'full' or 'direct'.")
         self.max_memory = None if max_memory is None else validate_memory_mb(max_memory)
@@ -92,6 +97,8 @@ class MolecularEnergy:
         self.differentiation = scf.SCFDifferentiationConfig(
             mode=mode, tolerance=1e-10, max_iter=100, restart=40)
         self.forward = forward
+        if forward == "reference" and self.differentiation.mode != "implicit":
+            raise ValueError("forward='reference' requires implicit response.")
         if forward == "scf":
             if self.unrestricted or self.differentiation.mode != "implicit":
                 raise ValueError("forward='scf' requires a restricted implicit solve.")
@@ -200,9 +207,9 @@ class MolecularEnergy:
         return dict(overlap=overlap, hcore=hcore, eri=eri, nuclear_repulsion=enuc,
                     ao=ao, ao_deriv1=dao, grid_weights=weights, **extra)
 
-    def solve(self, coordinates, field=None, *, potential=None):
+    def solve(self, coordinates, field=None, *, potential=None, solution=None):
         """Return the relaxed array-valued state, retaining its implicit response."""
-        return self.solve_with_inputs(coordinates, field, potential=potential)[0]
+        return self.solve_with_inputs(coordinates, field, potential=potential, solution=solution)[0]
 
     def _scf_seed(self, inputs):
         """Use existing DIIS for the numerical forward, before implicit AD."""
@@ -222,26 +229,30 @@ class MolecularEnergy:
             coefficients = coefficients[:, jnp.asarray(self.scf_inverse)]
         return jax.lax.stop_gradient(coefficients)
 
-    def solve_with_inputs(self, coordinates, field=None, *, potential=None):
+    def solve_with_inputs(self, coordinates, field=None, *, potential=None, solution=None):
         """Return ``(state, inputs)`` from one assembly for downstream response."""
+        if solution is not None and self.forward != "reference":
+            raise ValueError("A supplied solution requires forward='reference'.")
         inputs = self.inputs(coordinates, field, potential=potential)
-        coefficients = self._scf_seed(inputs) if self.forward == "scf" else self.coefficients
+        coefficients = self.coefficients if solution is None else jnp.asarray(solution)
+        if self.forward == "scf":
+            coefficients = self._scf_seed(inputs)
         minimize = scf.minimize_uks_from_integrals if self.unrestricted else scf.minimize_roks_from_integrals
         options = dict(direct_scf_workers=self.direct_scf_workers) if self.jk_backend == "direct" else {}
         if self.max_memory is not None:
             options.update(max_memory=self.max_memory,
                 reserved_bytes=self.reserved_bytes+tree_storage_bytes(
-                    self._memory_inputs(), coordinates, field, potential,
+                    self._memory_inputs(), coordinates, field, potential, solution,
                     exclude=(inputs, coefficients, self.occupations)))
         state = minimize(
             **inputs, xc_spec=self.xc,
             mo_coeff=coefficients, mo_occ=self.occupations,
-            orthonormalize_initial=self.forward != "scf", max_iterations=0 if self.forward == "scf" else 300,
+            orthonormalize_initial=self.forward == "minimize", max_iterations=300 if self.forward == "minimize" else 0,
             gradient_tolerance=self.gradient_tolerance, differentiation=self.differentiation, **options)
         return state, inputs
 
-    def __call__(self, coordinates, field=None, *, potential=None):
-        state = self.solve(coordinates, field, potential=potential)
+    def __call__(self, coordinates, field=None, *, potential=None, solution=None):
+        state = self.solve(coordinates, field, potential=potential, solution=solution)
         return jnp.where(state.stationary, state.total_energy, jnp.nan)
 
     def dipole(self, coordinates, field=None, *, potential=None):
