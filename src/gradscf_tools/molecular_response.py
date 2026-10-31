@@ -29,9 +29,9 @@ class MolecularEnergy:
     The initial orbitals seed each forward solve; they are not a frozen density.
     Every call transports the AO metric and relaxes the orbitals again. The
     implicit backward follows this stationary branch, including in nested AD.
-    ``forward="scf"`` optionally prepares a stopped DIIS orbital seed for a
-    restricted implicit solve. The final stationary equations and response
-    remain the same live orbital minimization as ``forward="minimize"``.
+    ``forward="scf"`` uses DIIS as the restricted numerical forward solve,
+    validates its stationarity without orbital optimization or Newton polishing,
+    and attaches the same live implicit response as ``forward="minimize"``.
 
     Native full J/K is the default geometry-AD representation. Supported HF
     and DFT references may opt into ``jk_backend="direct"`` to use moving
@@ -205,7 +205,7 @@ class MolecularEnergy:
         return self.solve_with_inputs(coordinates, field, potential=potential)[0]
 
     def _scf_seed(self, inputs):
-        """Use existing DIIS only for the numerical seed, before implicit AD."""
+        """Use existing DIIS for the numerical forward, before implicit AD."""
         from gradscf.scf.orbital_optimization import _orthonormalize
         from gradscf.scf.rks import run_rks_from_integrals_traceable
 
@@ -235,7 +235,7 @@ class MolecularEnergy:
         state = minimize(
             **inputs, xc_spec=self.xc,
             mo_coeff=coefficients, mo_occ=self.occupations,
-            orthonormalize_initial=True, max_iterations=300,
+            orthonormalize_initial=True, max_iterations=0 if self.forward == "scf" else 300,
             gradient_tolerance=self.gradient_tolerance, differentiation=self.differentiation, **options)
         return state, inputs
 

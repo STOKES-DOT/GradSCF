@@ -217,9 +217,10 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
                               jk_backend=jk_backend, direct_basis=direct_basis)
     if rsh is not None and method == 'gks':
         raise NotImplementedError('Range-separated GKS orbital minimization is not supported.')
-    if max_iterations < 1 or gradient_tolerance <= 0:
-        raise ValueError('Optimizer iterations and gradient tolerance must be positive.')
     config = differentiation or SCFDifferentiationConfig(mode=gradient_mode or 'implicit')
+    if (max_iterations < 0 or gradient_tolerance <= 0
+            or (max_iterations == 0 and config.mode != 'implicit')):
+        raise ValueError('Optimizer iterations must be positive (zero requires implicit mode), and gradient tolerance positive.')
     if gradient_mode is not None and normalize_scf_gradient_mode(gradient_mode) != config.mode:
         raise ValueError('gradient_mode and differentiation.mode disagree.')
     s, c = jnp.asarray(overlap), jnp.asarray(mo_coeff)
@@ -295,7 +296,8 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     solve_args, solve_coeff = args, initial
     if config.mode == 'implicit':
         solve_args, solve_coeff = jax.tree.map(jax.lax.stop_gradient, (args,initial))
-    if dimension:
+    forward = None
+    if dimension and max_iterations:
         memory = ({} if maximum is None else dict(max_memory=maximum,
             reserved_bytes=reserved+tree_storage_bytes(sources, coeff, metric,
                 exclude=(args, initial)), operator_min_bytes=native))
@@ -305,7 +307,10 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         final, norm = forward.coeff, forward.gradient_norm
         iterations, evaluations, stages, history = forward.iterations, forward.evaluations, forward.stages, forward.polishing
     else:
-        final, norm = solve_coeff, jnp.asarray(0., dtype=coeff.real.dtype)
+        final = solve_coeff
+        origin = jnp.zeros(dimension, dtype=coeff.real.dtype)
+        norm = (.5*jnp.linalg.norm(jax.grad(energy)(origin, final, solve_args))
+                if dimension else jnp.asarray(0., dtype=coeff.real.dtype))
         iterations, evaluations, stages, history = jnp.asarray(0), jnp.asarray(1), (), ()
     if maximum is not None:
         # The same initial observable follows the fixed-buffer preflight;
@@ -361,7 +366,10 @@ def minimize_uks_from_integrals(*, overlap, hcore, eri, nuclear_repulsion, ao, a
 
     Supply static ``mo_occ`` of shape (2,nao), and float64 coefficients of shape
     (2,nao,nao). Set ``orthonormalize_initial=True`` when varying an overlap with
-    a fixed seed. Both modes use identical forward iterations. Unrolled follows
+    a fixed seed. Positive iteration limits use the same forward in both modes.
+    Implicit ``max_iterations=0`` validates the supplied seed without L-BFGS or
+    Newton polishing, then attaches the same response to a stationary seed.
+    A nonstationary seed retains nonfinite derivatives. Unrolled follows
     finite iterates, including initial-orbital dependence; implicit follows the
     stationary branch and returns nonfinite gradients if it has not converged.
     A JAX-pytree AO J/K ``direct_basis`` replaces ERIs; pass ``eri=None``.
