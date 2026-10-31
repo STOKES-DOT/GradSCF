@@ -56,10 +56,14 @@ class OrbitalOptimizationResult:
     gradient_mode: str
 
 
-def _orthonormalize(coeff, metric):
+def _orthonormalize(coeff, metric, *, reference_metric=None):
     """Cholesky transport includes the moving AO metric without eigengauge AD."""
     def transport(c):
-        gram = c.conj().T @ metric @ c
+        gram = c.conj().T @ (metric if reference_metric is None else metric-reference_metric) @ c
+        if reference_metric is not None:
+            # A validated numerical SCF origin is already orthonormal within
+            # roundoff. Keep it fixed at S=S0; the live S-S0 retains Pulay AD.
+            gram = gram+jnp.eye(gram.shape[-1], dtype=gram.dtype)
         lower = jnp.linalg.cholesky(.5*(gram+gram.conj().T))
         return solve_triangular(lower.conj(), c.T, lower=True).T
     return jax.vmap(transport)(coeff)
@@ -257,6 +261,8 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     if rsh is not None and method == 'gks':
         raise NotImplementedError('Range-separated GKS orbital minimization is not supported.')
     config = differentiation or SCFDifferentiationConfig(mode=gradient_mode or 'implicit')
+    preserve_seed = (max_iterations == 0 and not orthonormalize_initial and method != 'gks'
+                     and config.require_converged and config.regularization == 0.)
     if (max_iterations < 0 or gradient_tolerance <= 0
             or (max_iterations == 0 and config.mode != 'implicit')):
         raise ValueError('Optimizer iterations must be positive (zero requires implicit mode), and gradient tolerance positive.')
@@ -330,7 +336,7 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         # A native direct provider supplies LR exchange without an ERI array.
         args.update(eri_lr=None if eri_lr is None else jnp.asarray(eri_lr),
                     dispersion_energy=None if dispersion_energy is None else jnp.asarray(dispersion_energy))
-    initial = _orthonormalize(coeff, metric)
+    initial = coeff if preserve_seed else _orthonormalize(coeff, metric)
     if maximum is None:
         initial_energy = evaluate(density_from(initial),args)[0]
     solve_args, solve_coeff = args, initial
@@ -361,15 +367,22 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         # immutable `initial` and live physical args keep its original AD.
         initial_energy = evaluate(density_from(initial),args)[0]
     stationary = jnp.isfinite(norm) & (norm <= gradient_tolerance)
+    if preserve_seed:
+        stationary &= jnp.all(jnp.isfinite(gram)) & jnp.all(
+            jnp.abs(gram-jnp.eye(coeff.shape[-1], dtype=gram.dtype)) <= 1e-8)
     if config.mode == 'implicit' and dimension:
         anchor = jax.lax.stop_gradient(final)
         origin = jnp.zeros(dimension, dtype=coeff.real.dtype)
+        reference_metric = solve_args['metric'] if preserve_seed else None
+        root_inputs = args, anchor, reference_metric
         def tangent_energy(angles, root_inputs):
-            parameters, anchor = root_inputs
-            return energy(angles, _orthonormalize(anchor,parameters['metric']), parameters)
+            parameters, anchor, reference = root_inputs
+            return energy(angles, _orthonormalize(anchor, parameters['metric'],
+                                                reference_metric=reference), parameters)
         def tangent_residual(angles, root_inputs):
-            parameters, anchor = root_inputs
-            current = rotate(angles, _orthonormalize(anchor, parameters['metric']))
+            parameters, anchor, reference = root_inputs
+            current = rotate(angles, _orthonormalize(anchor, parameters['metric'],
+                                                    reference_metric=reference))
             return _brillouin_gradient(method, topology, current, density_from, evaluate, parameters,
                                        known_variational=known_variational)
         # Unchecked/regularized response retains its original chart semantics.
@@ -377,12 +390,13 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         residual = tangent_residual if use_brillouin else jax.grad(tangent_energy)
         memory = ({} if maximum is None else dict(max_memory=maximum,
             reserved_bytes=reserved+tree_storage_bytes(sources, coeff, metric, initial, initial_energy, forward,
-                exclude=(args, anchor, origin)), operator_min_bytes=native))
-        angles = attach_scf_backward((args, anchor), solution=origin, residual=residual,
+                exclude=(args, anchor, origin, reference_metric)), operator_min_bytes=native))
+        angles = attach_scf_backward(root_inputs, solution=origin, residual=residual,
                                      config=config, converged=stationary, **memory)
-        final = rotate(angles, _orthonormalize(anchor,metric))
+        final = rotate(angles, _orthonormalize(anchor, metric, reference_metric=reference_metric))
     elif config.mode == 'implicit':
-        final = _orthonormalize(jax.lax.stop_gradient(final),metric)
+        final = _orthonormalize(jax.lax.stop_gradient(final), metric,
+            reference_metric=solve_args['metric'] if preserve_seed else None)
     density = density_from(final)
     total, fock = evaluate(density,args)
     stationary &= jnp.isfinite(total)
@@ -391,7 +405,7 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         # Its partial input derivative retains metric transport (Pulay terms).
         # Only the reported energy uses this rule; state response and the
         # optimizer/residual callbacks remain unchanged, including failures.
-        total = stationary_value(tangent_energy, angles, (args, anchor), converged=stationary)
+        total = stationary_value(tangent_energy, angles, root_inputs, converged=stationary)
     polishing_steps = sum((row['accepted'].astype(jnp.int32) for row in history), jnp.asarray(0))
     allowance = (jnp.max(jnp.stack([row['energy_allowance'] for row in history]))
                  if history else jnp.asarray(0., dtype=coeff.real.dtype))
@@ -421,6 +435,8 @@ def minimize_uks_from_integrals(*, overlap, hcore, eri, nuclear_repulsion, ao, a
     a fixed seed. Positive iteration limits use the same forward in both modes.
     Implicit ``max_iterations=0`` validates the supplied seed without L-BFGS or
     Newton polishing, then attaches the same response to a stationary seed.
+    With ``orthonormalize_initial=False``, checked real zero-step states keep
+    the supplied origin and use a local moving-metric chart for Pulay response.
     A nonstationary seed retains nonfinite derivatives. Unrolled follows
     finite iterates, including initial-orbital dependence; implicit follows the
     stationary branch and returns nonfinite gradients if it has not converged.

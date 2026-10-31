@@ -214,9 +214,10 @@ class MolecularEnergy:
         if reordered:
             coefficients = coefficients[:, jnp.asarray(self.scf_order)]
         coefficients = _orthonormalize(coefficients[None], numerical["overlap"])[0]
-        coefficients = run_rks_from_integrals_traceable(
+        state = run_rks_from_integrals_traceable(
             **numerical, nelectron=self.nelectron,
-            init_mo_coeff=coefficients, config=self.scf_config).mo_coeff
+            init_mo_coeff=coefficients, config=self.scf_config)
+        coefficients = jnp.where(state.converged, state.mo_coeff, jnp.nan)
         if reordered:
             coefficients = coefficients[:, jnp.asarray(self.scf_inverse)]
         return jax.lax.stop_gradient(coefficients)
@@ -235,7 +236,7 @@ class MolecularEnergy:
         state = minimize(
             **inputs, xc_spec=self.xc,
             mo_coeff=coefficients, mo_occ=self.occupations,
-            orthonormalize_initial=True, max_iterations=0 if self.forward == "scf" else 300,
+            orthonormalize_initial=self.forward != "scf", max_iterations=0 if self.forward == "scf" else 300,
             gradient_tolerance=self.gradient_tolerance, differentiation=self.differentiation, **options)
         return state, inputs
 

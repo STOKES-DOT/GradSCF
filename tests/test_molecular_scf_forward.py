@@ -45,6 +45,28 @@ def test_scf_seed_strategy_rejects_unrestricted_reference():
         MolecularEnergy(mf,forward='scf')
 
 
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
+def test_scf_forward_rejects_failed_numerical_producer(monkeypatch, compiled):
+    from types import SimpleNamespace
+    from gradscf import gto, scf
+    from gradscf.scf import rks
+    from gradscf_tools.molecular_response import MolecularEnergy
+
+    mf = scf.RHF(gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g", cart=True)).run()
+    model = MolecularEnergy(mf, forward="scf")
+    # The stationary coefficients alone must not override a failed producer's
+    # energy/density convergence flag.
+    failed = SimpleNamespace(mo_coeff=mf.mo_coeff, converged=jnp.asarray(False))
+    monkeypatch.setattr(rks, "run_rks_from_integrals_traceable", lambda **kwargs: failed)
+    evaluate = jax.jit(model) if compiled else model
+    try:
+        value = evaluate(model.coordinates)
+    except ValueError as error:
+        assert "finite" in str(error)
+    else:
+        assert not np.isfinite(float(value))
+
+
 @pytest.fixture(scope="module", params=["pbe0", "wb97xd"])
 def hybrid_reference(request):
     from gradscf import dft, gto
