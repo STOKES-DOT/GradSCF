@@ -51,11 +51,12 @@ RSS 6,390,472,704 bytes. Old/new gradients differ by 2.54e-11 Ha/bohr.
 The older 1676-s parent includes a stack sample and a different certified seed;
 `large_gradient_comparison.json` deliberately has no clean speed ratio.
 
-At this checkpoint, the FD finisher PID 3372144 is resumed and active. It runs
-steps 0.0003 and 0.0001 serially, checks scientific flags, writes
-`results/finish-quota-114012.exit`, then creates `release.spin` on completion or
-bounded failure. Actual timeouts are at most 6000 s and fit the remaining lease.
-Do not treat its queued/running state as a passed FD gate.
+Final state checked on2026-11-01: the3e-4 bohr pair passed with error
+5.5066e-8 Ha/bohr. The1e-4 pair timed out after2035.165s under the remaining
+lease. Finisher exit124 and automatic resource release are verified.
+Allocation114012 is no longer running. The second-step large-gradient gate
+remains open; do not present this merge as full large-force acceptance.
+See `large_geometry_gate.json`.
 
 Details: `CPU_RESOURCE_BALANCE.md`, `cpu_environment.json`, `before_after.csv`,
 `cpu-comparison-114012.json`, `spin-comparison-114012.json`, and the raw records

@@ -132,3 +132,9 @@ passed64others; two oldhardcodedbudgetfailuresreproducedonfrozenparent,
 then correctedresourceassumptions passaffected9tests. Full564AOgradient
 nowreturnsin937.921s/RSS6.390GB, old/newmaxgradientdifference2.54e-11.
 OriginalFD0.0003/0.0001 remainpending; finisher3372144resumed.
+
+Final FD check2026-11-01:3e-4 bohr PASS(error5.5066e-8 Ha/bohr);1e-4
+pair hit remaining-lease timeout2035.165s with no completed endpoint.
+Finisher124/release marker verified; allocation114012 no longer running.
+HG02/HG04's original two-step acceptance stays open; merge accepts the
+verified implementation and preserves this explicit boundary.

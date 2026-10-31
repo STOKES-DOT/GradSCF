@@ -199,3 +199,14 @@ The parent1676.422 s execution included a stack sample and a different
 tightly converged seed, so no clean speed ratio is reported. Both original
 reconverged directional-FD gates remain required; their final status is
 tracked separately from these finite/energy checks.
+
+## Final FD status checked on 2026-11-01
+
+The original3e-4 bohr directional FD passed: AD0.00666258005943 versus
+FD0.00666263512509 Ha/bohr, absolute error5.5066e-8 under the unchanged
+3e-6+4e-5*abs(FD) gate. Its plus/minus reconvergence took4061.395/1606.061s.
+The1e-4 bohr pair was stopped by the remaining-lease bound after2035.165s
+without a completed endpoint. Finisher exit124 and the release marker are
+verified; allocation114012 is no longer running. The second-step gate remains
+unaccepted. This is a resource/performance limitation, not a reported finite
+derivative disagreement. See `large_geometry_gate.json`.
