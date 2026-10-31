@@ -143,16 +143,17 @@ def _closed_shell_mo_occ(nao: int, nocc: int, dtype: Array) -> Array:
     return jnp.zeros((nao,), dtype=dtype).at[:nocc].set(2.0)
 
 
-def _build_jk(eri: Array, density: Array) -> tuple[Array, Array]:
+def _build_jk(eri: Array, density: Array, *, with_j=True, with_k=True) -> tuple[Array, Array]:
     eri_arr = jnp.asarray(eri)
     if eri_arr.ndim in (1,2):
         from gradscf.integrals.molecular.jk import build_jk_from_packed
-        return build_jk_from_packed(eri_arr, density)
+        return build_jk_from_packed(eri_arr, density, with_j=with_j, with_k=with_k)
     if int(eri_arr.size) == 0:
         raise ValueError("JK build requires full AO ERI or packed AO-pair ERI data.")
-    j_mat = jnp.einsum("pqrs,rs->pq", eri, density, precision=Precision.HIGHEST)
+    j_mat = (jnp.einsum("pqrs,rs->pq", eri_arr, density, precision=Precision.HIGHEST)
+             if with_j else jnp.zeros_like(density, dtype=jnp.result_type(eri_arr, density)))
     from gradscf.integrals.molecular.jk import exchange_matrix
-    k_mat = exchange_matrix(eri, density)
+    k_mat = exchange_matrix(eri_arr, density) if with_k else jnp.zeros_like(j_mat)
     return j_mat, k_mat
 
 
@@ -341,8 +342,7 @@ def _make_jk_builder(
                 if eri_arr is None:
                     raise ValueError("jk_backend='full' requires full AO ERI or packed AO-pair ERI.")
                 if eri_arr.ndim in (1,2):
-                    from gradscf.integrals.molecular.jk import build_jk_from_packed
-                    return build_jk_from_packed(eri_arr,density)[0],jnp.zeros_like(density)
+                    return _build_jk(eri_arr, density, with_k=False)
                 return (
                     jnp.einsum("pqrs,rs->pq", eri_arr, density, precision=Precision.HIGHEST),
                     jnp.zeros_like(density),

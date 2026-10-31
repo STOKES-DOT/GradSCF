@@ -264,12 +264,12 @@ def _spin_jk_matrices(
             return density_tot, coulomb.sum(axis=0), exchange[0], exchange[1]
         zero = jnp.zeros_like(coulomb)
         return density_tot, coulomb, zero, zero
-    j_tot, _ = _build_jk(eri, density_tot)
+    j_tot, _ = _build_jk(eri, density_tot, with_k=False)
     if not bool(with_k):
         zero_k = jnp.zeros_like(j_tot)
         return density_tot, j_tot, zero_k, zero_k
-    _, k_a = _build_jk(eri, density_a)
-    _, k_b = _build_jk(eri, density_b)
+    _, k_a = _build_jk(eri, density_a, with_j=False)
+    _, k_b = _build_jk(eri, density_b, with_j=False)
     return density_tot, j_tot, k_a, k_b
 
 
