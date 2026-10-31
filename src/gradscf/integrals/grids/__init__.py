@@ -422,6 +422,9 @@ def _build_molecular_grid_from_spec_jax(
 
     coords_all = []
     weights_all = []
+    # Preserve the original (i,j) multiplication order without copying every
+    # pair into the geometry-AD program for each atom-centered grid.
+    pairs = jnp.asarray(np.stack(np.tril_indices(natm, k=-1), axis=1), dtype=jnp.int32)
     for ia, sym in enumerate(spec.symbols):
         coords_local, vol = unique_atom_grids[sym]
         coords = coords_local + atm_coords[ia]
@@ -429,13 +432,14 @@ def _build_molecular_grid_from_spec_jax(
         grid_dist2 = jnp.einsum("...r,...r->...", grid_diffs, grid_diffs)
         grid_dist = jnp.sqrt(jnp.maximum(grid_dist2, 1e-32))
         pbecke = jnp.ones((natm, coords.shape[0]), dtype=jnp.float64)
-        for i in range(natm):
-            for j in range(i):
-                g = (grid_dist[i] - grid_dist[j]) / atm_dist[i, j]
-                g = radii_adjust(i, j, g)
-                g = _original_becke(g)
-                pbecke = pbecke.at[i].set(pbecke[i] * (0.5 * (1.0 - g)))
-                pbecke = pbecke.at[j].set(pbecke[j] * (0.5 * (1.0 + g)))
+        def partition_pair(current, pair):
+            i, j = pair
+            g = (grid_dist[i]-grid_dist[j])/atm_dist[i, j]
+            g = _original_becke(radii_adjust(i, j, g))
+            current = current.at[i].set(current[i]*(0.5*(1.0-g)))
+            current = current.at[j].set(current[j]*(0.5*(1.0+g)))
+            return current, None
+        pbecke, _ = jax.lax.scan(partition_pair, pbecke, pairs)
         weights = vol * pbecke[ia] / jnp.sum(pbecke, axis=0)
         coords_all.append(coords)
         weights_all.append(weights)
