@@ -193,6 +193,56 @@ def _build_blocked_spin_response_action(
     return action
 
 
+def _prepare_spin_grid_hessian(molecule, functional, *, block_size, dtype):
+    if isinstance(block_size, bool) or not isinstance(block_size, Integral) or block_size < 1:
+        raise ValueError("block_size must be a positive integer.")
+    ngrids = len(molecule.grid.weights)
+    width = min(int(block_size), max(1, ngrids))
+    provider = getattr(molecule, "grid_ao", None)
+    if provider is not None and not getattr(provider, "adaptive", False):
+        width = min(width, provider.block_size)
+    full_blocks, tail = divmod(ngrids, width)
+    kind = functional.response_feature_kind
+    spin_width = {"LDA": 2, "GGA": 8, "MGGA": 10}[kind]
+
+    def evaluate(start, size):
+        view = molecule_grid_block(molecule, start, size, deriv=0 if kind == "LDA" else 1)
+        return functional.spin_grid_response_tensor(view)
+
+    # Recompute only block-local AO/features in the transpose, preserving
+    # higher density/geometry derivatives without retaining their forward tape.
+    evaluate = jax.checkpoint(evaluate, static_argnums=(1,))
+    if full_blocks:
+        _, blocks = jax.lax.scan(lambda carry, index: (carry, evaluate(index*width, width)),
+                                 None, jnp.arange(full_blocks))
+        hessian = blocks.reshape(full_blocks*width, spin_width, spin_width)
+    else:
+        hessian = jnp.zeros((0, spin_width, spin_width), dtype=dtype)
+    if tail:
+        hessian = jnp.concatenate((hessian, evaluate(full_blocks*width, tail)), axis=0)
+    return hessian
+
+
+def _apply_spin_grid_hessian(hessian, tangent_a, tangent_b, kind):
+    ngrids = int(hessian.shape[0])
+    nfeatures = {"LDA": 1, "GGA": 4, "MGGA": 5}[kind]
+    tangent_a = _validate_spin_tangent(tangent_a, nfeatures=nfeatures,
+                                     ngrids=ngrids, label="tangent_a")
+    tangent_b = _validate_spin_tangent(tangent_b, nfeatures=nfeatures,
+                                     ngrids=ngrids, label="tangent_b")
+    if tangent_a.shape[0] != tangent_b.shape[0]:
+        raise ValueError("Alpha and beta spin-grid tangents must share a batch size.")
+    if kind == "LDA":
+        tangent = jnp.stack([tangent_a[:, 0], tangent_b[:, 0]], axis=-1)
+    else:
+        tangent = pack_spin_grid_tangents(tangent_a, tangent_b, ngrids=ngrids, dtype=hessian.dtype)
+    response = jnp.einsum("gij,ngj->ngi", hessian, tangent)
+    if kind == "LDA":
+        response = response.transpose(0, 2, 1)
+        return response[:, 0:1], response[:, 1:2]
+    return unpack_spin_grid_response(response, include_tau=kind == "MGGA")
+
+
 def build_unrestricted_semilocal_response_action(
     molecule: Any,
     orbo_a: Array,
@@ -212,14 +262,32 @@ def build_unrestricted_semilocal_response_action(
         )
     if (block_size is not None
             and type(getattr(response_hvp, "__self__", None)) is UnrestrictedSemilocalResponseFunctional):
-        def block_hvp(view, tangent_a, tangent_b):
-            # Only the known local functional sees this view. Opaque callbacks
-            # retain the original molecule and both complete spin-grid fields.
-            return response_hvp(view, tangent_a, tangent_b)
+        functional = response_hvp.__self__
+        if functional.response_feature_kind == "MGGA":
+            # Keep the original block-local HVP: full-grid higher-order MGGA
+            # preparation has not passed the bounded AD validation campaign.
+            return _build_blocked_spin_response_action(
+                molecule, orbo_a, orbv_a, orbo_b, orbv_b, response_hvp,
+                feature_kind=kind, dtype=dtype, block_size=block_size, local_view=True)
+        if parse_recipe(functional.xc_spec).kind == "HF":
+            if isinstance(block_size, bool) or not isinstance(block_size, Integral) or block_size < 1:
+                raise ValueError("block_size must be a positive integer.")
+            # HF has no local Hessian and receives no full-grid reservation.
+            return lambda alpha, beta: (jnp.zeros_like(alpha, dtype=dtype),
+                                        jnp.zeros_like(beta, dtype=dtype))
+        # The planner already reserves two complete joint spin Hessians.
+        # Prepare one from bounded AO blocks, without padded grid points or
+        # grid-by-OV tensors. All reference/geometry leaves remain dynamic.
+        hessian = _prepare_spin_grid_hessian(
+            molecule, functional, block_size=block_size, dtype=dtype)
+
+        def block_hvp(start, size, tangent_a, tangent_b):
+            local = jax.lax.dynamic_slice_in_dim(hessian, start, size)
+            return _apply_spin_grid_hessian(local, tangent_a, tangent_b, kind)
 
         return _build_blocked_spin_response_action(
             molecule, orbo_a, orbv_a, orbo_b, orbv_b, block_hvp,
-            feature_kind=kind, dtype=dtype, block_size=block_size, local_view=True,
+            feature_kind=kind, dtype=dtype, block_size=block_size,
         )
     if getattr(molecule, "grid_ao", None) is not None:
         weights = jnp.asarray(molecule.grid.weights, dtype=dtype)
@@ -293,19 +361,14 @@ class UnrestrictedSemilocalResponseFunctional:
             recipe.exact_exchange.full_range if coefficients is None else coefficients[2]))
         object.__setattr__(self, "response_feature_kind", "LDA" if kind == "HF" else kind)
 
-    def spin_grid_response_hvp(
-        self,
-        molecule: Any,
-        tangent_a: Array,
-        tangent_b: Array,
-    ) -> tuple[Array, Array]:
+    def spin_grid_response_tensor(self, molecule: Any) -> Array:
+        """Joint local-field Hessian, including alpha/beta cross derivatives."""
         recipe = parse_recipe(self.xc_spec)
         recipe.require_complete_support(provided=() if getattr(molecule, "dispersion_energy", None) is None
                                         else ("dispersion",))
         if recipe.kind == "HF":
-            # HF has no semilocal XC Hessian. Nonlocal exchange is assembled
-            # separately using exact_exchange_fraction in the response action.
-            return jnp.zeros_like(tangent_a), jnp.zeros_like(tangent_b)
+            return jnp.zeros((len(molecule.grid.weights), 2, 2),
+                             dtype=jnp.asarray(molecule.grid.weights).dtype)
         if self.response_feature_kind == "LDA":
             provider = getattr(molecule, "grid_ao", None)
             if provider is None:
@@ -314,57 +377,30 @@ class UnrestrictedSemilocalResponseFunctional:
                 density = provider.map(lambda ao, dao, lap, coords, weights:
                     jnp.einsum("spq,gp,gq->gs", molecule.rdm1, ao, ao), deriv=0)
             total_density = density.sum(axis=-1)
+            base = density
         else:
             features, grad_a, grad_b = grid_features_with_spin_gradients_for_molecule(molecule)
             total_density = features.rho
-        ngrids = int(total_density.shape[0])
-        nfeatures = {"LDA": 1, "GGA": 4, "MGGA": 5}[self.response_feature_kind]
-        tangent_a = _validate_spin_tangent(
-            tangent_a,
-            nfeatures=nfeatures,
-            ngrids=ngrids,
-            label="tangent_a",
-        )
-        tangent_b = _validate_spin_tangent(
-            tangent_b,
-            nfeatures=nfeatures,
-            ngrids=ngrids,
-            label="tangent_b",
-        )
-        if tangent_a.shape[0] != tangent_b.shape[0]:
-            raise ValueError("Alpha and beta spin-grid tangents must share a batch size.")
-
-        if self.response_feature_kind == "LDA":
-            base = density
-            tangent = jnp.stack([tangent_a[:, 0], tangent_b[:, 0]], axis=-1)
-        else:
             base = jnp.concatenate(
-                [
-                    features.rho_a[:, None],
-                    features.rho_b[:, None],
-                    grad_a,
-                    grad_b,
-                ],
-                axis=-1,
-            )
+                [features.rho_a[:, None], features.rho_b[:, None], grad_a, grad_b], axis=-1)
             if self.response_feature_kind == "MGGA":
                 base = jnp.concatenate([base, features.tau_a[:, None], features.tau_b[:, None]], axis=-1)
-            tangent = pack_spin_grid_tangents(
-                tangent_a,
-                tangent_b,
-                ngrids=ngrids,
-                dtype=base.dtype,
-            )
-
         active = total_density > getattr(molecule, "xc_density_floor", 1e-12)
         base = jnp.where(active[:, None], base, jnp.ones_like(base))
         hessian = grid_hessian(self.xc_spec, self.response_feature_kind)(base)
-        hessian = jnp.where(active[:, None, None], hessian, 0.)
-        response = jnp.einsum("gij,ngj->ngi", hessian, tangent)
-        if self.response_feature_kind == "LDA":
-            response = response.transpose(0, 2, 1)
-            return response[:, 0:1], response[:, 1:2]
-        return unpack_spin_grid_response(response, include_tau=self.response_feature_kind == "MGGA")
+        return jnp.where(active[:, None, None], hessian, 0.)
+
+    def spin_grid_response_hvp(
+        self,
+        molecule: Any,
+        tangent_a: Array,
+        tangent_b: Array,
+    ) -> tuple[Array, Array]:
+        if parse_recipe(self.xc_spec).kind == "HF":
+            return jnp.zeros_like(tangent_a), jnp.zeros_like(tangent_b)
+        return _apply_spin_grid_hessian(
+            self.spin_grid_response_tensor(molecule), tangent_a, tangent_b,
+            self.response_feature_kind)
 
 
 __all__ = [
