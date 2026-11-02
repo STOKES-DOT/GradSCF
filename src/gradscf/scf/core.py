@@ -14,6 +14,7 @@ from ..solvers.eigen.spectral import (
     regularized_eigh as _safe_symmetric_eigh,
     inverse_sqrt as _orthogonalizer,
     _spectral_orthogonalizer,
+    occupied_projector,
 )
 
 
@@ -68,6 +69,12 @@ def _diagonalize_fock(
 def _build_density_from_occ(mo_coeff: Array, mo_occ: Array) -> Array:
     occ = jnp.asarray(mo_occ, dtype=mo_coeff.dtype)
     return jnp.einsum("pi,i,qi->pq", mo_coeff, occ, mo_coeff, precision=Precision.HIGHEST)
+
+
+def _restricted_density_from_fock(fock: Array, x: Array, nocc: int) -> Array:
+    """Closed-shell density with a gauge-free occupied-subspace response."""
+    orthogonal_fock = x.T @ fock @ x
+    return 2 * x @ occupied_projector(.5 * (orthogonal_fock + orthogonal_fock.T), nocc) @ x.T
 
 def _unrestricted_spin_electron_counts(
     total_electrons: int,

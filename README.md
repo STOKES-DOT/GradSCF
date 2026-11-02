@@ -1,5 +1,9 @@
 # GradSCF
 
+**NNAO research archive (`gradscf_nnao`).** This branch preserves the validated
+neural-basis training and benchmark workspace. See [NNAO_WORKSPACE.md](NNAO_WORKSPACE.md)
+for source provenance, setup, campaign recipes, and archived results.
+
 **Differentiable electronic structure in JAX.**
 
 GradSCF is a Python framework for molecular and periodic electronic-structure

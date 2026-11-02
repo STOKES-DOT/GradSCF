@@ -12,9 +12,9 @@ from jaxtyping import Array
 from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_MAX_CYCLE,
-    PYSCF_TD_DAVIDSON_TOL,
-    PYSCF_TD_POSITIVE_EIG_THRESHOLD,
+    TD_DAVIDSON_MAX_CYCLE,
+    TD_DAVIDSON_TOL,
+    TD_POSITIVE_EIG_THRESHOLD,
 )
 from ..solvers.eigen.davidson import _davidson_search_nroots, _solver_dtype
 from ..solvers.eigen.response import EigenGradientMode

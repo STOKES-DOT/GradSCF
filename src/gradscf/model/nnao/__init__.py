@@ -13,6 +13,8 @@ _EXPORTS = {
     'supported_elements': ('.basis', 'supported_elements'),
     'MACEBasisModel': ('.encoder', 'MACEBasisModel'),
     'build_graph': ('.graph', 'build_graph'),
+    'model_config_for_elements': ('.config', 'model_config_for_elements'),
+    'exponent_keys_for_elements': ('.config', 'exponent_keys_for_elements'),
     'prepare_grimme_basis': ('.grimme', 'prepare_grimme_basis'),
 }
 _SUBMODULES = ('integrals', 'training', 'workflows')

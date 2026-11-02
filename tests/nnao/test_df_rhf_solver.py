@@ -22,6 +22,7 @@ def inputs():
 
 def test_changed_integral_values_reuse_scf_and_backward_trace(monkeypatch):
     m = module(); calls = []
+    m._df_rhf_solver.cache_clear()
     original = m._run_scf_with_rescue
     def traced(*args, **kwargs):
         calls.append(True)
@@ -39,6 +40,7 @@ def test_changed_integral_values_reuse_scf_and_backward_trace(monkeypatch):
 
 def test_scaled_basis_experiments_share_the_complete_scf_backward(monkeypatch):
     m=module();calls=[];original=m._run_scf_with_rescue
+    m._df_rhf_solver.cache_clear()
     def traced(*args,**kwargs):
         calls.append(True)
         return original(*args,**kwargs)

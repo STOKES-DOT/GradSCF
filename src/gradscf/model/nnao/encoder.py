@@ -16,31 +16,44 @@ class MACEBasisModel(nnx.Module):
     unused. Zero output kernels recover the reference basis in either mode.
     """
     def __init__(self,*,elements=None,channels=32,num_interactions=2,max_ell=2,
-                 correlation=2,cutoff=5.,zero_init=True,basis_family='szp442_direct',rngs):
+                 correlation=2,cutoff=5.,zero_init=True,basis_family='szp442_direct',
+                 hidden_irreps=None,radial_MLP=(32,32),num_bessel=8,
+                 num_polynomial_cutoff=5,avg_num_neighbors=4.,MLP_irreps=None,gate=None,rngs):
         try:
             from e3nn_jax import Irreps
             from mace_jax.modules.models import MACE
             from mace_jax.modules.blocks import RealAgnosticInteractionBlock,RealAgnosticResidualInteractionBlock
         except ImportError as exc:
             raise ImportError('MACEBasisModel requires the pinned mace_jax stack; install GradSCF[nnao] or the vendored src/gradscf/model/nnao/vendor/mace-jax project in a compatible environment.') from exc
-        if basis_family not in {'szp3','szp3_direct','szp442_direct','szp663_direct','qvszps'}:raise ValueError('Unknown basis_family.')
+        from .initialization import FAMILY_GRID, direct_family_dimensions
+        if basis_family not in {'szp3','szp3_direct','szp442_direct','szp663_direct','qvszps'} | FAMILY_GRID.keys():raise ValueError('Unknown basis_family.')
         self.basis_family=basis_family
-        self.output_shape={'szp3':(2,2),'szp3_direct':(2,3),'szp442_direct':(3,4),'szp663_direct':(3,6),'qvszps':(3,5)}[basis_family]
-        supported=tuple(atomic_number(s) for s in supported_elements())
+        self.output_shape=(direct_family_dimensions(basis_family)[:2] if basis_family in FAMILY_GRID else
+            {'szp3':(2,2),'szp3_direct':(2,3),'szp442_direct':(3,4),'szp663_direct':(3,6),'qvszps':(3,5)}[basis_family])
+        direct = basis_family in FAMILY_GRID or basis_family.endswith('_direct')
+        supported=tuple(atomic_number(s) for s in supported_elements(
+            basis_family=basis_family if direct else 'szp3'))
         self.elements=supported if elements is None else tuple(elements)
         if not self.elements or len(set(self.elements))!=len(self.elements) or any(z not in supported for z in self.elements):
             raise ValueError('Model elements must be unique supported main-group atomic numbers.')
         if channels<1 or num_interactions<1 or max_ell<0 or cutoff<=0:
             raise ValueError('Invalid MACE dimensions or cutoff.')
         self.channels=int(channels);self.cutoff=float(cutoff)
-        irreps=Irreps(' + '.join(f'{channels}x{l}{"e" if l%2==0 else "o"}' for l in range(max_ell+1)))
+        irreps=Irreps(hidden_irreps if hidden_irreps is not None else
+            ' + '.join(f'{channels}x{l}{"e" if l%2==0 else "o"}' for l in range(max_ell+1)))
+        if not irreps or str(irreps[0].ir)!='0e' or irreps[0].mul!=channels or irreps.count('0e')!=channels:
+            raise ValueError('hidden_irreps must start with exactly channels x 0e and contain no further scalar-even blocks.')
+        if not np.isfinite(avg_num_neighbors) or avg_num_neighbors<=0 or num_bessel<1 or num_polynomial_cutoff<1:
+            raise ValueError('Use positive radial dimensions and average neighbor count.')
+        if gate not in (None,'silu'):raise ValueError('Supported readout gates are None and silu.')
         self.feature_width=irreps.dim*(num_interactions-1)+channels
-        self.backbone=MACE(r_max=cutoff,num_bessel=8,num_polynomial_cutoff=5,max_ell=max_ell,
+        self.backbone=MACE(r_max=cutoff,num_bessel=num_bessel,num_polynomial_cutoff=num_polynomial_cutoff,max_ell=max_ell,
             interaction_cls=RealAgnosticResidualInteractionBlock,interaction_cls_first=RealAgnosticInteractionBlock,
             atomic_energies=np.zeros((1,len(self.elements))),atomic_numbers=self.elements,
             num_elements=len(self.elements),num_interactions=num_interactions,hidden_irreps=irreps,
-            MLP_irreps=Irreps(f'{channels}x0e'),avg_num_neighbors=4.,correlation=correlation,
-            radial_MLP=(32,32),rngs=rngs)
+            MLP_irreps=Irreps(MLP_irreps if MLP_irreps is not None else f'{channels}x0e'),
+            avg_num_neighbors=float(avg_num_neighbors),correlation=correlation,
+            radial_MLP=radial_MLP,gate=jax.nn.silu if gate=='silu' else None,rngs=rngs)
         self.hidden=nnx.Linear(channels+2,channels,param_dtype=jnp.float64,rngs=rngs)
         width=int(np.prod(self.output_shape))
         shape=(len(self.elements),channels,width)
@@ -56,16 +69,20 @@ class MACEBasisModel(nnx.Module):
                     l=block[0];c=np.asarray([r[1] for r in block[1:]])
                     bias[i,l,:len(c)]=c/np.linalg.norm(c)
                     mask[i,l,:len(c)]=1.
-        elif basis_family in {'szp3_direct','szp442_direct','szp663_direct'}:
-            from .initialization import _direct_templates,_direct_slot
+        elif basis_family in {'szp3_direct','szp442_direct','szp663_direct'} | FAMILY_GRID.keys():
+            from .initialization import _direct_templates,_direct_slot,radial_reference_coefficients
+            zeta=direct_family_dimensions(basis_family)[2]
             by_z={atomic_number(s):data['shells'] for s,data in _direct_templates(basis_family).items()}
             for i,z in enumerate(self.elements):
                 for shell in by_z[z]:
                     slot=_direct_slot(shell)
                     if slot>=0:
-                        c=np.asarray(shell['coefficients'])
-                        bias[i,slot,:len(c)]=c/np.linalg.norm(c)
-                        mask[i,slot,:len(c)]=1.
+                        count=zeta if shell['role'].startswith('valence_') else 1
+                        c=radial_reference_coefficients(shell,count)
+                        c=c/np.linalg.norm(c,axis=0)
+                        slot*=zeta
+                        bias[i,slot:slot+count,:len(c)]=c.T
+                        mask[i,slot:slot+count,:len(c)]=1.
         else:
             pblock=set(atomic_number(s) for s in 'B C N O F Ne Al Si P S Cl Ar Ga Ge As Se Br Kr In Sn Sb Te I Xe'.split())
             for i,z in enumerate(self.elements):

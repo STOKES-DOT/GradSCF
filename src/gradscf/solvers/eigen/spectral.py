@@ -35,6 +35,48 @@ def _safe_symmetric_eigh_jvp(primals, tangents):
     return (values, vectors), (jnp.diag(inner), vectors @ (response*inner))
 
 
+@partial(jax.custom_jvp, nondiff_argnums=(1,))
+def occupied_projector(matrix, nocc):
+    """Projector onto an isolated occupied space, including higher response.
+
+    Repeated eigenvalues inside either subspace are allowed; an occupied-virtual
+    gap is required. No orbital gauge or within-subspace energy denominator
+    enters the response. The Sylvester solve is opaque to AD; its operator and
+    the projector constraints carry the higher derivatives.
+    """
+    _, vectors = jnp.linalg.eigh(matrix)
+    occupied = vectors[:, :nocc]
+    return occupied @ occupied.T
+
+
+@occupied_projector.defjvp
+def _occupied_projector_jvp(nocc, primals, tangents):
+    (matrix,), (tangent,) = primals, tangents
+    projector = occupied_projector(matrix, nocc)
+    if nocc == 0 or nocc == matrix.shape[0]:
+        return projector, jnp.zeros_like(matrix)
+    matrix = .5 * (matrix + matrix.T)
+    tangent = .5 * (tangent + tangent.T)
+    complement = jnp.eye(matrix.shape[0], dtype=matrix.dtype) - projector
+
+    def cross(value):
+        return projector @ value @ complement + complement @ value @ projector
+
+    def operator(value):
+        return cross(matrix @ value - value @ matrix) + value - cross(value)
+
+    def solve(_, rhs):
+        values, vectors = jnp.linalg.eigh(matrix)
+        occupied = jnp.arange(matrix.shape[0]) < nocc
+        opposite = occupied[:, None] != occupied[None, :]
+        denominator = jnp.where(opposite, values[:, None] - values[None, :], 1.)
+        return vectors @ ((vectors.T @ rhs @ vectors) / denominator) @ vectors.T
+
+    response = jax.lax.custom_linear_solve(operator,
+        projector @ tangent - tangent @ projector, solve=solve, symmetric=True)
+    return projector, response
+
+
 def _spectral_orthogonalizer(overlap: Array, eps: float) -> Array:
     eigvals, eigvecs = _safe_symmetric_eigh(overlap)
     clipped = jnp.maximum(eigvals, eps)

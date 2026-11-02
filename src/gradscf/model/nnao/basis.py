@@ -11,8 +11,9 @@ from .initialization import _templates, _direct_templates, _direct_slot
 
 
 
-def supported_elements():
-    return tuple(_templates())
+def supported_elements(*, basis_family='szp3'):
+    """Element coverage of the requested template family, not an SCF guarantee."""
+    return tuple(_templates() if basis_family == 'szp3' else _direct_templates(basis_family))
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class DirectBasis:
     spin: int=0
     max_primitives: int=5
     num_channels: int=3
+    core_policy: object=None
 
     @property
     def nelectron(self):return sum(self.topology.nuclear_charges)-self.charge
@@ -150,7 +152,7 @@ class DirectBasis:
     def reference_outputs(self):
         out=jnp.zeros((len(self.symbols),self.num_channels,self.max_primitives),dtype=self.parameters.centers.dtype)
         for atom,l,c in zip(self.shell_atoms,self.slots,self.parameters.coefficients):
-            if l>=0:out=out.at[atom,l,:len(c)].set(c[:,0])
+            if l>=0:out=out.at[atom,l:l+c.shape[1],:len(c)].set(c.T)
         return out
 
     def bind(self,outputs,*,coords_bohr=None):
@@ -161,10 +163,10 @@ class DirectBasis:
             if l<0:
                 cs.append(fixed)
                 continue
-            c=raw[atom,l,:np_];norm=jnp.linalg.norm(c)
-            if not isinstance(norm,jax.core.Tracer) and (not np.isfinite(norm) or norm<1e-12):
+            c=raw[atom,l:l+fixed.shape[1],:np_].T;norm=jnp.linalg.norm(c,axis=0)
+            if not isinstance(norm,jax.core.Tracer) and (not np.isfinite(norm).all() or np.any(norm<1e-12)):
                 raise ValueError('A direct contraction vector is zero or nonfinite.')
-            cs.append((c/jnp.where(norm>=1e-12,norm,jnp.nan))[:,None])
+            cs.append(c/jnp.where(norm>=1e-12,norm,jnp.nan))
         coords=self.parameters.nuclear_coords if coords_bohr is None else jnp.asarray(coords_bohr,dtype=raw.dtype)
         if coords.shape!=(len(self.symbols),3):raise ValueError('Coordinates must have shape (natom,3).')
         return replace(self.parameters,coefficients=tuple(cs),nuclear_coords=coords,centers=coords[jnp.asarray(self.shell_atoms)])
@@ -188,39 +190,54 @@ def prepare_direct_basis(atom,*,unit='Angstrom',charge=0,spin=0,cart=False,
     szp663_direct expands p-block to 6s6p3d and H/He/s-block to 6s2p,
     retaining all old primitives and making the two-primitive p trainable.
     core_primitives defaults to 6 for szp442/663_direct, 3 for szp3_direct.
-    Six-primitive cores use bundled 6-31G for Li-Ca; heavier elements require
-    explicit core_primitives=3 until validated six-primitive data are supplied.
+    Grid families default to '6-31g': single-zeta inner shells using original
+    BSE s/p6 and Ga-Kr d3 contractions. The separate d1 is not a core shell.
+    'reference' is an alias for this policy.
+    Numeric 3/6 explicitly retain their legacy snapshot semantics.
     """
-    if core_primitives is None:core_primitives=3 if basis_family=='szp3_direct' else 6
-    if core_primitives not in (3,6):raise ValueError('core_primitives must be 3 or 6.')
+    from .initialization import FAMILY_GRID
+    if core_primitives is None:
+        core_primitives='6-31g' if basis_family in FAMILY_GRID else (3 if basis_family=='szp3_direct' else 6)
+    if core_primitives == 'reference':core_primitives='6-31g'
+    if core_primitives not in (3,6,'6-31g'):raise ValueError('core_primitives must be 3, 6, or 6-31g.')
     spec=parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
     if not np.array_equal(np.asarray(spec.charges),[atomic_number(s) for s in spec.symbols]):
         raise ValueError('Direct templates require all-electron physical nuclear charges.')
     data=_direct_templates(basis_family)
+    from .initialization import direct_family_dimensions, radial_reference_coefficients
+    channels,primitives,zeta=direct_family_dimensions(basis_family)
     ls=[];owners=[];roles=[];slots=[];aa=[];cc=[]
     for i,symbol in enumerate(spec.symbols):
         if symbol not in data:raise ValueError(f'NNAO has no direct template for {symbol}.')
+        core_choice = core_primitives
+        shells = data[symbol]['shells']
         core_by_l={};core_index={}
-        if core_primitives==6 and any(s['role']=='core' for s in data[symbol]['shells']):
+        if core_choice==6 and any(s['role']=='core' for s in data[symbol]['shells']):
             from gradscf.integrals.basis.data import load_basis_from_snapshot
             if atomic_number(symbol)>20:
                 raise ValueError(f'No validated six-primitive core for {symbol}; select core_primitives=3 explicitly.')
             for block in load_basis_from_snapshot('6-31g',symbol):
                 core_by_l.setdefault(block[0],[]).append(np.asarray(block[1:],dtype=float))
-        for shell in sorted(data[symbol]['shells'],key=lambda x:x['l']):
+        elif core_choice == '6-31g':
+            from .initialization import reference_core_blocks
+            cores = [dict(l=b[0], role='core', exponents=[r[0] for r in b[1:]],
+                          coefficients=[r[1] for r in b[1:]]) for b in reference_core_blocks(symbol)]
+            shells = cores+[s for s in shells if s['role'] != 'core']
+        for shell in sorted(shells,key=lambda x:x['l']):
             a=jnp.asarray(shell['exponents'],dtype=jnp.float64)
-            c=jnp.asarray(shell['coefficients'],dtype=jnp.float64)[:,None]
-            if shell['role']=='core' and core_primitives==6:
+            count=zeta if shell['role'].startswith('valence_') else 1
+            c=jnp.asarray(radial_reference_coefficients(shell,count),dtype=jnp.float64)
+            if shell['role']=='core' and core_choice==6:
                 l=shell['l'];index=core_index.get(l,0);core_index[l]=index+1
                 rows=core_by_l[l][index]
-                if rows.shape!=(6,2):raise ValueError(f'Invalid six-primitive core for {symbol}, l={l}, index={index}.')
+                if core_choice==6 and rows.shape!=(6,2):raise ValueError(f'Invalid six-primitive core for {symbol}, l={l}, index={index}.')
                 a=jnp.asarray(rows[:,0]);c=jnp.asarray(rows[:,1:])
             slot=_direct_slot(shell)
+            if slot>=0:slot*=zeta
             ls.append(shell['l']);owners.append(i);roles.append(shell['role']);slots.append(slot)
-            aa.append(a);cc.append(c/jnp.linalg.norm(c) if slot>=0 else c)
+            aa.append(a);cc.append(c/jnp.linalg.norm(c,axis=0) if slot>=0 else c)
     coords=jnp.asarray(spec.coords_bohr,dtype=jnp.float64)
-    topology=BasisTopology(tuple(ls),tuple(len(a) for a in aa),(1,)*len(ls),tuple(int(z) for z in spec.charges),bool(cart))
+    topology=BasisTopology(tuple(ls),tuple(len(a) for a in aa),tuple(c.shape[1] for c in cc),tuple(int(z) for z in spec.charges),bool(cart))
     parameters=BasisParameters(tuple(aa),tuple(cc),coords[jnp.asarray(owners)],coords)
-    channels,primitives={'szp3_direct':(2,3),'szp442_direct':(3,4),'szp663_direct':(3,6)}[basis_family]
     return DirectBasis(topology,parameters,tuple(spec.symbols),tuple(owners),tuple(roles),tuple(slots),
-                       (None,)*len(spec.symbols),spec.charge,spec.spin,primitives,channels)
+                       (None,)*len(spec.symbols),spec.charge,spec.spin,primitives,channels,core_primitives)

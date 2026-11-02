@@ -10,14 +10,9 @@ import traceback
 import numpy as np
 
 from . import trainer
+from .trainer import trainable_parameter_mask
 from .. import runtime as pilot
 from ..config import EXPONENT_KEYS, MODEL_CONFIG, PARENT_SOURCE, PARENT_CHECKPOINT_SHA
-
-def trainable_parameter_mask(parameters):
-    """Flatten NNX mutability metadata in the same order as ravel_pytree."""
-    import jax
-    return np.concatenate([np.full(leaf.size, variable.get_metadata().get('is_mutable', True), dtype=bool)
-        for _, variable in parameters.flat_state() for leaf in jax.tree.leaves(variable)])
 
 def filtered_scales(beta, keys):
     return {key: float(beta[EXPONENT_KEYS.index(key)]) for key in keys}
