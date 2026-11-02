@@ -95,3 +95,23 @@ def test_optimizer_stripping_preserves_scientific_arrays_and_source_identity(tmp
         assert saved['outputs'].tobytes()==outputs.tobytes()
     row=json.loads((root/'manifest.json').read_text())['files'][0]
     assert row['source_sha256']==original and row['sha256']!=original
+
+
+def test_curated_layout_keeps_source_results_sdf_and_reference_files(tmp_path):
+    source=tmp_path/'input';(source/'source').mkdir(parents=True)
+    for name in ('source/results.json','geometry.sdf','reference.res','SHA256SUMS'):
+        (source/name).write_text('scientific record\n')
+    output=tmp_path/'output'
+    module('collect_data').collect({'sources':[dict(path=str(source),destination='paper',preserve_layout=True)]},output)
+    for name in ('source/results.json','geometry.sdf','reference.res','SHA256SUMS'):
+        assert (output/'paper'/name).read_bytes()==(source/name).read_bytes()
+
+
+def test_collector_preserves_mixed_case_outputs_without_adam(tmp_path):
+    source=tmp_path/'input';source.mkdir()
+    np.savez(source/'checkpoint.npz',parameters=np.ones(2),outputs=np.arange(4),adam_state=np.zeros(7))
+    output=tmp_path/'output'
+    module('collect_data').collect({'sources':[dict(path=str(source),destination='paper')]},output)
+    with np.load(output/'paper/checkpoint.npz') as saved:
+        assert set(saved.files)=={'parameters','outputs'}
+        np.testing.assert_array_equal(saved['outputs'],np.arange(4))

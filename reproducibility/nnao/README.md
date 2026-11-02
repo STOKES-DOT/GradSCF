@@ -52,6 +52,9 @@ The full verification hashes all archived data, checks the original ordered
 500-system structures, and checks inference vectors against their original
 numeric parameter hashes. Checksums validate preservation, not convergence or
 scientific accuracy; those statuses belong to the original run records.
+Historical `SHA256SUMS` and `FILE_MANIFEST.json` files are kept as source
+provenance and can include intentionally omitted optimizer/cache files. The
+current released payload identities are `data-manifest.json` and `verify_data.py`.
 
 ## Model parameters
 

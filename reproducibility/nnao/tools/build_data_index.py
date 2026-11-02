@@ -14,7 +14,10 @@ def digest(path):
 
 def main():
     records={}
-    for name in ['local-data-manifest.json','paper-figures-manifest.json','remote-data-manifest.json']:
+    manifests=['local-data-manifest.json','paper-figures-manifest.json','remote-data-manifest.json',
+               'supplement-data-manifest.json','remote-supplement-manifest.json']
+    for name in manifests:
+        if not (ROOT/name).exists():continue
         source=json.loads((ROOT/name).read_text())
         for row in source['files']:
             if row['path'] in records and records[row['path']]['sha256']!=row['sha256']:
