@@ -1,0 +1,18 @@
+#!/bin/bash
+#SBATCH --partition=home
+#SBATCH --job-name=nnao-free-family9
+#SBATCH --gres=gpu:V100:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=128G
+#SBATCH --time=12:00:00
+#SBATCH --output=artifacts/free-family9-20261014/campaign-%j.log
+set -euo pipefail
+export PATH=/home/user_yuanjiao/private/homefile/conda-envs/jax_scf/bin:$PATH
+export PYTHONPATH=$PWD/src:$PWD/src/gradscf/model/nnao/vendor/mace-jax
+export JAX_ENABLE_X64=1 JAX_PLATFORMS=cpu XLA_PYTHON_CLIENT_PREALLOCATE=false
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 GRADSCF_NATIVE_THREADS=4
+TASK_CACHE=$(mktemp -d /tmp/nnao-family9-XXXXXX)
+export CUDA_CACHE_PATH=$TASK_CACHE/nvidia CUPY_CACHE_DIR=$TASK_CACHE/cupy
+mkdir -p "$CUDA_CACHE_PATH" "$CUPY_CACHE_DIR"
+python -m pytest -q artifacts/free-family9-20261014/test_family.py
+python -u artifacts/free-family9-20261014/workflow.py

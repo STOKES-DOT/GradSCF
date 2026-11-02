@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --partition=home
+#SBATCH --job-name=nnao_szp_s
+#SBATCH --gres=gpu:A800:1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=448G
+#SBATCH --time=72:00:00
+#SBATCH --chdir=/home/user_yuanjiao/private/homefile/GradSCF_family500_20261021
+#SBATCH --output=artifacts/nnao-family500-20261021/nnao_szp_s-%j.log
+#SBATCH --nodelist=n004
+set -euo pipefail
+export PATH=/home/user_yuanjiao/private/homefile/conda-envs/jax_scf/bin:$PATH
+export PYTHONPATH=$PWD/src:$PWD/src/gradscf/model/nnao/vendor/mace-jax
+export JAX_ENABLE_X64=1 JAX_PLATFORMS=cuda,cpu XLA_PYTHON_CLIENT_PREALLOCATE=false
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 GRADSCF_NATIVE_THREADS=4
+export JAX_COMPILATION_CACHE_DIR=$PWD/artifacts/nnao-family500-20261021/jit-cache/nnao_szp_s
+export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+date -Is
+python -u artifacts/nnao-family500-20261021/campaign.py train --family nnao_szp_s
+date -Is

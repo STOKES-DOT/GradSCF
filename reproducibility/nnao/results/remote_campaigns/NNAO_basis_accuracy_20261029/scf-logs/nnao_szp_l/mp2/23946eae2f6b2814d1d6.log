@@ -1,0 +1,409 @@
+#INFO: **** input file is /opt/data/bcmdata/ZONES/home/PROJECTS/homefile/PRIVATE/yuanjiao/NNAO_basis_accuracy_20261029/run_gpu.py ****
+"""GPU4PySCF-only electronic calculations on pre-exported, frozen bases."""
+from pathlib import Path
+import argparse
+import gc
+import hashlib
+import importlib.metadata as metadata
+import json
+import os
+import resource
+import threading
+import time
+import traceback
+
+import cupy as cp
+import numpy as np
+from pyscf import gto,lib
+from gpu4pyscf.scf import hf
+from gpu4pyscf.dft import rks
+from gpu4pyscf.mp import dfmp2
+from protocols import basis_counts,frozen_core_count,cp_estimate
+
+ROOT=Path(__file__).resolve().parent
+DRIVER_SHA=hashlib.sha256(Path(__file__).read_bytes()+(ROOT/'protocols.py').read_bytes()).hexdigest()
+SETTINGS=json.loads((ROOT/'inputs/settings.json').read_text())
+AUXILIARY=json.loads((ROOT/'inputs/auxiliary-bases.json').read_text())
+ROWS={r['structure_id']:r for r in json.loads((ROOT/'inputs/structures.json').read_text())}
+VERSIONS={name:metadata.version(name) for name in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x','cutensor-cu12','numpy','scipy']}
+lib.num_threads(int(os.environ.get('SLURM_CPUS_PER_TASK','16')))
+
+
+def write(path,row):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_suffix('.tmp');temp.write_text(json.dumps(row,indent=2,allow_nan=False)+'\n');temp.replace(path)
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def load_basis(key):
+    data=json.loads((ROOT/'frozen'/f'{key}.json').read_text())
+    return data,{r['structure_id']:r for r in data['records']}
+
+
+def molecule(row,shells,active=None,output=None):
+    active=set(range(len(shells))) if active is None else set(active)
+    labels=[f'{s}{i}' if i in active else f'ghost-{s}{i}' for i,s in enumerate(row['symbols'])]
+    mol=gto.M(atom=list(zip(labels,row['coords_angstrom'])),basis=dict(zip(labels,shells)),
+        unit='Angstrom',charge=0,spin=0,cart=False,verbose=4 if output else 0,
+        output=str(output) if output else None,max_memory=50000)
+    assert mol.nao_nr()==basis_counts(shells)['nao_spherical']
+    assert mol.nelectron==sum(z for i,z in enumerate(row['atomic_numbers']) if i in active)
+    return mol
+
+
+class MemorySample:
+    def __enter__(self):
+        self.stop=threading.Event();self.peak=0
+        self.total=cp.cuda.runtime.memGetInfo()[1]
+        self.baseline=self.total-cp.cuda.runtime.memGetInfo()[0]
+        def sample():
+            with cp.cuda.Device(0):
+                while not self.stop.is_set():
+                    self.peak=max(self.peak,self.total-cp.cuda.runtime.memGetInfo()[0])
+                    self.stop.wait(.1)
+        self.thread=threading.Thread(target=sample,daemon=True);self.thread.start()
+        return self
+    def __exit__(self,*args):
+        self.stop.set();self.thread.join()
+
+
+def solve(key,identifier,method,*,shells=None,row=None,active=None,variant='physical',level=3,auxiliary_identifier=None,
+          jkfit=None,mp2fit=None):
+    basis,records=load_basis(key)
+    row=ROWS[identifier] if row is None else row
+    shells=records[identifier]['atom_shells'] if shells is None else shells
+    jkfit=SETTINGS['jkfit'] if jkfit is None else jkfit
+    mp2fit=SETTINGS['mp2fit'] if mp2fit is None else mp2fit
+    identity=dict(driver_sha256=DRIVER_SHA,key=key,row=row,shells=shells,method=method,active=active,variant=variant,
+                  grid_level=level,jkfit=jkfit,mp2fit=mp2fit,auxiliary_identifier=auxiliary_identifier,
+                  auxiliary_sha256=digest(AUXILIARY),settings=SETTINGS,versions=VERSIONS)
+    signature=digest(identity);path=ROOT/'results'/key/method/(signature[:20]+'.json')
+    if path.exists():
+        saved=json.loads(path.read_text())
+        if saved.get('status')=='passed' and saved['signature']==signature:return saved
+    log=ROOT/'scf-logs'/key/method/(signature[:20]+'.log');log.parent.mkdir(parents=True,exist_ok=True)
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    start=time.perf_counter()
+    result=dict(status='running',signature=signature,driver_sha256=DRIVER_SHA,basis_key=key,structure_id=identifier,
+        method=method,variant=variant,active_nuclei=active,grid_level=level,
+        auxiliary_identifier=auxiliary_identifier,
+        jkfit=jkfit,mp2fit=mp2fit,
+        timing_note='First evaluation in a persistent worker; kernel cache may be warm; not controlled hot timing',
+        basis_file_sha256=hashlib.sha256((ROOT/'frozen'/f'{key}.json').read_bytes()).hexdigest(),
+        counts=basis_counts(shells),device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),
+        versions=VERSIONS,cuda_runtime_version=cp.cuda.runtime.runtimeGetVersion(),
+        job_id=os.environ.get('SLURM_JOB_ID'))
+    mf=pt=None
+    try:
+        mol=molecule(row,shells,active=active,output=log)
+        jk_aux=mp2_aux=None
+        if auxiliary_identifier is not None:
+            from pyscf.df.addons import make_auxmol
+            scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+            jk_aux=make_auxmol(scaffold,AUXILIARY['bases'][jkfit])
+            mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][mp2fit])
+        with MemorySample() as memory:
+            mf=(hf.RHF(mol) if method=='mp2' else rks.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][jkfit])
+            if jk_aux is not None:mf.with_df.auxmol=jk_aux
+            assert type(mf).__module__.startswith('gpu4pyscf')
+            mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad']
+            mf.max_cycle=SETTINGS['max_cycle'];mf.chkfile=None;mf.init_guess='minao'
+            mf.level_shift=0.;mf.damp=0.
+            if method!='mp2':
+                mf.grids.level=level;mf.nlcgrids.level=level
+                assert mf.do_nlc(),'VV10 must be enabled'
+            tick=time.perf_counter();mf.kernel();rescued=False
+            if not mf.converged:
+                rescued=True;mf.level_shift=.2;mf.damp=.2;mf.kernel(dm0=mf.make_rdm1())
+                seed=mf.make_rdm1();mf.level_shift=0.;mf.damp=0.;mf.kernel(dm0=seed)
+            cp.cuda.get_current_stream().synchronize()
+            assert mf.converged and mf.level_shift==0.,'Unshifted SCF failed'
+            result.update(scf_seconds=time.perf_counter()-tick,scf_energy_hartree=float(mf.e_tot),
+                scf_cycles=int(getattr(mf,'cycles',0)),rescue_used=rescued,solver_class=type(mf).__module__)
+            number=float(cp.einsum('ij,ji',mf.make_rdm1(),mf.get_ovlp()))
+            assert abs(number-mol.nelectron)<1e-7
+            energy=float(mf.e_tot)
+            if method=='mp2':
+                ncore=frozen_core_count(mol.atom_charges())
+                pt=dfmp2.DFMP2(mf,frozen=ncore,auxbasis=mp2_aux if mp2_aux is not None else AUXILIARY['bases'][mp2fit])
+                pt.fp_type='FP64';pt.with_t2=False
+                tick=time.perf_counter();pt.kernel();cp.cuda.get_current_stream().synchronize()
+                assert pt.t2 is None and type(pt).__module__.startswith('gpu4pyscf')
+                energy+=float(pt.e_corr)
+                result.update(correlation_energy_hartree=float(pt.e_corr),frozen_core=ncore,
+                    mp2_seconds=time.perf_counter()-tick,mp2_class=type(pt).__module__,fp_type='FP64',with_t2=False)
+            else:
+                result.update(nlc_enabled=bool(mf.do_nlc()),grid_points=len(mf.grids.weights),
+                              nlc_grid_points=len(mf.nlcgrids.weights))
+                assert result['nlc_grid_points']>0
+            assert np.isfinite(energy)
+            result.update(status='passed',energy_hartree=energy,electron_number=number,
+                nocc=mol.nelectron//2,nvir=mol.nao_nr()-mol.nelectron//2,
+                gpu_baseline_bytes=memory.baseline,gpu_peak_sampled_bytes=memory.peak,
+                cupy_pool_reserved_bytes=cp.get_default_memory_pool().total_bytes())
+        result.update(seconds=time.perf_counter()-start,process_max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception as error:
+        result.update(status='failed',error=str(error),traceback=traceback.format_exc(),seconds=time.perf_counter()-start)
+        write(ROOT/'failures'/key/method/(signature[:20]+f'-{time.time_ns()}.json'),result)
+    write(path,result)
+    print('CASE',key,identifier,method,variant,result['status'],result.get('energy_hartree'),result['seconds'],flush=True)
+    del mf,pt
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    if result['status']!='passed':raise RuntimeError(f'{key}/{identifier}/{method}: {result["error"]}')
+    return result
+
+
+def cpu_check(key,identifier,method,gpu,*,active=None,auxiliary_identifier=None):
+    from pyscf import scf,dft,mp,df
+    _,records=load_basis(key);row=ROWS[identifier]
+    mol=molecule(row,records[identifier]['atom_shells'],active=active)
+    mf=(scf.RHF(mol) if method=='mp2' else dft.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][SETTINGS['jkfit']])
+    mp2_aux=None
+    if auxiliary_identifier is not None:
+        from pyscf.df.addons import make_auxmol
+        scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+        mf.with_df.auxmol=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['jkfit']])
+        mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['mp2fit']])
+    mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad'];mf.max_cycle=200;mf.chkfile=None
+    if method!='mp2':mf.grids.level=3;mf.nlcgrids.level=3;assert mf.do_nlc()
+    mf.kernel();assert mf.converged
+    energy=float(mf.e_tot)
+    if method=='mp2':
+        fitting=df.DF(mol,auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']])
+        pt=mp.MP2(mf,frozen=frozen_core_count(mol.atom_charges())).density_fit(
+            auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']],with_df=fitting)
+        assert pt.with_df._cderi is None
+        if mp2_aux is not None:pt.with_df.auxmol=mp2_aux
+        pt.kernel(with_t2=False);energy+=float(pt.e_corr)
+    error=abs(energy-gpu['energy_hartree']);tolerance=1e-7 if method=='mp2' else 1e-6
+    assert error<tolerance,(identifier,method,error,tolerance)
+    return dict(key=key,structure_id=identifier,method=method,active_nuclei=active,
+                cpu_energy_hartree=energy,gpu_energy_hartree=gpu['energy_hartree'],error_hartree=error,tolerance=tolerance)
+
+
+def cp_diagnostics(key,identifier,method):
+    basis,records=load_basis(key);row=ROWS[identifier];shells=records[identifier]['atom_shells']
+    total=solve(key,identifier,method)['energy_hartree'];isolated=[];conditioned=[];ghosts=[]
+    for letter,indices in zip('AB',row['fragment_indices']):
+        isolated.append(solve(key,identifier+'/'+letter,method)['energy_hartree'])
+        ghosts.append(solve(key,identifier,method,active=indices,variant='ghost-'+letter,
+                            auxiliary_identifier=identifier)['energy_hartree'])
+        if basis['kind']=='nnao':
+            fragment=ROWS[identifier+'/'+letter]
+            conditioned.append(solve(key,identifier+'/'+letter,method,row=fragment,
+                shells=[shells[i] for i in indices],variant='conditioned-'+letter,
+                auxiliary_identifier=identifier)['energy_hartree'])
+        else:conditioned.append(isolated[-1])
+    result=cp_estimate(total,isolated,conditioned,ghosts)
+    result.update(basis_key=key,structure_id=identifier,method=method,
+        cp_kind='frozen-parameter CP estimate' if basis['kind']=='nnao' else 'standard CP')
+    write(ROOT/'cp'/key/method/(identifier.replace('/','-')+'.json'),result)
+    return result
+
+
+def preflight():
+    import importlib.metadata as metadata
+    gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+    for name,sha in gate['files'].items():assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha
+    cp.zeros(1,dtype=cp.float64);cp.cuda.get_current_stream().synchronize()
+    cases=[];checks=[]
+    families=[f'nnao_{z}p_{s}' for z in ['sz','dz','tz'] for s in ['s','m','l']]
+    for key in families:
+        for method in SETTINGS['methods']:cases.append(solve(key,'S22/02/A',method))
+    for key in ['t01','t14','reference']:
+        for identifier in ['ISO34/E14','S22/02','S22/10']:
+            for method in SETTINGS['methods']:cases.append(solve(key,identifier,method))
+    for key in ['t01','t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            result=solve(key,'S22/02/A',method);cases.append(result);checks.append(cpu_check(key,'S22/02/A',method,result))
+    for key in ['t01','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            row=ROWS['S22/02'];active=row['fragment_indices'][0]
+            result=solve(key,'S22/02',method,active=active,variant='ghost-A',auxiliary_identifier='S22/02');cases.append(result)
+            checks.append(cpu_check(key,'S22/02',method,result,active=active,auxiliary_identifier='S22/02'))
+    grid_checks=[];fit_checks=[]
+    for key in ['t14','nnao_szp_l','reference']:
+        energies={}
+        for level in [3,5]:
+            energies[level]=[solve(key,sid,'wb97m-v',level=level)['energy_hartree']
+                             for sid in ['S22/02','S22/02/A','S22/02/B']]
+        interaction=lambda e:e[0]-e[1]-e[2]
+        grid_checks.append(dict(basis_key=key,water_interaction_level3_hartree=interaction(energies[3]),
+            water_interaction_level5_hartree=interaction(energies[5]),
+            difference_kcal_mol=(interaction(energies[5])-interaction(energies[3]))*627.5094740631))
+    for key in ['t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            base=solve(key,'S22/02/A',method)
+            control=solve(key,'S22/02/A',method,jkfit='cc-pvqz-jkfit',variant='jkfit-control')
+            fit_checks.append(dict(basis_key=key,method=method,kind='jkfit',
+                difference_hartree=control['energy_hartree']-base['energy_hartree']))
+        base=solve(key,'S22/02/A','mp2')
+        control=solve(key,'S22/02/A','mp2',mp2fit='def2-qzvpp-ri',variant='mp2fit-control')
+        fit_checks.append(dict(basis_key=key,method='mp2',kind='correlation-fit',
+            difference_hartree=control['energy_hartree']-base['energy_hartree']))
+    assert max(abs(r['difference_hartree']) for r in fit_checks)<1e-5,fit_checks
+    all_cases=[json.loads(p.read_text()) for p in (ROOT/'results').glob('*/*/*.json')]
+    all_cases=[r for r in all_cases if r.get('driver_sha256')==DRIVER_SHA and r['status']=='passed']
+    write(ROOT/'preflight.json',dict(status='passed',driver_sha256=DRIVER_SHA,case_references=len(cases),cpu_gpu_checks=checks,
+        unique_gpu_cases=len(all_cases),auxiliary_fit_gate_hartree=1e-5,
+        grid_sensitivity=grid_checks,auxiliary_fit_sensitivity=fit_checks,
+        device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),max_nao=max(r['counts']['nao_spherical'] for r in cases),
+        max_gpu_peak_sampled_bytes=max(r['gpu_peak_sampled_bytes'] for r in all_cases),
+        max_process_rss_kib=max(r['process_max_rss_kib'] for r in all_cases),
+        versions={n:metadata.version(n) for n in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x']},
+        all_nine_models_exercised=True,vv10_and_ghosts_exercised=True,with_t2=False,fp_type='FP64'))
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--preflight',action='store_true');p.add_argument('--lane',choices=['small','tz','qz'])
+    p.add_argument('--direct',action='store_true',help='Run frozen benchmark directly, as explicitly requested; no CPU comparisons')
+    args=p.parse_args()
+    if args.preflight:preflight();return
+    assert args.lane is not None,'Specify --lane'
+    if args.direct:
+        gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+        for name,sha in gate['files'].items():
+            assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha,name
+    else:
+        gate=json.loads((ROOT/'preflight.json').read_text())
+        assert gate['status']=='passed' and gate['driver_sha256']==DRIVER_SHA
+    groups=dict(small=['t%02d'%i for i in [0,1,2,3,4,5,8,9,14,15]]+
+                [f'nnao_{z}p_{s}' for z in ['sz','dz'] for s in ['s','m','l']],
+        tz=['t%02d'%i for i in [6,7,10,11,16]]+[f'nnao_tzp_{s}' for s in ['s','m','l']],
+        qz=['t12','t13','t17','reference'])
+    failures=[];started=time.perf_counter()
+    for key in groups[args.lane]:
+        for identifier in ROWS:
+            for method in SETTINGS['methods']:
+                try:solve(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+        for identifier,row in ROWS.items():
+            if row.get('task')!='dimer':continue
+            for method in SETTINGS['methods']:
+                try:cp_diagnostics(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+    write(ROOT/f'lane-{args.lane}.json',dict(status='passed' if not failures else 'failed',
+        failures=failures,seconds=time.perf_counter()-started,bases=groups[args.lane],
+        execution_mode='direct' if args.direct else 'validated',cpu_comparisons_run=False))
+    if failures:raise RuntimeError(f'{len(failures)} explicit failed cases; no score will omit them')
+
+
+if __name__=='__main__':main()
+#INFO: ******************** input file end ********************
+
+
+System: uname_result(system='Linux', node='n002', release='4.18.0-553.16.1.el8_10.x86_64', version='#1 SMP Thu Aug 8 17:47:08 UTC 2024', machine='x86_64')  Threads 16
+Python 3.11.18 (main, Oct 26 2026, 18:19:35) [GCC 14.3.0]
+numpy 2.2.6  scipy 1.15.3  h5py 3.12.1
+Date: Thu Oct 29 16:06:58 2026
+PySCF version 2.8.0
+PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/pyscf/__init__.py
+CUDA Environment
+    CuPy 13.4.1
+    CUDA Path /opt/data/hpc/common/softwares/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8
+    CUDA Build Version 12080
+    CUDA Driver Version 12040
+    CUDA Runtime Version 12080
+CUDA toolkit
+    cuSolver (11, 7, 3)
+    cuBLAS 120804
+    cuTENSOR 20200
+Device info
+    Device name b'Tesla V100-SXM2-32GB'
+    Device global memory 31.73 GB
+    CuPy memory fraction 0.9
+    Num. Devices 1
+GPU4PySCF 1.7.0
+GPU4PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/gpu4pyscf
+
+[ENV] _GPU4PYSCF_BENCH_LD_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD 
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_LD_ACTIVE 1
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD 
+[ENV] _GPU4PYSCF_BENCH_LD_OLD 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD_SET 
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 17
+[INPUT] num. electrons = 52
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry False subgroup None
+[INPUT] Mole.unit = Angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 C0     1.393218199835   0.036291322370  -1.093767841369 AA    2.632800829448   0.068580659977  -2.066921664045 Bohr   0.0
+[INPUT]  2 C1     0.728036595175  -1.188401826684  -1.093789230740 AA    1.375789773542  -2.245753978365  -2.066962084097 Bohr   0.0
+[INPUT]  3 C2    -0.665179892808  -1.224708015257  -1.093767841369 AA   -1.257007820975  -2.314362731395  -2.066921664045 Bohr   0.0
+[INPUT]  4 C3    -1.393204469400  -0.036297272965  -1.093789230740 AA   -2.632774882685  -0.068591904972  -2.066962084097 Bohr   0.0
+[INPUT]  5 C4    -0.728038307027   1.188416692887  -1.093767841369 AA   -1.375793008473   2.245782071418  -2.066921664045 Bohr   0.0
+[INPUT]  6 C5     0.665167874224   1.224699099648  -1.093789230740 AA    1.256985109143   2.314345883337  -2.066962084097 Bohr   0.0
+[INPUT]  7 C6     0.000000000000   0.000000000000   2.622133045767 AA    0.000000000000   0.000000000000   4.955113318672 Bohr   0.0
+[INPUT]  8 H7     1.292959129243  -2.110541473463  -1.092227610263 AA    2.443338644526  -3.988345359380  -2.064011049085 Bohr   0.0
+[INPUT]  9 H8    -1.181323182028  -2.175008728813  -1.092211542714 AA   -2.232377278633  -4.110170815996  -2.063980685819 Bohr   0.0
+[INPUT] 10 H9    -2.474262096381  -0.064464715248  -1.092227610263 AA   -4.675677722552  -0.121820656518  -2.064011049085 Bohr   0.0
+[INPUT] 11 H10   -1.292951221591   2.110560250123  -1.092211542714 AA   -2.443323701229   3.988380842125  -2.063980685819 Bohr   0.0
+[INPUT] 12 H11    1.181302967138   2.175006188711  -1.092227610263 AA    2.232339078026   4.110166015898  -2.064011049085 Bohr   0.0
+[INPUT] 13 H12    2.474274403619   0.064448478691  -1.092211542714 AA    4.675700979862   0.121789973870  -2.063980685819 Bohr   0.0
+[INPUT] 14 H13    0.586877735007   0.838174447687   2.985890906591 AA    1.109038187768   1.583920150737   5.642516051287 Bohr   0.0
+[INPUT] 15 H14   -1.019319232004   0.089163803588   2.985890906591 AA   -1.926234181989   0.168495169005   5.642516051287 Bohr   0.0
+[INPUT] 16 H15    0.000000000000   0.000000000000   1.536182909718 AA    0.000000000000   0.000000000000   2.902964976605 Bohr   0.0
+[INPUT] 17 H16    0.432441496997  -0.927338251275   2.985890906591 AA    0.817195994221  -1.752415319743   5.642516051287 Bohr   0.0
+
+nuclear repulsion = 272.461742834294
+number of shells = 48
+number of NR pGTOs = 435
+number of NR cGTOs = 110
+basis = {'C0': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.02617487375821587], [0.63120788606279, 0.5810559595277773], [0.19322350760464452, 0.7403553978550353], [0.10614314031943467, -0.2914217664876313], [4.422629725941036, -0.13446181891902848], [0.05830743048057779, 0.102742912252489]], [1, [3.4784152348669046, 0.14971623444280183], [0.8593146306086815, 0.7192293758272799], [0.2516600408050395, 0.6514619292564581], [0.13518145656641747, 0.14259823940155952], [6.475578397939399, 0.056531467864699654], [0.0726139364078665, 0.1111820312886078]], [2, [0.6885663811400462, 0.07765915397260476], [0.30775056409957524, 0.976409709522103], [1.5406102101664803, 0.20147738075332788]]], 'C1': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.026199676246781885], [0.63120788606279, 0.5811875147656972], [0.19322350760464452, 0.7401308929904433], [0.10614314031943467, -0.29173624072356924], [4.422629725941036, -0.13446612784927814], [0.05830743048057779, 0.10271191360259285]], [1, [3.4784152348669046, 0.14972105559365398], [0.8593146306086815, 0.7192997583712137], [0.2516600408050395, 0.6514401285283511], [0.13518145656641747, 0.14234426791666405], [6.475578397939399, 0.0565375172396461], [0.0726139364078665, 0.11117032246803189]], [2, [0.6885663811400462, 0.07784456881844323], [0.30775056409957524, 0.976401814569964], [1.5406102101664803, 0.20144408556706836]]], 'C2': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.02617487374808265], [0.63120788606279, 0.5810559595037094], [0.19322350760464452, 0.7403553978775977], [0.10614314031943467, -0.29142176647527823], [4.422629725941036, -0.13446181892267184], [0.05830743048057779, 0.10274291225887414]], [1, [3.4784152348669046, 0.14971623444119897], [0.8593146306086815, 0.7192293758200341], [0.2516600408050395, 0.6514619292556787], [0.13518145656641747, 0.1425982394323062], [6.475578397939399, 0.05653146786526402], [0.0726139364078665, 0.11118203130248336]], [2, [0.6885663811400462, 0.07765915387011112], [0.30775056409957524, 0.9764097095305605], [1.5406102101664803, 0.20147738075184757]]], 'C3': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.02619967625833774], [0.63120788606279, 0.5811875147916941], [0.19322350760464452, 0.7401308929656448], [0.10614314031943467, -0.2917362407382671], [4.422629725941036, -0.1344661278448023], [0.05830743048057779, 0.10271191359535013]], [1, [3.4784152348669046, 0.14972105559554902], [0.8593146306086815, 0.7192997583792624], [0.2516600408050395, 0.6514401285299571], [0.13518145656641747, 0.14234426788008614], [6.475578397939399, 0.056537517238960534], [0.0726139364078665, 0.11117032245117778]], [2, [0.6885663811400462, 0.0778445689387033], [0.30775056409957524, 0.9764018145597912], [1.5406102101664803, 0.201444085569903]]], 'C4': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.026174873746646822], [0.63120788606279, 0.5810559595017394], [0.19322350760464452, 0.7403553978798522], [0.10614314031943467, -0.2914217664729166], [4.422629725941036, -0.13446181892350667], [0.05830743048057779, 0.10274291225974067]], [1, [3.4784152348669046, 0.14971623444090612], [0.8593146306086815, 0.7192293758192223], [0.2516600408050395, 0.6514619292548401], [0.13518145656641747, 0.14259823943815897], [6.475578397939399, 0.05653146786538551], [0.0726139364078665, 0.11118203130547329]], [2, [0.6885663811400462, 0.0776591538523344], [0.30775056409957524, 0.9764097095322524], [1.5406102101664803, 0.20147738075050106]]], 'C5': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.02619967624821986], [0.63120788606279, 0.5811875147676671], [0.19322350760464452, 0.7401308929881875], [0.10614314031943467, -0.2917362407259301], [4.422629725941036, -0.13446612784844103], [0.05830743048057779, 0.10271191360172545]], [1, [3.4784152348669046, 0.14972105559394586], [0.8593146306086815, 0.7192997583720228], [0.2516600408050395, 0.6514401285291909], [0.13518145656641747, 0.14234426791080862], [6.475578397939399, 0.056537517239524174], [0.0726139364078665, 0.11117032246504327]], [2, [0.6885663811400462, 0.07784456883626213], [0.30775056409957524, 0.976401814568265], [1.5406102101664803, 0.20144408556841722]]], 'C6': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.019664535313187417], [0.63120788606279, 0.4340783040225933], [0.19322350760464452, 0.7407070536811343], [0.10614314031943467, -0.4882893270259663], [4.422629725941036, -0.09936875329900392], [0.05830743048057779, 0.11933891500734108]], [1, [3.4784152348669046, 0.13472074046223104], [0.8593146306086815, 0.6361778098221174], [0.2516600408050395, 0.733379619842036], [0.13518145656641747, -0.07749745207226602], [6.475578397939399, 0.049676176147075514], [0.0726139364078665, 0.17552456245581236]], [2, [0.6885663811400462, 0.5269726407954121], [0.30775056409957524, 0.7960649758553683], [1.5406102101664803, 0.29762457907488327]]], 'H7': [[0, [5.28685138889269, 0.026908222380136973], [0.9781467354447106, 0.5874469741707689], [0.25500177608666275, 0.7718986235744111], [9.822611754937629, 0.05934464676208718], [0.13725030854407796, 0.2112457550977663], [2.2740528636834103, 0.10103444404625704]], [1, [0.6542095926963143, 0.9700822135232098], [1.4637397434769692, 0.24277664427598847]]], 'H8': [[0, [5.28685138889269, 0.02689901880170509], [0.9781467354447106, 0.5874909073952603], [0.25500177608666275, 0.7719314491434704], [9.822611754937629, 0.05935730346544575], [0.13725030854407796, 0.21098280031221162], [2.2740528636834103, 0.10107266117199669]], [1, [0.6542095926963143, 0.970004405588269], [1.4637397434769692, 0.2430873364438161]]], 'H9': [[0, [5.28685138889269, 0.02690822238098856], [0.9781467354447106, 0.5874469741661381], [0.25500177608666275, 0.7718986235753496], [9.822611754937629, 0.059344646761112715], [0.13725030854407796, 0.21124575510833468], [2.2740528636834103, 0.10103444404426215]], [1, [0.6542095926963143, 0.9700822135211935], [1.4637397434769692, 0.24277664428404494]]], 'H10': [[0, [5.28685138889269, 0.02689901880165117], [0.9781467354447106, 0.5874909073954773], [0.25500177608666275, 0.7719314491437064], [9.822611754937629, 0.05935730346550325], [0.13725030854407796, 0.21098280031066582], [2.2740528636834103, 0.10107266117214182]], [1, [0.6542095926963143, 0.9700044055881114], [1.4637397434769692, 0.2430873364444449]]], 'H11': [[0, [5.28685138889269, 0.026908222380190746], [0.9781467354447106, 0.5874469741705488], [0.25500177608666275, 0.7718986235741719], [9.822611754937629, 0.0593446467620297], [0.13725030854407796, 0.21124575509933033], [2.2740528636834103, 0.10103444404611302]], [1, [0.6542095926963143, 0.9700822135233631], [1.4637397434769692, 0.2427766442753752]]], 'H12': [[0, [5.28685138889269, 0.026899018802504296], [0.9781467354447106, 0.5874909073908435], [0.25500177608666275, 0.7719314491446437], [9.822611754937629, 0.05935730346452728], [0.13725030854407796, 0.21098280032126315], [2.2740528636834103, 0.10107266117014116]], [1, [0.6542095926963143, 0.9700044055860974], [1.4637397434769692, 0.24308733645248104]]], 'H13': [[0, [5.28685138889269, 0.016868059729243236], [0.9781467354447106, 0.5382930929529195], [0.25500177608666275, 0.7511769086196497], [9.822611754937629, 0.06066324320587394], [0.13725030854407796, 0.3568291373246741], [2.2740528636834103, 0.12117014597932366]], [1, [0.6542095926963143, 0.7615375145187179], [1.4637397434769692, 0.6481208328549958]]], 'H14': [[0, [5.28685138889269, 0.01686805972945521], [0.9781467354447106, 0.538293092951906], [0.25500177608666275, 0.751176908619628], [9.822611754937629, 0.06066324320547214], [0.13725030854407796, 0.35682913732671057], [2.2740528636834103, 0.12117014597813619]], [1, [0.6542095926963143, 0.7615375145276932], [1.4637397434769692, 0.6481208328444501]]], 'H15': [[0, [5.28685138889269, 0.016316084492000706], [0.9781467354447106, 0.555313381071494], [0.25500177608666275, 0.7556578351074521], [9.822611754937629, 0.06317780348830433], [0.13725030854407796, 0.3160394070293293], [2.2740528636834103, 0.12833444113509557]], [1, [0.6542095926963143, 0.7444377808177257], [1.4637397434769692, 0.6676918379695679]]], 'H16': [[0, [5.28685138889269, 0.01686805972927667], [0.9781467354447106, 0.5382930929501591], [0.25500177608666275, 0.7511769086190332], [9.822611754937629, 0.06066324320533364], [0.13725030854407796, 0.3568291373307636], [2.2740528636834103, 0.12117014597774008]], [1, [0.6542095926963143, 0.7615375145258785], [1.4637397434769692, 0.6481208328465824]]]}
+ecp = {}
+CPU time:      3089.77
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRHF'> ********
+method = DFRHF
+initial guess = minao
+damping factor = 0.0
+level_shift factor = 0.0
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+init E= -269.644411153479
+  HOMO = -0.251685184607156  LUMO = 0.0563168009855261  gap = 8.38116 eV
+cycle= 1 E= -270.709787478744  delta_E= -1.07  |g|= 0.485  |ddm|= 5.62
+  HOMO = -0.334396350291591  LUMO = 0.165384840304911  gap = 13.59974 eV
+cycle= 2 E= -270.792516531464  delta_E= -0.0827  |g|= 0.118  |ddm|= 0.618
+  HOMO = -0.328966823317134  LUMO = 0.173647528393588  gap = 13.67683 eV
+cycle= 3 E= -270.79789806543  delta_E= -0.00538  |g|= 0.0113  |ddm|= 0.189
+  HOMO = -0.328881935557751  LUMO = 0.173534432866267  gap = 13.67145 eV
+cycle= 4 E= -270.797933227731  delta_E= -3.52e-05  |g|= 0.00173  |ddm|= 0.0117
+  HOMO = -0.329583510331706  LUMO = 0.172850068696773  gap = 13.67191 eV
+cycle= 5 E= -270.79793419178  delta_E= -9.64e-07  |g|= 0.000368  |ddm|= 0.00132
+  HOMO = -0.32951426974533  LUMO = 0.172915849398468  gap = 13.67182 eV
+cycle= 6 E= -270.797934237182  delta_E= -4.54e-08  |g|= 8.18e-05  |ddm|= 0.000303
+  HOMO = -0.329526836550194  LUMO = 0.172908105426311  gap = 13.67195 eV
+cycle= 7 E= -270.797934239931  delta_E= -2.75e-09  |g|= 1.38e-05  |ddm|= 7.37e-05
+  HOMO = -0.329524504123237  LUMO = 0.172910699868474  gap = 13.67196 eV
+cycle= 8 E= -270.797934240013  delta_E= -8.19e-11  |g|= 3.23e-06  |ddm|= 1.46e-05
+  HOMO = -0.329525185630604  LUMO = 0.172910139264356  gap = 13.67196 eV
+cycle= 9 E= -270.797934240018  delta_E= -5.23e-12  |g|= 1.11e-06  |ddm|= 3.77e-06
+  HOMO = -0.329525195913417  LUMO = 0.172910137076805  gap = 13.67196 eV
+cycle= 10 E= -270.797934240019  delta_E= -1.36e-12  |g|= 5.24e-07  |ddm|= 2.95e-06
+  HOMO = -0.329525187308096  LUMO = 0.172910144444745  gap = 13.67196 eV
+cycle= 11 E= -270.79793424002  delta_E= -6.82e-13  |g|= 9.59e-08  |ddm|= 2.36e-06
+  HOMO = -0.329525186854454  LUMO = 0.172910143912912  gap = 13.67196 eV
+Extra cycle  E= -270.79793424002  delta_E=    0  |g|= 5.46e-08  |ddm|= 1.64e-07
+converged SCF energy = -270.79793424002
+e_corr_os: -0.5871608081194982
+e_corr_ss: -0.18826483785622122
+E(DFMP2) = -271.573359885996  E_corr = -0.775425645975719
+E(SCS-DFMP2) = -271.565282155716  E_corr = -0.767347915695472
+E_corr(same-spin) = -0.188264837856221
+E_corr(oppo-spin) = -0.587160808119498

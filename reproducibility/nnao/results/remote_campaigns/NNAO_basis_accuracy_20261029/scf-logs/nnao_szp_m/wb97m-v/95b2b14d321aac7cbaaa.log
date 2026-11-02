@@ -1,0 +1,1683 @@
+#INFO: **** input file is /opt/data/bcmdata/ZONES/home/PROJECTS/homefile/PRIVATE/yuanjiao/NNAO_basis_accuracy_20261029/run_gpu.py ****
+"""GPU4PySCF-only electronic calculations on pre-exported, frozen bases."""
+from pathlib import Path
+import argparse
+import gc
+import hashlib
+import importlib.metadata as metadata
+import json
+import os
+import resource
+import threading
+import time
+import traceback
+
+import cupy as cp
+import numpy as np
+from pyscf import gto,lib
+from gpu4pyscf.scf import hf
+from gpu4pyscf.dft import rks
+from gpu4pyscf.mp import dfmp2
+from protocols import basis_counts,frozen_core_count,cp_estimate
+
+ROOT=Path(__file__).resolve().parent
+DRIVER_SHA=hashlib.sha256(Path(__file__).read_bytes()+(ROOT/'protocols.py').read_bytes()).hexdigest()
+SETTINGS=json.loads((ROOT/'inputs/settings.json').read_text())
+AUXILIARY=json.loads((ROOT/'inputs/auxiliary-bases.json').read_text())
+ROWS={r['structure_id']:r for r in json.loads((ROOT/'inputs/structures.json').read_text())}
+VERSIONS={name:metadata.version(name) for name in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x','cutensor-cu12','numpy','scipy']}
+lib.num_threads(int(os.environ.get('SLURM_CPUS_PER_TASK','16')))
+
+
+def write(path,row):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_suffix('.tmp');temp.write_text(json.dumps(row,indent=2,allow_nan=False)+'\n');temp.replace(path)
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def load_basis(key):
+    data=json.loads((ROOT/'frozen'/f'{key}.json').read_text())
+    return data,{r['structure_id']:r for r in data['records']}
+
+
+def molecule(row,shells,active=None,output=None):
+    active=set(range(len(shells))) if active is None else set(active)
+    labels=[f'{s}{i}' if i in active else f'ghost-{s}{i}' for i,s in enumerate(row['symbols'])]
+    mol=gto.M(atom=list(zip(labels,row['coords_angstrom'])),basis=dict(zip(labels,shells)),
+        unit='Angstrom',charge=0,spin=0,cart=False,verbose=4 if output else 0,
+        output=str(output) if output else None,max_memory=50000)
+    assert mol.nao_nr()==basis_counts(shells)['nao_spherical']
+    assert mol.nelectron==sum(z for i,z in enumerate(row['atomic_numbers']) if i in active)
+    return mol
+
+
+class MemorySample:
+    def __enter__(self):
+        self.stop=threading.Event();self.peak=0
+        self.total=cp.cuda.runtime.memGetInfo()[1]
+        self.baseline=self.total-cp.cuda.runtime.memGetInfo()[0]
+        def sample():
+            with cp.cuda.Device(0):
+                while not self.stop.is_set():
+                    self.peak=max(self.peak,self.total-cp.cuda.runtime.memGetInfo()[0])
+                    self.stop.wait(.1)
+        self.thread=threading.Thread(target=sample,daemon=True);self.thread.start()
+        return self
+    def __exit__(self,*args):
+        self.stop.set();self.thread.join()
+
+
+def solve(key,identifier,method,*,shells=None,row=None,active=None,variant='physical',level=3,auxiliary_identifier=None,
+          jkfit=None,mp2fit=None):
+    basis,records=load_basis(key)
+    row=ROWS[identifier] if row is None else row
+    shells=records[identifier]['atom_shells'] if shells is None else shells
+    jkfit=SETTINGS['jkfit'] if jkfit is None else jkfit
+    mp2fit=SETTINGS['mp2fit'] if mp2fit is None else mp2fit
+    identity=dict(driver_sha256=DRIVER_SHA,key=key,row=row,shells=shells,method=method,active=active,variant=variant,
+                  grid_level=level,jkfit=jkfit,mp2fit=mp2fit,auxiliary_identifier=auxiliary_identifier,
+                  auxiliary_sha256=digest(AUXILIARY),settings=SETTINGS,versions=VERSIONS)
+    signature=digest(identity);path=ROOT/'results'/key/method/(signature[:20]+'.json')
+    if path.exists():
+        saved=json.loads(path.read_text())
+        if saved.get('status')=='passed' and saved['signature']==signature:return saved
+    log=ROOT/'scf-logs'/key/method/(signature[:20]+'.log');log.parent.mkdir(parents=True,exist_ok=True)
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    start=time.perf_counter()
+    result=dict(status='running',signature=signature,driver_sha256=DRIVER_SHA,basis_key=key,structure_id=identifier,
+        method=method,variant=variant,active_nuclei=active,grid_level=level,
+        auxiliary_identifier=auxiliary_identifier,
+        jkfit=jkfit,mp2fit=mp2fit,
+        timing_note='First evaluation in a persistent worker; kernel cache may be warm; not controlled hot timing',
+        basis_file_sha256=hashlib.sha256((ROOT/'frozen'/f'{key}.json').read_bytes()).hexdigest(),
+        counts=basis_counts(shells),device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),
+        versions=VERSIONS,cuda_runtime_version=cp.cuda.runtime.runtimeGetVersion(),
+        job_id=os.environ.get('SLURM_JOB_ID'))
+    mf=pt=None
+    try:
+        mol=molecule(row,shells,active=active,output=log)
+        jk_aux=mp2_aux=None
+        if auxiliary_identifier is not None:
+            from pyscf.df.addons import make_auxmol
+            scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+            jk_aux=make_auxmol(scaffold,AUXILIARY['bases'][jkfit])
+            mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][mp2fit])
+        with MemorySample() as memory:
+            mf=(hf.RHF(mol) if method=='mp2' else rks.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][jkfit])
+            if jk_aux is not None:mf.with_df.auxmol=jk_aux
+            assert type(mf).__module__.startswith('gpu4pyscf')
+            mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad']
+            mf.max_cycle=SETTINGS['max_cycle'];mf.chkfile=None;mf.init_guess='minao'
+            mf.level_shift=0.;mf.damp=0.
+            if method!='mp2':
+                mf.grids.level=level;mf.nlcgrids.level=level
+                assert mf.do_nlc(),'VV10 must be enabled'
+            tick=time.perf_counter();mf.kernel();rescued=False
+            if not mf.converged:
+                rescued=True;mf.level_shift=.2;mf.damp=.2;mf.kernel(dm0=mf.make_rdm1())
+                seed=mf.make_rdm1();mf.level_shift=0.;mf.damp=0.;mf.kernel(dm0=seed)
+            cp.cuda.get_current_stream().synchronize()
+            assert mf.converged and mf.level_shift==0.,'Unshifted SCF failed'
+            result.update(scf_seconds=time.perf_counter()-tick,scf_energy_hartree=float(mf.e_tot),
+                scf_cycles=int(getattr(mf,'cycles',0)),rescue_used=rescued,solver_class=type(mf).__module__)
+            number=float(cp.einsum('ij,ji',mf.make_rdm1(),mf.get_ovlp()))
+            assert abs(number-mol.nelectron)<1e-7
+            energy=float(mf.e_tot)
+            if method=='mp2':
+                ncore=frozen_core_count(mol.atom_charges())
+                pt=dfmp2.DFMP2(mf,frozen=ncore,auxbasis=mp2_aux if mp2_aux is not None else AUXILIARY['bases'][mp2fit])
+                pt.fp_type='FP64';pt.with_t2=False
+                tick=time.perf_counter();pt.kernel();cp.cuda.get_current_stream().synchronize()
+                assert pt.t2 is None and type(pt).__module__.startswith('gpu4pyscf')
+                energy+=float(pt.e_corr)
+                result.update(correlation_energy_hartree=float(pt.e_corr),frozen_core=ncore,
+                    mp2_seconds=time.perf_counter()-tick,mp2_class=type(pt).__module__,fp_type='FP64',with_t2=False)
+            else:
+                result.update(nlc_enabled=bool(mf.do_nlc()),grid_points=len(mf.grids.weights),
+                              nlc_grid_points=len(mf.nlcgrids.weights))
+                assert result['nlc_grid_points']>0
+            assert np.isfinite(energy)
+            result.update(status='passed',energy_hartree=energy,electron_number=number,
+                nocc=mol.nelectron//2,nvir=mol.nao_nr()-mol.nelectron//2,
+                gpu_baseline_bytes=memory.baseline,gpu_peak_sampled_bytes=memory.peak,
+                cupy_pool_reserved_bytes=cp.get_default_memory_pool().total_bytes())
+        result.update(seconds=time.perf_counter()-start,process_max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception as error:
+        result.update(status='failed',error=str(error),traceback=traceback.format_exc(),seconds=time.perf_counter()-start)
+        write(ROOT/'failures'/key/method/(signature[:20]+f'-{time.time_ns()}.json'),result)
+    write(path,result)
+    print('CASE',key,identifier,method,variant,result['status'],result.get('energy_hartree'),result['seconds'],flush=True)
+    del mf,pt
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    if result['status']!='passed':raise RuntimeError(f'{key}/{identifier}/{method}: {result["error"]}')
+    return result
+
+
+def cpu_check(key,identifier,method,gpu,*,active=None,auxiliary_identifier=None):
+    from pyscf import scf,dft,mp,df
+    _,records=load_basis(key);row=ROWS[identifier]
+    mol=molecule(row,records[identifier]['atom_shells'],active=active)
+    mf=(scf.RHF(mol) if method=='mp2' else dft.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][SETTINGS['jkfit']])
+    mp2_aux=None
+    if auxiliary_identifier is not None:
+        from pyscf.df.addons import make_auxmol
+        scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+        mf.with_df.auxmol=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['jkfit']])
+        mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['mp2fit']])
+    mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad'];mf.max_cycle=200;mf.chkfile=None
+    if method!='mp2':mf.grids.level=3;mf.nlcgrids.level=3;assert mf.do_nlc()
+    mf.kernel();assert mf.converged
+    energy=float(mf.e_tot)
+    if method=='mp2':
+        fitting=df.DF(mol,auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']])
+        pt=mp.MP2(mf,frozen=frozen_core_count(mol.atom_charges())).density_fit(
+            auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']],with_df=fitting)
+        assert pt.with_df._cderi is None
+        if mp2_aux is not None:pt.with_df.auxmol=mp2_aux
+        pt.kernel(with_t2=False);energy+=float(pt.e_corr)
+    error=abs(energy-gpu['energy_hartree']);tolerance=1e-7 if method=='mp2' else 1e-6
+    assert error<tolerance,(identifier,method,error,tolerance)
+    return dict(key=key,structure_id=identifier,method=method,active_nuclei=active,
+                cpu_energy_hartree=energy,gpu_energy_hartree=gpu['energy_hartree'],error_hartree=error,tolerance=tolerance)
+
+
+def cp_diagnostics(key,identifier,method):
+    basis,records=load_basis(key);row=ROWS[identifier];shells=records[identifier]['atom_shells']
+    total=solve(key,identifier,method)['energy_hartree'];isolated=[];conditioned=[];ghosts=[]
+    for letter,indices in zip('AB',row['fragment_indices']):
+        isolated.append(solve(key,identifier+'/'+letter,method)['energy_hartree'])
+        ghosts.append(solve(key,identifier,method,active=indices,variant='ghost-'+letter,
+                            auxiliary_identifier=identifier)['energy_hartree'])
+        if basis['kind']=='nnao':
+            fragment=ROWS[identifier+'/'+letter]
+            conditioned.append(solve(key,identifier+'/'+letter,method,row=fragment,
+                shells=[shells[i] for i in indices],variant='conditioned-'+letter,
+                auxiliary_identifier=identifier)['energy_hartree'])
+        else:conditioned.append(isolated[-1])
+    result=cp_estimate(total,isolated,conditioned,ghosts)
+    result.update(basis_key=key,structure_id=identifier,method=method,
+        cp_kind='frozen-parameter CP estimate' if basis['kind']=='nnao' else 'standard CP')
+    write(ROOT/'cp'/key/method/(identifier.replace('/','-')+'.json'),result)
+    return result
+
+
+def preflight():
+    import importlib.metadata as metadata
+    gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+    for name,sha in gate['files'].items():assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha
+    cp.zeros(1,dtype=cp.float64);cp.cuda.get_current_stream().synchronize()
+    cases=[];checks=[]
+    families=[f'nnao_{z}p_{s}' for z in ['sz','dz','tz'] for s in ['s','m','l']]
+    for key in families:
+        for method in SETTINGS['methods']:cases.append(solve(key,'S22/02/A',method))
+    for key in ['t01','t14','reference']:
+        for identifier in ['ISO34/E14','S22/02','S22/10']:
+            for method in SETTINGS['methods']:cases.append(solve(key,identifier,method))
+    for key in ['t01','t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            result=solve(key,'S22/02/A',method);cases.append(result);checks.append(cpu_check(key,'S22/02/A',method,result))
+    for key in ['t01','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            row=ROWS['S22/02'];active=row['fragment_indices'][0]
+            result=solve(key,'S22/02',method,active=active,variant='ghost-A',auxiliary_identifier='S22/02');cases.append(result)
+            checks.append(cpu_check(key,'S22/02',method,result,active=active,auxiliary_identifier='S22/02'))
+    grid_checks=[];fit_checks=[]
+    for key in ['t14','nnao_szp_l','reference']:
+        energies={}
+        for level in [3,5]:
+            energies[level]=[solve(key,sid,'wb97m-v',level=level)['energy_hartree']
+                             for sid in ['S22/02','S22/02/A','S22/02/B']]
+        interaction=lambda e:e[0]-e[1]-e[2]
+        grid_checks.append(dict(basis_key=key,water_interaction_level3_hartree=interaction(energies[3]),
+            water_interaction_level5_hartree=interaction(energies[5]),
+            difference_kcal_mol=(interaction(energies[5])-interaction(energies[3]))*627.5094740631))
+    for key in ['t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            base=solve(key,'S22/02/A',method)
+            control=solve(key,'S22/02/A',method,jkfit='cc-pvqz-jkfit',variant='jkfit-control')
+            fit_checks.append(dict(basis_key=key,method=method,kind='jkfit',
+                difference_hartree=control['energy_hartree']-base['energy_hartree']))
+        base=solve(key,'S22/02/A','mp2')
+        control=solve(key,'S22/02/A','mp2',mp2fit='def2-qzvpp-ri',variant='mp2fit-control')
+        fit_checks.append(dict(basis_key=key,method='mp2',kind='correlation-fit',
+            difference_hartree=control['energy_hartree']-base['energy_hartree']))
+    assert max(abs(r['difference_hartree']) for r in fit_checks)<1e-5,fit_checks
+    all_cases=[json.loads(p.read_text()) for p in (ROOT/'results').glob('*/*/*.json')]
+    all_cases=[r for r in all_cases if r.get('driver_sha256')==DRIVER_SHA and r['status']=='passed']
+    write(ROOT/'preflight.json',dict(status='passed',driver_sha256=DRIVER_SHA,case_references=len(cases),cpu_gpu_checks=checks,
+        unique_gpu_cases=len(all_cases),auxiliary_fit_gate_hartree=1e-5,
+        grid_sensitivity=grid_checks,auxiliary_fit_sensitivity=fit_checks,
+        device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),max_nao=max(r['counts']['nao_spherical'] for r in cases),
+        max_gpu_peak_sampled_bytes=max(r['gpu_peak_sampled_bytes'] for r in all_cases),
+        max_process_rss_kib=max(r['process_max_rss_kib'] for r in all_cases),
+        versions={n:metadata.version(n) for n in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x']},
+        all_nine_models_exercised=True,vv10_and_ghosts_exercised=True,with_t2=False,fp_type='FP64'))
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--preflight',action='store_true');p.add_argument('--lane',choices=['small','tz','qz'])
+    p.add_argument('--direct',action='store_true',help='Run frozen benchmark directly, as explicitly requested; no CPU comparisons')
+    args=p.parse_args()
+    if args.preflight:preflight();return
+    assert args.lane is not None,'Specify --lane'
+    if args.direct:
+        gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+        for name,sha in gate['files'].items():
+            assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha,name
+    else:
+        gate=json.loads((ROOT/'preflight.json').read_text())
+        assert gate['status']=='passed' and gate['driver_sha256']==DRIVER_SHA
+    groups=dict(small=['t%02d'%i for i in [0,1,2,3,4,5,8,9,14,15]]+
+                [f'nnao_{z}p_{s}' for z in ['sz','dz'] for s in ['s','m','l']],
+        tz=['t%02d'%i for i in [6,7,10,11,16]]+[f'nnao_tzp_{s}' for s in ['s','m','l']],
+        qz=['t12','t13','t17','reference'])
+    failures=[];started=time.perf_counter()
+    for key in groups[args.lane]:
+        for identifier in ROWS:
+            for method in SETTINGS['methods']:
+                try:solve(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+        for identifier,row in ROWS.items():
+            if row.get('task')!='dimer':continue
+            for method in SETTINGS['methods']:
+                try:cp_diagnostics(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+    write(ROOT/f'lane-{args.lane}.json',dict(status='passed' if not failures else 'failed',
+        failures=failures,seconds=time.perf_counter()-started,bases=groups[args.lane],
+        execution_mode='direct' if args.direct else 'validated',cpu_comparisons_run=False))
+    if failures:raise RuntimeError(f'{len(failures)} explicit failed cases; no score will omit them')
+
+
+if __name__=='__main__':main()
+#INFO: ******************** input file end ********************
+
+
+System: uname_result(system='Linux', node='n002', release='4.18.0-553.16.1.el8_10.x86_64', version='#1 SMP Thu Aug 8 17:47:08 UTC 2024', machine='x86_64')  Threads 16
+Python 3.11.18 (main, Oct 26 2026, 18:19:35) [GCC 14.3.0]
+numpy 2.2.6  scipy 1.15.3  h5py 3.12.1
+Date: Thu Oct 29 16:01:03 2026
+PySCF version 2.8.0
+PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/pyscf/__init__.py
+CUDA Environment
+    CuPy 13.4.1
+    CUDA Path /opt/data/hpc/common/softwares/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8
+    CUDA Build Version 12080
+    CUDA Driver Version 12040
+    CUDA Runtime Version 12080
+CUDA toolkit
+    cuSolver (11, 7, 3)
+    cuBLAS 120804
+    cuTENSOR 20200
+Device info
+    Device name b'Tesla V100-SXM2-32GB'
+    Device global memory 31.73 GB
+    CuPy memory fraction 0.9
+    Num. Devices 1
+GPU4PySCF 1.7.0
+GPU4PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/gpu4pyscf
+
+[ENV] _GPU4PYSCF_BENCH_LD_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD 
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_LD_ACTIVE 1
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD 
+[ENV] _GPU4PYSCF_BENCH_LD_OLD 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD_SET 
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 6
+[INPUT] num. electrons = 16
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry False subgroup None
+[INPUT] Mole.unit = Angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 C0    -0.471925149928  -0.471925149928  -1.859111583081 AA   -0.891809284658  -0.891809284658  -3.513211727029 Bohr   0.0
+[INPUT]  2 C1     0.471925149928   0.471925149928  -1.859111583081 AA    0.891809284658   0.891809284658  -3.513211727029 Bohr   0.0
+[INPUT]  3 H2    -0.870464266511  -0.870464266511  -2.783308739749 AA   -1.644939064927  -1.644939064927  -5.259691238234 Bohr   0.0
+[INPUT]  4 H3     0.870464266511   0.870464266511  -2.783308739749 AA    1.644939064927   1.644939064927  -5.259691238234 Bohr   0.0
+[INPUT]  5 H4    -0.872422231679  -0.872422231679  -0.936125238431 AA   -1.648639082856  -1.648639082856  -1.769020318928 Bohr   0.0
+[INPUT]  6 H5     0.872422231679   0.872422231679  -0.936125238431 AA    1.648639082856   1.648639082856  -1.769020318928 Bohr   0.0
+
+nuclear repulsion = 33.360259955291
+number of shells = 16
+number of NR pGTOs = 104
+number of NR cGTOs = 36
+basis = {'C0': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.926376811901262, -0.12444043294202915], [0.6960331013556534, 0.6928702504802795], [0.19716286571910518, 0.7050127864661303], [5.540492439190438, -0.08603700115565206]], [1, [4.1339787090302345, 0.1745036160392619], [0.8891504817113962, 0.6652507475706969], [0.23056567850906673, 0.7083681829143486], [0.11645451790255268, 0.1587590888121833]], [2, [0.8856632425694813, 0.32643397041882727], [0.4877190309616285, 0.9452200077001122]]], 'C1': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.926376811901262, -0.12444043294202918], [0.6960331013556534, 0.6928702504802795], [0.19716286571910518, 0.7050127864661303], [5.540492439190438, -0.08603700115565206]], [1, [4.1339787090302345, 0.1745036160392619], [0.8891504817113962, 0.6652507475706969], [0.23056567850906673, 0.7083681829143486], [0.11645451790255268, 0.15875908881218326]], [2, [0.8856632425694813, 0.3264339704188273], [0.4877190309616285, 0.9452200077001122]]], 'H2': [[0, [5.084840703952482, 0.12234131852811429], [0.6734227395781236, 0.8562070817642278], [0.13450552032990082, 0.5017956330406081], [10.681029700558126, 0.011965683388874401]], [1, [0.7226222894192105, 0.9857037275922684], [1.3122309349670476, 0.16848786725075204]]], 'H3': [[0, [5.084840703952482, 0.12234131852811429], [0.6734227395781236, 0.8562070817642278], [0.13450552032990082, 0.5017956330406081], [10.681029700558126, 0.011965683388874401]], [1, [0.7226222894192105, 0.9857037275922684], [1.3122309349670476, 0.16848786725075204]]], 'H4': [[0, [5.084840703952482, 0.12236804858474047], [0.6734227395781236, 0.8491712396426941], [0.13450552032990082, 0.5136050947889079], [10.681029700558126, 0.012003043619414752]], [1, [0.7226222894192105, 0.987943754881219], [1.3122309349670476, 0.15481323325606838]]], 'H5': [[0, [5.084840703952482, 0.1223680485847405], [0.6734227395781236, 0.8491712396426941], [0.13450552032990082, 0.5136050947889079], [10.681029700558126, 0.012003043619414752]], [1, [0.7226222894192105, 0.987943754881219], [1.3122309349670476, 0.1548132332560684]]]}
+ecp = {}
+CPU time:      2687.24
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRKS'> ********
+method = DFRKS
+initial guess = minao
+damping factor = 0.0
+level_shift factor = 0.0
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+XC library gpu4pyscf.dft.libxc version 7.0.0 (CUDA)
+    unable to decode the reference due to https://github.com/NVIDIA/cuda-python/issues/29
+XC functionals = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+** Following is NLC and NLC Grids **
+NLC functional = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+small_rho_cutoff = 0
+tot grids = 67584
+tot grids = 67584
+Create RSH-DF object <gpu4pyscf.df.df.DF object at 0x7f4a5e141250> for omega=0.3
+init E= -23742912.2962836
+  HOMO = -1197711.64418026  LUMO = -837830.913583063  gap = 9792853.48144 eV
+cycle= 1 E= -26546450.9109471  delta_E= -2.8e+06  |g|= 2.77e+06  |ddm|= 2.94
+  HOMO = -2341533.787732  LUMO = -616632.691304512  gap = 46936949.58121 eV
+cycle= 2 E= -28787970.3028094  delta_E= -2.24e+06  |g|= 2.32e+06  |ddm|= 1.47
+  HOMO = -2540383.58673242  LUMO = -378846.836443258  gap = 58818410.90853 eV
+cycle= 3 E= -30189710.5096764  delta_E= -1.4e+06  |g|= 2.08e+06  |ddm|= 1.16
+  HOMO = -2632631.74670144  LUMO = -348224.089313542  gap = 62161898.59223 eV
+cycle= 4 E= -31515635.0664609  delta_E= -1.33e+06  |g|= 1.9e+06  |ddm|= 1.26
+  HOMO = -2669920.37528138  LUMO = -361170.623552043  gap = 62824280.71789 eV
+cycle= 5 E= -32762197.5189291  delta_E= -1.25e+06  |g|= 1.84e+06  |ddm|= 1.26
+  HOMO = -2688164.88910727  LUMO = -350981.304917253  gap = 63598004.70900 eV
+cycle= 6 E= -33197509.1065857  delta_E= -4.35e+05  |g|= 1.89e+06  |ddm|= 0.519
+  HOMO = -2700981.35761544  LUMO = -315135.63138789  gap = 64922169.04055 eV
+cycle= 7 E= -32417626.1129868  delta_E= 7.8e+05  |g|= 1.56e+06  |ddm|= 1.83
+  HOMO = -2757964.42470768  LUMO = -248000.76085664  gap = 68299590.15322 eV
+cycle= 8 E= -32132262.8971838  delta_E= 2.85e+05  |g|= 1.15e+06  |ddm|= 3.22
+  HOMO = -2834667.16888209  LUMO = -265294.503942333  gap = 69916191.41491 eV
+cycle= 9 E= -32467740.5832935  delta_E= -3.35e+05  |g|= 9.24e+05  |ddm|= 4.35
+  HOMO = -2944784.0232871  LUMO = -293248.356605306  gap = 72151960.57188 eV
+cycle= 10 E= -32849466.1809565  delta_E= -3.82e+05  |g|= 8.77e+05  |ddm|= 2.51
+  HOMO = -2903553.76373074  LUMO = -253110.775123954  gap = 72122227.28698 eV
+cycle= 11 E= -33015883.6480166  delta_E= -1.66e+05  |g|= 9.07e+05  |ddm|= 0.743
+  HOMO = -2925349.16545373  LUMO = -432136.846613973  gap = 67843762.83777 eV
+cycle= 12 E= -32895897.4917048  delta_E= 1.2e+05  |g|= 8.4e+05  |ddm|= 0.996
+  HOMO = -2865658.24166622  LUMO = -199153.692673881  gap = 72559284.60672 eV
+cycle= 13 E= -32864031.8307622  delta_E= 3.19e+04  |g|= 7.11e+05  |ddm|= 1.37
+  HOMO = -2955221.1797939  LUMO = -158170.238696695  gap = 76111632.87580 eV
+cycle= 14 E= -33011181.2925491  delta_E= -1.47e+05  |g|= 6.44e+05  |ddm|= 0.97
+  HOMO = -2971542.56735182  LUMO = -145574.151497756  gap = 76898517.44413 eV
+cycle= 15 E= -33221668.6705148  delta_E= -2.1e+05  |g|= 5.96e+05  |ddm|= 1.26
+  HOMO = -2965718.37553086  LUMO = -145218.218100197  gap = 76749718.55332 eV
+cycle= 16 E= -33317922.27053  delta_E= -9.63e+04  |g|= 6.18e+05  |ddm|= 0.686
+  HOMO = -2968683.30409891  LUMO = -137010.616730174  gap = 77053738.57828 eV
+cycle= 17 E= -33214116.0827744  delta_E= 1.04e+05  |g|= 5.41e+05  |ddm|= 1.22
+  HOMO = -2963582.51565747  LUMO = -131217.815634817  gap = 77072569.20174 eV
+cycle= 18 E= -33179996.3201041  delta_E= 3.41e+04  |g|= 4.44e+05  |ddm|= 1.21
+  HOMO = -2968652.56522794  LUMO = -127063.794465236  gap = 77323568.95132 eV
+cycle= 19 E= -33230901.4739527  delta_E= -5.09e+04  |g|= 3.49e+05  |ddm|= 1.12
+  HOMO = -2975969.82259498  LUMO = -123431.093810918  gap = 77621532.48594 eV
+cycle= 20 E= -33281406.0081876  delta_E= -5.05e+04  |g|= 3.35e+05  |ddm|= 0.682
+  HOMO = -2975493.34220125  LUMO = -124440.206449381  gap = 77581107.44048 eV
+cycle= 21 E= -33293307.9555817  delta_E= -1.19e+04  |g|= 3.45e+05  |ddm|= 0.186
+  HOMO = -2975571.09728648  LUMO = -117657.038587129  gap = 77767802.66325 eV
+cycle= 22 E= -33260905.7567843  delta_E= 3.24e+04  |g|= 2.89e+05  |ddm|= 0.641
+  HOMO = -2972396.86928648  LUMO = -114641.761179193  gap = 77763477.39733 eV
+cycle= 23 E= -33254468.9775234  delta_E= 6.44e+03  |g|= 2.27e+05  |ddm|= 0.792
+  HOMO = -2973263.35915689  LUMO = -118229.631950497  gap = 77689424.85113 eV
+cycle= 24 E= -33268190.7943418  delta_E= -1.37e+04  |g|= 2.18e+05  |ddm|= 0.411
+  HOMO = -2975500.1840079  LUMO = -118904.325034631  gap = 77731932.62166 eV
+cycle= 25 E= -33277488.2963745  delta_E= -9.3e+03  |g|= 2.22e+05  |ddm|= 0.207
+  HOMO = -2975121.79044565  LUMO = -117570.994126594  gap = 77757917.79040 eV
+cycle= 26 E= -33271477.0777611  delta_E= 6.01e+03  |g|= 2.16e+05  |ddm|= 0.124
+  HOMO = -2974882.45367975  LUMO = -114274.340316429  gap = 77841111.62467 eV
+cycle= 27 E= -33258551.5571185  delta_E= 1.29e+04  |g|= 1.96e+05  |ddm|= 0.339
+  HOMO = -2973135.25955297  LUMO = -116512.036733607  gap = 77732677.22983 eV
+cycle= 28 E= -33257492.6242753  delta_E= 1.06e+03  |g|= 1.85e+05  |ddm|= 0.212
+  HOMO = -2972994.07798642  LUMO = -118566.387140539  gap = 77672933.76178 eV
+cycle= 29 E= -33262642.2117041  delta_E= -5.15e+03  |g|= 1.84e+05  |ddm|= 0.223
+  HOMO = -2974034.21579375  LUMO = -119003.080351013  gap = 77689354.32565 eV
+cycle= 30 E= -33267840.2600386  delta_E= -5.2e+03  |g|= 1.87e+05  |ddm|= 0.16
+  HOMO = -2973353.26460222  LUMO = -116674.871254304  gap = 77734178.49638 eV
+cycle= 31 E= -33258843.8266553  delta_E= 9e+03  |g|= 1.81e+05  |ddm|= 0.337
+  HOMO = -2973094.77847648  LUMO = -117138.453015012  gap = 77714530.02839 eV
+cycle= 32 E= -33259377.0046677  delta_E= -533  |g|= 1.82e+05  |ddm|= 0.0343
+  HOMO = -2972859.54246953  LUMO = -116630.544597005  gap = 77721949.82263 eV
+cycle= 33 E= -33256777.324539  delta_E= 2.6e+03  |g|= 1.8e+05  |ddm|= 0.0779
+  HOMO = -2971999.32269791  LUMO = -116853.175887149  gap = 77692483.94438 eV
+cycle= 34 E= -33254324.5017201  delta_E= 2.45e+03  |g|= 1.79e+05  |ddm|= 0.0757
+  HOMO = -2971940.05721354  LUMO = -116641.856396181  gap = 77696621.54465 eV
+cycle= 35 E= -33253547.1816328  delta_E=  777  |g|= 1.78e+05  |ddm|= 0.0744
+  HOMO = -2971965.56105546  LUMO = -117419.212747811  gap = 77676162.59578 eV
+cycle= 36 E= -33255448.8563324  delta_E= -1.9e+03  |g|= 1.79e+05  |ddm|= 0.063
+  HOMO = -2971729.13843627  LUMO = -116724.724765655  gap = 77688627.18919 eV
+cycle= 37 E= -33253125.7899664  delta_E= 2.32e+03  |g|= 1.78e+05  |ddm|= 0.117
+  HOMO = -2971732.35270266  LUMO = -117119.07640032  gap = 77677983.79928 eV
+cycle= 38 E= -33254223.0956336  delta_E= -1.1e+03  |g|= 1.78e+05  |ddm|= 0.0371
+  HOMO = -2971128.5918213  LUMO = -117186.341307103  gap = 77659724.25753 eV
+cycle= 39 E= -33252509.7395385  delta_E= 1.71e+03  |g|= 1.76e+05  |ddm|= 0.0597
+  HOMO = -2972284.97791809  LUMO = -119241.016979145  gap = 77635280.55314 eV
+cycle= 40 E= -33261187.023002  delta_E= -8.68e+03  |g|= 1.71e+05  |ddm|= 0.339
+  HOMO = -2972610.50227824  LUMO = -119656.698438947  gap = 77632827.25350 eV
+cycle= 41 E= -33263367.2674262  delta_E= -2.18e+03  |g|= 1.72e+05  |ddm|= 0.0609
+  HOMO = -2972739.13041528  LUMO = -119117.489928219  gap = 77651000.01432 eV
+cycle= 42 E= -33262287.6143331  delta_E= 1.08e+03  |g|= 1.71e+05  |ddm|= 0.0538
+  HOMO = -2972388.1829738  LUMO = -118844.209017389  gap = 77648886.60037 eV
+cycle= 43 E= -33259682.9073901  delta_E= 2.6e+03  |g|= 1.68e+05  |ddm|= 0.169
+  HOMO = -2972286.64013466  LUMO = -119197.426627325  gap = 77636511.93825 eV
+cycle= 44 E= -33260499.610078  delta_E= -817  |g|= 1.69e+05  |ddm|= 0.0684
+  HOMO = -2972675.41703853  LUMO = -120183.558616298  gap = 77620257.07843 eV
+cycle= 45 E= -33263132.2535487  delta_E= -2.63e+03  |g|= 1.69e+05  |ddm|= 0.156
+  HOMO = -2972822.3033543  LUMO = -119794.119669166  gap = 77634851.23220 eV
+cycle= 46 E= -33263209.9023765  delta_E= -77.6  |g|= 1.7e+05  |ddm|= 0.0787
+  HOMO = -2972678.03416523  LUMO = -119454.378902899  gap = 77640170.28474 eV
+cycle= 47 E= -33261228.9608716  delta_E= 1.98e+03  |g|= 1.67e+05  |ddm|= 0.0884
+  HOMO = -2972670.5171116  LUMO = -119554.381242569  gap = 77637244.53302 eV
+cycle= 48 E= -33259449.6067938  delta_E= 1.78e+03  |g|= 1.61e+05  |ddm|= 0.145
+  HOMO = -2973535.60868578  LUMO = -121564.060674479  gap = 77606098.71099 eV
+cycle= 49 E= -33263056.198771  delta_E= -3.61e+03  |g|= 1.55e+05  |ddm|= 0.248
+  HOMO = -2974496.59639323  LUMO = -122921.163024268  gap = 77595319.88255 eV
+cycle= 50 E= -33268276.6299966  delta_E= -5.22e+03  |g|= 1.54e+05  |ddm|= 0.173
+  HOMO = -2976018.33509103  LUMO = -123652.255644712  gap = 77616834.45817 eV
+cycle= 51 E= -33275847.8311734  delta_E= -7.57e+03  |g|= 1.58e+05  |ddm|= 0.238
+  HOMO = -2975642.32652374  LUMO = -123320.738334812  gap = 77615623.78939 eV
+cycle= 52 E= -33273060.4864937  delta_E= 2.79e+03  |g|= 1.57e+05  |ddm|= 0.197
+  HOMO = -2975422.6248197  LUMO = -122581.294805069  gap = 77629766.68484 eV
+cycle= 53 E= -33269970.8743685  delta_E= 3.09e+03  |g|= 1.53e+05  |ddm|= 0.13
+  HOMO = -2976164.28806741  LUMO = -121515.904426845  gap = 77678939.11861 eV
+cycle= 54 E= -33268093.5562731  delta_E= 1.88e+03  |g|= 1.48e+05  |ddm|= 0.202
+  HOMO = -2975693.02323074  LUMO = -122661.752330099  gap = 77634935.23961 eV
+cycle= 55 E= -33268786.6323308  delta_E= -693  |g|= 1.48e+05  |ddm|= 0.039
+  HOMO = -2975684.71325396  LUMO = -122597.721089206  gap = 77636451.49244 eV
+cycle= 56 E= -33268598.5319388  delta_E=  188  |g|= 1.48e+05  |ddm|= 0.00603
+  HOMO = -2975442.37992762  LUMO = -122205.939907544  gap = 77640518.17572 eV
+cycle= 57 E= -33266337.7853257  delta_E= 2.26e+03  |g|= 1.47e+05  |ddm|= 0.0835
+  HOMO = -2975048.65653271  LUMO = -122216.812667048  gap = 77629508.55358 eV
+cycle= 58 E= -33265607.2139283  delta_E=  731  |g|= 1.47e+05  |ddm|= 0.0628
+  HOMO = -2975223.00725167  LUMO = -123265.250855866  gap = 77605723.42202 eV
+cycle= 59 E= -33266902.3661234  delta_E= -1.3e+03  |g|= 1.47e+05  |ddm|= 0.0842
+  HOMO = -2974918.05866814  LUMO = -123461.803634718  gap = 77592076.87486 eV
+cycle= 60 E= -33266555.027207  delta_E=  347  |g|= 1.47e+05  |ddm|= 0.0196
+  HOMO = -2975123.81148045  LUMO = -123406.77459337  gap = 77599173.11054 eV
+cycle= 61 E= -33267500.0252845  delta_E= -945  |g|= 1.47e+05  |ddm|= 0.046
+  HOMO = -2975269.810839  LUMO = -123797.54194499  gap = 77592512.63420 eV
+cycle= 62 E= -33269011.1046932  delta_E= -1.51e+03  |g|= 1.49e+05  |ddm|= 0.0908
+  HOMO = -2975012.62133363  LUMO = -123404.090620451  gap = 77596220.50716 eV
+cycle= 63 E= -33266317.5124134  delta_E= 2.69e+03  |g|= 1.46e+05  |ddm|= 0.131
+  HOMO = -2975312.04801085  LUMO = -124422.592087241  gap = 77576653.48549 eV
+cycle= 64 E= -33268213.6942314  delta_E= -1.9e+03  |g|= 1.43e+05  |ddm|= 0.105
+  HOMO = -2978348.24066868  LUMO = -124513.816485037  gap = 77656790.15363 eV
+cycle= 65 E= -33279330.0557602  delta_E= -1.11e+04  |g|= 1.46e+05  |ddm|= 0.33
+  HOMO = -2977753.20053206  LUMO = -124858.872450317  gap = 77631208.83570 eV
+cycle= 66 E= -33277318.932109  delta_E= 2.01e+03  |g|= 1.46e+05  |ddm|= 0.0937
+  HOMO = -2977334.84748334  LUMO = -124644.892620192  gap = 77625647.55716 eV
+cycle= 67 E= -33276440.4491325  delta_E=  878  |g|= 1.46e+05  |ddm|= 0.052
+  HOMO = -2977365.81980648  LUMO = -123193.712015402  gap = 77665978.99262 eV
+cycle= 68 E= -33275394.7537886  delta_E= 1.05e+03  |g|= 1.46e+05  |ddm|= 0.0718
+  HOMO = -2976968.98129857  LUMO = -124289.02814143  gap = 77625375.39687 eV
+cycle= 69 E= -33274640.3231959  delta_E=  754  |g|= 1.46e+05  |ddm|= 0.0598
+  HOMO = -2976996.2351977  LUMO = -124477.339227334  gap = 77620992.80759 eV
+cycle= 70 E= -33275984.5238889  delta_E= -1.34e+03  |g|= 1.46e+05  |ddm|= 0.08
+  HOMO = -2976713.9783303  LUMO = -125159.467138777  gap = 77594750.56111 eV
+cycle= 71 E= -33276112.1798059  delta_E= -128  |g|= 1.46e+05  |ddm|= 0.0358
+  HOMO = -2976426.67452067  LUMO = -125622.949510572  gap = 77574320.62850 eV
+cycle= 72 E= -33276443.7486969  delta_E= -332  |g|= 1.47e+05  |ddm|= 0.0569
+  HOMO = -2978472.65124103  LUMO = -125322.199635122  gap = 77638178.31179 eV
+cycle= 73 E= -33282121.7270614  delta_E= -5.68e+03  |g|= 1.52e+05  |ddm|= 0.178
+  HOMO = -2977306.35626141  LUMO = -122261.270444243  gap = 77689733.93467 eV
+cycle= 74 E= -33272086.9595924  delta_E= 1e+04  |g|= 1.43e+05  |ddm|= 0.278
+  HOMO = -2977797.47853248  LUMO = -117067.989118807  gap = 77844414.43523 eV
+cycle= 75 E= -33263241.0476896  delta_E= 8.85e+03  |g|= 1.3e+05  |ddm|= 0.378
+  HOMO = -2975068.06312001  LUMO = -123818.331911291  gap = 77586457.07534 eV
+cycle= 76 E= -33267134.8600697  delta_E= -3.89e+03  |g|= 1.3e+05  |ddm|= 0.131
+  HOMO = -2975709.29662866  LUMO = -122142.630530088  gap = 77649504.08501 eV
+cycle= 77 E= -33266717.864015  delta_E=  417  |g|= 1.31e+05  |ddm|= 0.0367
+  HOMO = -2975531.91517219  LUMO = -123937.891382262  gap = 77595825.75367 eV
+cycle= 78 E= -33266700.8583692  delta_E=   17  |g|= 1.29e+05  |ddm|= 0.112
+  HOMO = -2976192.09892029  LUMO = -124651.566800194  gap = 77594370.17120 eV
+cycle= 79 E= -33269935.1960088  delta_E= -3.23e+03  |g|= 1.29e+05  |ddm|= 0.107
+  HOMO = -2976191.8553737  LUMO = -125153.11674818  gap = 77580715.67471 eV
+cycle= 80 E= -33270877.2777222  delta_E= -942  |g|= 1.29e+05  |ddm|= 0.0313
+  HOMO = -2976366.01989731  LUMO = -125113.903716329  gap = 77586521.97374 eV
+cycle= 81 E= -33270921.9523493  delta_E= -44.7  |g|= 1.29e+05  |ddm|= 0.0582
+  HOMO = -2976116.08681616  LUMO = -125700.295490768  gap = 77563764.41526 eV
+cycle= 82 E= -33271036.9849507  delta_E= -115  |g|= 1.29e+05  |ddm|= 0.0178
+  HOMO = -2976503.2282133  LUMO = -125703.993667341  gap = 77574198.43675 eV
+cycle= 83 E= -33272273.8836778  delta_E= -1.24e+03  |g|= 1.29e+05  |ddm|= 0.0445
+  HOMO = -2976470.68176111  LUMO = -125582.067569692  gap = 77576630.58079 eV
+cycle= 84 E= -33272037.0674207  delta_E=  237  |g|= 1.29e+05  |ddm|= 0.0194
+  HOMO = -2976109.50152401  LUMO = -125620.912463304  gap = 77565745.34254 eV
+cycle= 85 E= -33271124.9473391  delta_E=  912  |g|= 1.28e+05  |ddm|= 0.0517
+  HOMO = -2976006.2267867  LUMO = -123764.08811078  gap = 77613461.85802 eV
+cycle= 86 E= -33268983.2381871  delta_E= 2.14e+03  |g|= 1.28e+05  |ddm|= 0.0995
+  HOMO = -2976068.64816511  LUMO = -123721.133611978  gap = 77616329.28169 eV
+cycle= 87 E= -33268614.8177118  delta_E=  368  |g|= 1.28e+05  |ddm|= 0.0225
+  HOMO = -2976539.81551668  LUMO = -124885.637934797  gap = 77597462.62173 eV
+cycle= 88 E= -33271333.4966014  delta_E= -2.72e+03  |g|= 1.27e+05  |ddm|= 0.105
+  HOMO = -2976582.07945722  LUMO = -124747.413160701  gap = 77602373.96981 eV
+cycle= 89 E= -33271764.3612175  delta_E= -431  |g|= 1.28e+05  |ddm|= 0.0485
+  HOMO = -2976668.18256118  LUMO = -124848.206875428  gap = 77601974.21793 eV
+cycle= 90 E= -33271881.4541547  delta_E= -117  |g|= 1.28e+05  |ddm|= 0.0627
+  HOMO = -2976763.11926577  LUMO = -125115.804328111  gap = 77597275.87967 eV
+cycle= 91 E= -33272280.815764  delta_E= -399  |g|= 1.27e+05  |ddm|= 0.0414
+  HOMO = -2977128.5012868  LUMO = -125700.263802317  gap = 77591314.47852 eV
+cycle= 92 E= -33273872.9688872  delta_E= -1.59e+03  |g|= 1.27e+05  |ddm|= 0.0639
+  HOMO = -2977037.67536388  LUMO = -125643.177846068  gap = 77590396.36726 eV
+cycle= 93 E= -33273559.0321255  delta_E=  314  |g|= 1.27e+05  |ddm|= 0.0129
+  HOMO = -2977138.09244419  LUMO = -125963.118343589  gap = 77584422.83082 eV
+cycle= 94 E= -33274356.8775776  delta_E= -798  |g|= 1.28e+05  |ddm|= 0.0296
+  HOMO = -2977384.25409136  LUMO = -124881.438087597  gap = 77620555.24942 eV
+cycle= 95 E= -33273788.7585122  delta_E=  568  |g|= 1.27e+05  |ddm|= 0.0716
+  HOMO = -2977393.44265009  LUMO = -124854.718702109  gap = 77621532.35435 eV
+cycle= 96 E= -33273702.0086846  delta_E= 86.7  |g|= 1.27e+05  |ddm|= 0.00499
+  HOMO = -2978292.23475298  LUMO = -125668.626563046  gap = 77623842.17222 eV
+cycle= 97 E= -33277310.0379369  delta_E= -3.61e+03  |g|= 1.28e+05  |ddm|= 0.131
+  HOMO = -2977826.58744722  LUMO = -124861.911071717  gap = 77633123.11028 eV
+cycle= 98 E= -33274579.7217907  delta_E= 2.73e+03  |g|= 1.26e+05  |ddm|= 0.0901
+  HOMO = -2977829.03809834  LUMO = -124382.904493055  gap = 77646224.22881 eV
+cycle= 99 E= -33273868.6242661  delta_E=  711  |g|= 1.26e+05  |ddm|= 0.0854
+  HOMO = -2977817.30374112  LUMO = -124521.336615457  gap = 77642137.99077 eV
+cycle= 100 E= -33274276.1351006  delta_E= -408  |g|= 1.26e+05  |ddm|= 0.0349
+  HOMO = -2978030.22496811  LUMO = -125312.680002046  gap = 77626398.32210 eV
+cycle= 101 E= -33275682.5431034  delta_E= -1.41e+03  |g|= 1.25e+05  |ddm|= 0.113
+  HOMO = -2978761.51716449  LUMO = -126276.124706937  gap = 77620081.13057 eV
+cycle= 102 E= -33278951.7711853  delta_E= -3.27e+03  |g|= 1.24e+05  |ddm|= 0.122
+  HOMO = -2979942.28619213  LUMO = -127870.436673234  gap = 77608828.05403 eV
+cycle= 103 E= -33283880.7099916  delta_E= -4.93e+03  |g|= 1.23e+05  |ddm|= 0.191
+  HOMO = -2979820.93491706  LUMO = -127959.942044288  gap = 77603090.35244 eV
+cycle= 104 E= -33284473.7720325  delta_E= -593  |g|= 1.26e+05  |ddm|= 0.0554
+  HOMO = -2979558.02987514  LUMO = -127365.654552538  gap = 77612107.72820 eV
+cycle= 105 E= -33280370.135794  delta_E= 4.1e+03  |g|= 1.2e+05  |ddm|= 0.153
+  HOMO = -2981398.26313408  LUMO = -125667.363048559  gap = 77708395.89147 eV
+cycle= 106 E= -33284133.2754972  delta_E= -3.76e+03  |g|= 1.18e+05  |ddm|= 0.151
+  HOMO = -2981266.73616278  LUMO = -127254.365043894  gap = 77661632.33637 eV
+cycle= 107 E= -33286341.2180286  delta_E= -2.21e+03  |g|= 1.19e+05  |ddm|= 0.0746
+  HOMO = -2981641.80908605  LUMO = -125647.916412413  gap = 77715552.28430 eV
+cycle= 108 E= -33285737.1989654  delta_E=  604  |g|= 1.18e+05  |ddm|= 0.0616
+  HOMO = -2981482.31489346  LUMO = -126374.094034989  gap = 77691451.92666 eV
+cycle= 109 E= -33286221.8423823  delta_E= -485  |g|= 1.18e+05  |ddm|= 0.027
+  HOMO = -2981683.44180724  LUMO = -125843.989415666  gap = 77711349.75017 eV
+cycle= 110 E= -33286271.6393938  delta_E= -49.8  |g|= 1.18e+05  |ddm|= 0.0446
+  HOMO = -2981141.43444053  LUMO = -127723.273049069  gap = 77645463.06610 eV
+cycle= 111 E= -33286831.3316273  delta_E= -560  |g|= 1.18e+05  |ddm|= 0.0281
+  HOMO = -2981117.71723833  LUMO = -127584.645381879  gap = 77648589.93912 eV
+cycle= 112 E= -33286579.1701638  delta_E=  252  |g|= 1.18e+05  |ddm|= 0.0142
+  HOMO = -2981811.65700953  LUMO = -127264.587579603  gap = 77676182.21852 eV
+cycle= 113 E= -33288453.5505568  delta_E= -1.87e+03  |g|= 1.19e+05  |ddm|= 0.0736
+  HOMO = -2981694.40395232  LUMO = -126772.364033583  gap = 77686385.68523 eV
+cycle= 114 E= -33286583.0075147  delta_E= 1.87e+03  |g|= 1.17e+05  |ddm|= 0.0967
+  HOMO = -2982577.67685868  LUMO = -126924.513445675  gap = 77706280.56887 eV
+cycle= 115 E= -33289939.3614478  delta_E= -3.36e+03  |g|= 1.17e+05  |ddm|= 0.122
+  HOMO = -2982238.08431207  LUMO = -126180.804341678  gap = 77717277.14051 eV
+cycle= 116 E= -33287785.6079018  delta_E= 2.15e+03  |g|= 1.16e+05  |ddm|= 0.0733
+  HOMO = -2983066.38586759  LUMO = -124656.504608336  gap = 77781294.68233 eV
+cycle= 117 E= -33289763.1356193  delta_E= -1.98e+03  |g|= 1.1e+05  |ddm|= 0.148
+  HOMO = -2984841.72120596  LUMO = -124426.053486831  gap = 77835874.91196 eV
+cycle= 118 E= -33296624.3382085  delta_E= -6.86e+03  |g|= 1.07e+05  |ddm|= 0.368
+  HOMO = -2985463.46579699  LUMO = -125842.272711225  gap = 77814256.15603 eV
+cycle= 119 E= -33298274.3850309  delta_E= -1.65e+03  |g|= 1.08e+05  |ddm|= 0.0732
+  HOMO = -2986437.65982958  LUMO = -114323.271062737  gap = 78154213.32633 eV
+cycle= 120 E= -33288755.811974  delta_E= 9.52e+03  |g|= 1.05e+05  |ddm|= 0.404
+  HOMO = -2984817.74129216  LUMO = -113399.552167216  gap = 78135268.76913 eV
+cycle= 121 E= -33283925.5529204  delta_E= 4.83e+03  |g|= 1.04e+05  |ddm|= 0.212
+  HOMO = -2977920.76194193  LUMO = -123129.065714444  gap = 77682838.85274 eV
+cycle= 122 E= -33286546.6800777  delta_E= -2.62e+03  |g|= 1.03e+05  |ddm|= 0.13
+  HOMO = -2979739.89575844  LUMO = -121438.644204444  gap = 77778338.71748 eV
+cycle= 123 E= -33287266.9733638  delta_E= -720  |g|= 1.04e+05  |ddm|= 0.0273
+  HOMO = -2987637.07959468  LUMO = -110857.522374964  gap = 78281159.02595 eV
+cycle= 124 E= -33285889.9321795  delta_E= 1.38e+03  |g|= 1.01e+05  |ddm|= 0.0743
+  HOMO = -3004553.9156153  LUMO = -95831.181375941  gap = 79150377.14654 eV
+cycle= 125 E= -33288972.5184097  delta_E= -3.08e+03  |g|= 9.87e+04  |ddm|= 0.141
+  HOMO = -2990495.74102186  LUMO = -111519.738989417  gap = 78340927.33362 eV
+cycle= 126 E= -33294456.8321272  delta_E= -5.48e+03  |g|= 9.97e+04  |ddm|= 0.24
+  HOMO = -2981013.13861001  LUMO = -123006.12027976  gap = 77770332.22365 eV
+cycle= 127 E= -33292731.6198035  delta_E= 1.73e+03  |g|= 9.88e+04  |ddm|= 0.117
+  HOMO = -2982800.30435657  LUMO = -121703.476153714  gap = 77854410.23283 eV
+cycle= 128 E= -33292826.2257305  delta_E= -94.6  |g|= 9.96e+04  |ddm|= 0.0451
+  HOMO = -2984244.2469441  LUMO = -119686.778522805  gap = 77948579.04969 eV
+cycle= 129 E= -33292184.3539804  delta_E=  642  |g|= 9.53e+04  |ddm|= 0.134
+  HOMO = -2982776.9478139  LUMO = -124383.652731409  gap = 77780843.34947 eV
+cycle= 130 E= -33293379.4465511  delta_E= -1.2e+03  |g|= 9.45e+04  |ddm|= 0.0649
+  HOMO = -2982176.66558349  LUMO = -123731.984020482  gap = 77782241.64683 eV
+cycle= 131 E= -33292462.4263555  delta_E=  917  |g|= 9.41e+04  |ddm|= 0.0865
+  HOMO = -2982705.15028912  LUMO = -123459.10403155  gap = 77804047.89087 eV
+cycle= 132 E= -33292871.5971352  delta_E= -409  |g|= 9.42e+04  |ddm|= 0.0195
+  HOMO = -2982232.65696221  LUMO = -123343.42979353  gap = 77794338.34891 eV
+cycle= 133 E= -33291763.0343462  delta_E= 1.11e+03  |g|= 9.38e+04  |ddm|= 0.0482
+  HOMO = -2982431.41929426  LUMO = -120474.862145497  gap = 77877804.64905 eV
+cycle= 134 E= -33288215.1642108  delta_E= 3.55e+03  |g|= 9.32e+04  |ddm|= 0.159
+  HOMO = -2982049.53506011  LUMO = -120513.846275858  gap = 77866352.23751 eV
+cycle= 135 E= -33287740.2096783  delta_E=  475  |g|= 9.33e+04  |ddm|= 0.0251
+  HOMO = -2982499.89351894  LUMO = -119517.610018526  gap = 77905716.08475 eV
+cycle= 136 E= -33287328.2104162  delta_E=  412  |g|= 9.31e+04  |ddm|= 0.0266
+  HOMO = -2981983.60856546  LUMO = -120695.222740628  gap = 77859622.78122 eV
+cycle= 137 E= -33288042.9434528  delta_E= -715  |g|= 9.32e+04  |ddm|= 0.0327
+  HOMO = -2981805.35521405  LUMO = -120622.060224914  gap = 77856763.11392 eV
+cycle= 138 E= -33287568.6564374  delta_E=  474  |g|= 9.3e+04  |ddm|= 0.0312
+  HOMO = -2981388.95488016  LUMO = -122590.090769916  gap = 77791879.44484 eV
+cycle= 139 E= -33289230.7230265  delta_E= -1.66e+03  |g|= 9.32e+04  |ddm|= 0.0713
+  HOMO = -2980190.05017408  LUMO = -120608.270557822  gap = 77813183.66090 eV
+cycle= 140 E= -33285695.6297562  delta_E= 3.54e+03  |g|= 9.31e+04  |ddm|= 0.162
+  HOMO = -2980567.63294739  LUMO = -120703.407528433  gap = 77820869.40266 eV
+cycle= 141 E= -33286225.1995169  delta_E= -530  |g|= 9.31e+04  |ddm|= 0.0355
+  HOMO = -2980600.22973557  LUMO = -121153.7893894  gap = 77809500.89177 eV
+cycle= 142 E= -33286797.5071961  delta_E= -572  |g|= 9.31e+04  |ddm|= 0.0248
+  HOMO = -2980720.57413435  LUMO = -121424.097471474  gap = 77805420.17210 eV
+cycle= 143 E= -33287272.9359033  delta_E= -475  |g|= 9.31e+04  |ddm|= 0.0207
+  HOMO = -2980723.01539391  LUMO = -121533.553509416  gap = 77802508.15165 eV
+cycle= 144 E= -33287327.952016  delta_E=  -55  |g|= 9.32e+04  |ddm|= 0.0134
+  HOMO = -2980642.9374071  LUMO = -121276.007155664  gap = 77807337.31189 eV
+cycle= 145 E= -33286952.3031835  delta_E=  376  |g|= 9.31e+04  |ddm|= 0.016
+  HOMO = -2980815.99014217  LUMO = -118404.47966122  gap = 77890184.55979 eV
+cycle= 146 E= -33284249.1176715  delta_E= 2.7e+03  |g|= 9.29e+04  |ddm|= 0.121
+  HOMO = -2980369.05776071  LUMO = -122538.946541532  gap = 77765518.33596 eV
+cycle= 147 E= -33287958.5243582  delta_E= -3.71e+03  |g|= 9.36e+04  |ddm|= 0.152
+  HOMO = -2980271.26102394  LUMO = -114708.594557453  gap = 77975931.88172 eV
+cycle= 148 E= -33278747.4492703  delta_E= 9.21e+03  |g|= 9.21e+04  |ddm|= 0.381
+  HOMO = -2982929.63204015  LUMO = -105271.151804122  gap = 78305075.73943 eV
+cycle= 149 E= -33270103.3858416  delta_E= 8.64e+03  |g|= 9.15e+04  |ddm|= 0.362
+  HOMO = -2983303.93593312  LUMO = -104964.943390273  gap = 78323593.42250 eV
+cycle= 150 E= -33270213.2582908  delta_E= -110  |g|= 9.15e+04  |ddm|= 0.00647
+  HOMO = -2982473.3812242  LUMO = -106069.286896985  gap = 78270942.16025 eV
+cycle= 151 E= -33270518.5917199  delta_E= -305  |g|= 9.15e+04  |ddm|= 0.013
+  HOMO = -2980128.37641033  LUMO = -110328.696843479  gap = 78091226.88077 eV
+cycle= 152 E= -33273009.3909909  delta_E= -2.49e+03  |g|= 9.13e+04  |ddm|= 0.105
+  HOMO = -2980790.0259661  LUMO = -109621.636545659  gap = 78128471.37294 eV
+cycle= 153 E= -33272719.1265726  delta_E=  290  |g|= 9.11e+04  |ddm|= 0.0201
+  HOMO = -2981281.10919583  LUMO = -108151.448978557  gap = 78181840.26968 eV
+cycle= 154 E= -33271756.7935847  delta_E=  962  |g|= 9.1e+04  |ddm|= 0.0494
+  HOMO = -2978040.19057643  LUMO = -111890.09235478  gap = 77991916.71397 eV
+cycle= 155 E= -33271899.0789084  delta_E= -142  |g|= 9.09e+04  |ddm|= 0.0109
+  HOMO = -2975408.11974595  LUMO = -120144.069254243  gap = 77695692.26696 eV
+cycle= 156 E= -33278017.4019531  delta_E= -6.12e+03  |g|= 9.04e+04  |ddm|= 0.244
+  HOMO = -2976394.46716253  LUMO = -120841.485830063  gap = 77703554.47560 eV
+cycle= 157 E= -33280267.5081402  delta_E= -2.25e+03  |g|= 9.05e+04  |ddm|= 0.0881
+  HOMO = -2976124.37409739  LUMO = -116595.739826131  gap = 77811737.50240 eV
+cycle= 158 E= -33275812.1858046  delta_E= 4.46e+03  |g|= 9.01e+04  |ddm|= 0.181
+  HOMO = -2977385.81383701  LUMO = -114037.208784888  gap = 77915684.20190 eV
+cycle= 159 E= -33273843.7244033  delta_E= 1.97e+03  |g|= 8.98e+04  |ddm|= 0.092
+  HOMO = -2975703.76356084  LUMO = -117189.553817495  gap = 77784133.60498 eV
+cycle= 160 E= -33274523.0751768  delta_E= -679  |g|= 8.97e+04  |ddm|= 0.0286
+  HOMO = -2976830.9218076  LUMO = -116852.333693864  gap = 77823981.37010 eV
+cycle= 161 E= -33276333.0578417  delta_E= -1.81e+03  |g|= 8.98e+04  |ddm|= 0.0675
+  HOMO = -2975845.65310855  LUMO = -117996.632410514  gap = 77766032.88909 eV
+cycle= 162 E= -33276066.8134256  delta_E=  266  |g|= 8.97e+04  |ddm|= 0.018
+  HOMO = -2975404.88309616  LUMO = -119267.863701194  gap = 77719446.96077 eV
+cycle= 163 E= -33276517.0443846  delta_E= -450  |g|= 8.97e+04  |ddm|= 0.0216
+  HOMO = -2974868.69608844  LUMO = -119161.462169554  gap = 77707751.90227 eV
+cycle= 164 E= -33275707.2863564  delta_E=  810  |g|= 8.96e+04  |ddm|= 0.0325
+  HOMO = -2975516.20354197  LUMO = -117037.631528983  gap = 77783163.85294 eV
+cycle= 165 E= -33273647.1317873  delta_E= 2.06e+03  |g|= 8.95e+04  |ddm|= 0.0859
+  HOMO = -2974135.94302849  LUMO = -118638.643338061  gap = 77702039.30094 eV
+cycle= 166 E= -33274129.7551931  delta_E= -483  |g|= 8.95e+04  |ddm|= 0.0325
+  HOMO = -2974125.65205587  LUMO = -118636.980962109  gap = 77701804.50487 eV
+cycle= 167 E= -33274103.5969202  delta_E= 26.2  |g|= 8.95e+04  |ddm|= 0.00954
+  HOMO = -2974107.34680803  LUMO = -119331.145626629  gap = 77682417.21106 eV
+cycle= 168 E= -33274821.6152666  delta_E= -718  |g|= 8.94e+04  |ddm|= 0.0366
+  HOMO = -2974817.77432892  LUMO = -120042.906016381  gap = 77682380.94185 eV
+cycle= 169 E= -33276657.6489333  delta_E= -1.84e+03  |g|= 8.95e+04  |ddm|= 0.0715
+  HOMO = -2974280.22716936  LUMO = -116480.81425903  gap = 77764682.99243 eV
+cycle= 170 E= -33272066.3908107  delta_E= 4.59e+03  |g|= 8.93e+04  |ddm|= 0.181
+  HOMO = -2974008.29420313  LUMO = -117201.703377408  gap = 77737666.92744 eV
+cycle= 171 E= -33272419.781354  delta_E= -353  |g|= 8.93e+04  |ddm|= 0.0136
+  HOMO = -2974455.1717275  LUMO = -117088.482845924  gap = 77752907.97185 eV
+cycle= 172 E= -33273064.0084501  delta_E= -644  |g|= 8.94e+04  |ddm|= 0.0244
+  HOMO = -2972956.06604163  LUMO = -118323.724166038  gap = 77678502.59995 eV
+cycle= 173 E= -33272120.6737147  delta_E=  943  |g|= 8.91e+04  |ddm|= 0.045
+  HOMO = -2975794.47014675  LUMO = -115378.488029154  gap = 77835883.46718 eV
+cycle= 174 E= -33273869.3208682  delta_E= -1.75e+03  |g|= 8.89e+04  |ddm|= 0.0738
+  HOMO = -2975991.61191543  LUMO = -116850.665738986  gap = 77801187.97200 eV
+cycle= 175 E= -33275811.4831613  delta_E= -1.94e+03  |g|= 8.91e+04  |ddm|= 0.0814
+  HOMO = -2975738.81241528  LUMO = -112707.552487235  gap = 77907048.80123 eV
+cycle= 176 E= -33270761.1932272  delta_E= 5.05e+03  |g|= 8.88e+04  |ddm|= 0.21
+  HOMO = -2973067.21568405  LUMO = -114889.667840954  gap = 77774972.56806 eV
+cycle= 177 E= -33268921.6387799  delta_E= 1.84e+03  |g|= 8.87e+04  |ddm|= 0.0803
+  HOMO = -2972681.01092185  LUMO = -115081.730253152  gap = 77759237.11675 eV
+cycle= 178 E= -33268580.2895436  delta_E=  341  |g|= 8.87e+04  |ddm|= 0.0175
+  HOMO = -2971972.9827989  LUMO = -117585.809465427  gap = 77671831.22411 eV
+cycle= 179 E= -33270500.3412354  delta_E= -1.92e+03  |g|= 8.86e+04  |ddm|= 0.076
+  HOMO = -2973047.35892826  LUMO = -118650.579974626  gap = 77672092.60635 eV
+cycle= 180 E= -33273416.5449182  delta_E= -2.92e+03  |g|= 8.87e+04  |ddm|= 0.114
+  HOMO = -2973353.48581138  LUMO = -112819.537075818  gap = 77839093.50236 eV
+cycle= 181 E= -33267779.5592747  delta_E= 5.64e+03  |g|= 8.85e+04  |ddm|= 0.223
+  HOMO = -2973158.01239886  LUMO = -112331.699423181  gap = 77847049.13855 eV
+cycle= 182 E= -33266832.9959066  delta_E=  947  |g|= 8.86e+04  |ddm|= 0.0381
+  HOMO = -2977949.15950092  LUMO = -102609.597869057  gap = 78241974.75014 eV
+cycle= 183 E= -33262769.6764591  delta_E= 4.06e+03  |g|= 8.88e+04  |ddm|= 0.172
+  HOMO = -3000483.62953247  LUMO = -88453.1658148762  gap = 79240385.05022 eV
+cycle= 184 E= -33267637.5135529  delta_E= -4.87e+03  |g|= 8.93e+04  |ddm|= 0.214
+  HOMO = -3001746.85447884  LUMO = -87984.582723555  gap = 79287509.94725 eV
+cycle= 185 E= -33265760.4155879  delta_E= 1.88e+03  |g|= 8.9e+04  |ddm|= 0.0788
+  HOMO = -2975629.86938837  LUMO = -110305.235283736  gap = 77969454.69124 eV
+cycle= 186 E= -33268337.5393065  delta_E= -2.58e+03  |g|= 8.86e+04  |ddm|= 0.111
+  HOMO = -2972655.05177467  LUMO = -114248.769612451  gap = 77781196.74591 eV
+cycle= 187 E= -33267939.1964715  delta_E=  398  |g|= 8.85e+04  |ddm|= 0.0332
+  HOMO = -2972308.70302634  LUMO = -116954.702815559  gap = 77698139.92349 eV
+cycle= 188 E= -33270350.4326612  delta_E= -2.41e+03  |g|= 8.85e+04  |ddm|= 0.0946
+  HOMO = -2972106.47669845  LUMO = -117387.578602039  gap = 77680857.91469 eV
+cycle= 189 E= -33270469.7599625  delta_E= -119  |g|= 8.85e+04  |ddm|= 0.00753
+  HOMO = -2971824.24104631  LUMO = -117519.532648926  gap = 77669587.23890 eV
+cycle= 190 E= -33270185.8656603  delta_E=  284  |g|= 8.85e+04  |ddm|= 0.0115
+  HOMO = -2971956.48792246  LUMO = -116945.866483889  gap = 77688796.11116 eV
+cycle= 191 E= -33269762.3498799  delta_E=  424  |g|= 8.85e+04  |ddm|= 0.018
+  HOMO = -2972052.90730226  LUMO = -117119.907508367  gap = 77686683.91863 eV
+cycle= 192 E= -33270046.3004367  delta_E= -284  |g|= 8.85e+04  |ddm|= 0.0123
+  HOMO = -2971653.95545103  LUMO = -115190.535115504  gap = 77728328.78276 eV
+cycle= 193 E= -33267365.9064691  delta_E= 2.68e+03  |g|= 8.85e+04  |ddm|= 0.11
+  HOMO = -2971747.81348457  LUMO = -115588.263020856  gap = 77720060.06238 eV
+cycle= 194 E= -33267991.3125821  delta_E= -625  |g|= 8.85e+04  |ddm|= 0.026
+  HOMO = -2971896.44352398  LUMO = -115499.575411817  gap = 77726517.80452 eV
+cycle= 195 E= -33268097.6044889  delta_E= -106  |g|= 8.85e+04  |ddm|= 0.00451
+  HOMO = -2971925.5998015  LUMO = -117118.452920839  gap = 77683259.28642 eV
+cycle= 196 E= -33269935.6377362  delta_E= -1.84e+03  |g|= 8.85e+04  |ddm|= 0.0739
+  HOMO = -2972625.06384109  LUMO = -117882.490620214  gap = 77681502.14764 eV
+cycle= 197 E= -33271808.7521081  delta_E= -1.87e+03  |g|= 8.85e+04  |ddm|= 0.0746
+  HOMO = -2973844.09734306  LUMO = -111822.415596949  gap = 77879576.77960 eV
+cycle= 198 E= -33267072.2685073  delta_E= 4.74e+03  |g|= 8.84e+04  |ddm|= 0.193
+  HOMO = -2973840.43425034  LUMO = -111613.392811257  gap = 77885164.90148 eV
+cycle= 199 E= -33266814.0263253  delta_E=  258  |g|= 8.84e+04  |ddm|= 0.0109
+  HOMO = -2973863.26911452  LUMO = -111976.924888153  gap = 77875894.05811 eV
+cycle= 200 E= -33267280.5933594  delta_E= -467  |g|= 8.83e+04  |ddm|= 0.0178
+
+WARN: SCF failed to converge
+
+SCF not converged.
+SCF energy = -33267280.5933594
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRKS'> ********
+method = DFRKS
+initial guess = minao
+damping factor = 0.2
+level_shift factor = 0.2
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+XC library gpu4pyscf.dft.libxc version 7.0.0 (CUDA)
+    unable to decode the reference due to https://github.com/NVIDIA/cuda-python/issues/29
+XC functionals = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+** Following is NLC and NLC Grids **
+NLC functional = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+small_rho_cutoff = 0
+init E= -33267280.5933594
+  HOMO = -2971621.84430866  LUMO = -117349.0704276  gap = 77668718.25645 eV
+cycle= 1 E= -33269863.6750133  delta_E= -2.58e+03  |g|= 8.83e+04  |ddm|= 0.101
+  HOMO = -2972587.77646511  LUMO = -118301.714730415  gap = 77669079.83737 eV
+cycle= 2 E= -33272453.0879962  delta_E= -2.59e+03  |g|= 8.85e+04  |ddm|= 0.101
+  HOMO = -2971907.23727623  LUMO = -115424.245857927  gap = 77728861.33905 eV
+cycle= 3 E= -33268357.8086852  delta_E= 4.1e+03  |g|= 8.82e+04  |ddm|= 0.161
+  HOMO = -2971831.57018458  LUMO = -112497.326422732  gap = 77806447.86721 eV
+cycle= 4 E= -33265061.4631269  delta_E= 3.3e+03  |g|= 8.81e+04  |ddm|= 0.131
+  HOMO = -2970155.39767991  LUMO = -116772.68797837  gap = 77644498.37648 eV
+cycle= 5 E= -33266898.4689208  delta_E= -1.84e+03  |g|= 8.79e+04  |ddm|= 0.0702
+  HOMO = -3091620.30102865  LUMO = -84723.7365159072  gap = 81821823.13917 eV
+cycle= 6 E= -33287775.8393686  delta_E= -2.09e+04  |g|= 9.01e+04  |ddm|= 0.842
+  HOMO = -3087378.59805187  LUMO = -84556.5919852623  gap = 81710948.75643 eV
+cycle= 7 E= -33282238.9469907  delta_E= 5.54e+03  |g|= 8.87e+04  |ddm|= 0.252
+  HOMO = -3201841.1273679  LUMO = -84676.3225965942  gap = 84822374.79059 eV
+cycle= 8 E= -33276685.947813  delta_E= 5.55e+03  |g|= 8.69e+04  |ddm|= 0.423
+  HOMO = -3202877.90132364  LUMO = -84665.3529091156  gap = 84850885.34732 eV
+cycle= 9 E= -33276457.3527489  delta_E=  229  |g|= 8.68e+04  |ddm|= 0.00881
+  HOMO = -2995254.0441663  LUMO = -93860.3809534454  gap = 78950942.96567 eV
+cycle= 10 E= -33275155.8944487  delta_E= 1.3e+03  |g|= 8.64e+04  |ddm|= 0.0613
+  HOMO = -3068937.64917392  LUMO = -84243.7349770892  gap = 81217658.25075 eV
+cycle= 11 E= -33269788.904094  delta_E= 5.37e+03  |g|= 8.85e+04  |ddm|= 0.235
+  HOMO = -3071652.6696187  LUMO = -84361.3175387376  gap = 81288338.13566 eV
+cycle= 12 E= -33275450.8835071  delta_E= -5.66e+03  |g|= 8.69e+04  |ddm|= 0.23
+  HOMO = -3011874.21608795  LUMO = -97272.473410912  gap = 79310353.11455 eV
+cycle= 13 E= -33271973.2656146  delta_E= 3.48e+03  |g|= 8.41e+04  |ddm|= 0.573
+  HOMO = -3006854.63801816  LUMO = -104043.274172253  gap = 78989520.56485 eV
+cycle= 14 E= -33263149.8717412  delta_E= 8.82e+03  |g|= 8.47e+04  |ddm|= 0.367
+  HOMO = -2974824.52759965  LUMO = -121400.422292074  gap = 77645624.80830 eV
+cycle= 15 E= -33274291.2656886  delta_E= -1.11e+04  |g|= 8.39e+04  |ddm|= 0.446
+  HOMO = -2983545.12702179  LUMO = -134135.92869468  gap = 77536373.62462 eV
+cycle= 16 E= -33276835.2010389  delta_E= -2.54e+03  |g|= 8.3e+04  |ddm|= 0.182
+  HOMO = -2971550.14756436  LUMO = -130126.123786913  gap = 77319085.95751 eV
+cycle= 17 E= -33279415.12535  delta_E= -2.58e+03  |g|= 8.3e+04  |ddm|= 0.12
+  HOMO = -2967503.30433362  LUMO = -128324.146524843  gap = 77258000.04307 eV
+cycle= 18 E= -33280456.9600656  delta_E= -1.04e+03  |g|= 8.32e+04  |ddm|= 0.0378
+  HOMO = -2964503.7370354  LUMO = -114050.107663121  gap = 77564794.04096 eV
+cycle= 19 E= -33269212.3045149  delta_E= 1.12e+04  |g|= 8.23e+04  |ddm|= 0.444
+  HOMO = -2968810.44206742  LUMO = -108700.039114755  gap = 77827568.23456 eV
+cycle= 20 E= -33269304.492995  delta_E= -92.2  |g|= 8.23e+04  |ddm|= 0.0107
+  HOMO = -2974855.68113711  LUMO = -107049.514622918  gap = 78036980.62755 eV
+cycle= 21 E= -33273940.7855282  delta_E= -4.64e+03  |g|= 8.29e+04  |ddm|= 0.171
+  HOMO = -2970761.20362819  LUMO = -105976.624198106  gap = 77954759.05502 eV
+cycle= 22 E= -33267807.0142455  delta_E= 6.13e+03  |g|= 8.2e+04  |ddm|= 0.236
+  HOMO = -2971832.28599209  LUMO = -106075.058171972  gap = 77981226.16582 eV
+cycle= 23 E= -33271839.4220407  delta_E= -4.03e+03  |g|= 8.21e+04  |ddm|= 0.169
+  HOMO = -2963727.32639919  LUMO = -110085.85260974  gap = 77651539.70597 eV
+cycle= 24 E= -33266065.9089036  delta_E= 5.77e+03  |g|= 8.24e+04  |ddm|= 0.218
+  HOMO = -2964544.96070367  LUMO = -105876.999419363  gap = 77788317.39751 eV
+cycle= 25 E= -33266920.7642135  delta_E= -855  |g|= 8.23e+04  |ddm|= 0.16
+  HOMO = -2962880.72281518  LUMO = -116819.389132662  gap = 77445273.58743 eV
+cycle= 26 E= -33267683.8468232  delta_E= -763  |g|= 8.23e+04  |ddm|= 0.0495
+  HOMO = -2963714.34068483  LUMO = -110712.164191935  gap = 77634143.54045 eV
+cycle= 27 E= -33264328.8372564  delta_E= 3.36e+03  |g|= 8.25e+04  |ddm|= 0.129
+  HOMO = -2965402.35497621  LUMO = -118476.19034436  gap = 77468806.83624 eV
+cycle= 28 E= -33274218.0406678  delta_E= -9.89e+03  |g|= 8.24e+04  |ddm|= 0.401
+  HOMO = -2966710.11259534  LUMO = -116043.618883664  gap = 77570586.37467 eV
+cycle= 29 E= -33274648.0588023  delta_E= -430  |g|= 8.24e+04  |ddm|= 0.0362
+  HOMO = -2966113.86035857  LUMO = -115047.939645831  gap = 77581455.33698 eV
+cycle= 30 E= -33272591.0911099  delta_E= 2.06e+03  |g|= 8.23e+04  |ddm|= 0.0749
+  HOMO = -2966633.56480391  LUMO = -110159.561028907  gap = 77728616.77282 eV
+cycle= 31 E= -33269846.8663333  delta_E= 2.74e+03  |g|= 8.23e+04  |ddm|= 0.102
+  HOMO = -2965447.97835086  LUMO = -106226.126175031  gap = 77803389.53638 eV
+cycle= 32 E= -33265050.6846821  delta_E= 4.8e+03  |g|= 8.27e+04  |ddm|= 0.179
+  HOMO = -2966006.21224428  LUMO = -113573.772573  gap = 77618640.21187 eV
+cycle= 33 E= -33272500.7737368  delta_E= -7.45e+03  |g|= 8.28e+04  |ddm|= 0.277
+  HOMO = -2964710.61281043  LUMO = -116088.676286334  gap = 77514951.13980 eV
+cycle= 34 E= -33271730.5999599  delta_E=  770  |g|= 8.25e+04  |ddm|= 0.0447
+  HOMO = -2966838.54647923  LUMO = -117402.309121095  gap = 77537109.39413 eV
+cycle= 35 E= -33273026.5714393  delta_E= -1.3e+03  |g|= 8.05e+04  |ddm|= 0.295
+  HOMO = -2972570.70681016  LUMO = -114783.368319232  gap = 77764354.43075 eV
+cycle= 36 E= -33271987.5985272  delta_E= 1.04e+03  |g|= 8.02e+04  |ddm|= 0.255
+  HOMO = -2974498.31402442  LUMO = -112587.451407068  gap = 77876561.23751 eV
+cycle= 37 E= -33274238.6100817  delta_E= -2.25e+03  |g|= 8.03e+04  |ddm|= 0.14
+  HOMO = -2965448.89588243  LUMO = -121091.899388177  gap = 77398896.21029 eV
+cycle= 38 E= -33274618.3055579  delta_E= -380  |g|= 8.06e+04  |ddm|= 0.0412
+  HOMO = -2966885.9010827  LUMO = -109837.875543314  gap = 77744236.70063 eV
+cycle= 39 E= -33263492.4807281  delta_E= 1.11e+04  |g|= 8.03e+04  |ddm|= 0.429
+  HOMO = -2965647.07364675  LUMO = -120887.92512723  gap = 77409839.32429 eV
+cycle= 40 E= -33266514.1566062  delta_E= -3.02e+03  |g|= 7.99e+04  |ddm|= 0.114
+  HOMO = -2972499.97565938  LUMO = -108258.821896715  gap = 77939971.68941 eV
+cycle= 41 E= -33262966.334797  delta_E= 3.55e+03  |g|= 7.96e+04  |ddm|= 0.239
+  HOMO = -2963609.45704067  LUMO = -115329.325268022  gap = 77505650.15876 eV
+cycle= 42 E= -33264759.6570112  delta_E= -1.79e+03  |g|= 7.95e+04  |ddm|= 0.069
+  HOMO = -2960175.68270689  LUMO = -119696.189336595  gap = 77293383.97599 eV
+cycle= 43 E= -33271492.1964265  delta_E= -6.73e+03  |g|= 7.99e+04  |ddm|= 0.253
+  HOMO = -2960900.89153128  LUMO = -108440.419028256  gap = 77619403.02407 eV
+cycle= 44 E= -33267946.9384172  delta_E= 3.55e+03  |g|= 7.93e+04  |ddm|= 0.171
+  HOMO = -2965224.74721317  LUMO = -103569.90911285  gap = 77869594.45555 eV
+cycle= 45 E= -33264537.5256575  delta_E= 3.41e+03  |g|= 7.92e+04  |ddm|= 0.311
+  HOMO = -3013656.16502437  LUMO = -84190.8846006525  gap = 79714810.57780 eV
+cycle= 46 E= -33249386.5129452  delta_E= 1.52e+04  |g|= 8.13e+04  |ddm|= 0.604
+  HOMO = -2999494.31453709  LUMO = -85022.3765611175  gap = 79306820.94872 eV
+cycle= 47 E= -33267234.8187764  delta_E= -1.78e+04  |g|= 8e+04  |ddm|= 0.805
+  HOMO = -3038794.9132548  LUMO = -84547.6745574791  gap = 80389162.01071 eV
+cycle= 48 E= -33277512.3333211  delta_E= -1.03e+04  |g|= 8.2e+04  |ddm|= 0.508
+  HOMO = -3049303.20375633  LUMO = -84029.8251602739  gap = 80689198.55981 eV
+cycle= 49 E= -33268953.1149724  delta_E= 8.56e+03  |g|= 8.13e+04  |ddm|= 0.551
+  HOMO = -2984519.65814741  LUMO = -87087.897014019  gap = 78843134.11881 eV
+cycle= 50 E= -33276787.4638633  delta_E= -7.83e+03  |g|= 8.07e+04  |ddm|= 0.318
+  HOMO = -3026089.6214537  LUMO = -85154.9354576961  gap = 80026909.00024 eV
+cycle= 51 E= -33282151.4256255  delta_E= -5.36e+03  |g|= 8.31e+04  |ddm|= 0.226
+  HOMO = -3018671.76423615  LUMO = -84529.7759066162  gap = 79842070.28193 eV
+cycle= 52 E= -33270560.8232777  delta_E= 1.16e+04  |g|= 8.03e+04  |ddm|= 0.438
+  HOMO = -3027005.37677719  LUMO = -83898.6655536133  gap = 80086012.81716 eV
+cycle= 53 E= -33260363.0701805  delta_E= 1.02e+04  |g|= 8.28e+04  |ddm|= 0.662
+  HOMO = -2993188.6613558  LUMO = -85368.9626428944  gap = 79125804.29824 eV
+cycle= 54 E= -33267121.6013244  delta_E= -6.76e+03  |g|= 7.99e+04  |ddm|= 0.591
+  HOMO = -2987502.02508465  LUMO = -85417.2050173658  gap = 78969750.30163 eV
+cycle= 55 E= -33246999.7714075  delta_E= 2.01e+04  |g|= 8.09e+04  |ddm|= 0.834
+  HOMO = -2986486.59800297  LUMO = -86380.090983234  gap = 78915917.66163 eV
+cycle= 56 E= -33275283.8320221  delta_E= -2.83e+04  |g|= 8.1e+04  |ddm|= 1.34
+  HOMO = -2982033.19120909  LUMO = -86387.9912753217  gap = 78794519.31236 eV
+cycle= 57 E= -33269879.5165167  delta_E= 5.4e+03  |g|= 8.03e+04  |ddm|= 0.276
+  HOMO = -3014976.7590508  LUMO = -84103.9846389605  gap = 79753110.44003 eV
+cycle= 58 E= -33262486.427297  delta_E= 7.39e+03  |g|= 8.18e+04  |ddm|= 0.44
+  HOMO = -3027815.63662523  LUMO = -84632.9379773381  gap = 80088080.54029 eV
+cycle= 59 E= -33271261.6074723  delta_E= -8.78e+03  |g|= 8.06e+04  |ddm|= 0.364
+  HOMO = -3045311.78689307  LUMO = -84564.4073779638  gap = 80566039.85169 eV
+cycle= 60 E= -33279906.220913  delta_E= -8.64e+03  |g|= 8.19e+04  |ddm|= 0.346
+  HOMO = -3021701.6988712  LUMO = -84713.1399150013  gap = 79919529.41408 eV
+cycle= 61 E= -33267871.8621049  delta_E= 1.2e+04  |g|= 8.01e+04  |ddm|= 0.52
+  HOMO = -3022056.05983823  LUMO = -84562.7679167673  gap = 79933263.89764 eV
+cycle= 62 E= -33264732.4632988  delta_E= 3.14e+03  |g|= 8.08e+04  |ddm|= 0.223
+  HOMO = -2985932.04455626  LUMO = -100097.319504806  gap = 78527562.69330 eV
+cycle= 63 E= -33265200.8984759  delta_E= -468  |g|= 7.94e+04  |ddm|= 0.247
+  HOMO = -2990163.87684228  LUMO = -94654.2082033047  gap = 78790831.31798 eV
+cycle= 64 E= -33253591.7278291  delta_E= 1.16e+04  |g|= 7.93e+04  |ddm|= 0.541
+  HOMO = -2955119.68440007  LUMO = -118894.811306938  gap = 77177609.86126 eV
+cycle= 65 E= -33265190.9162731  delta_E= -1.16e+04  |g|= 7.93e+04  |ddm|= 0.637
+  HOMO = -2957010.21301181  LUMO = -120512.612101094  gap = 77185031.16319 eV
+cycle= 66 E= -33265332.3047258  delta_E= -141  |g|= 7.93e+04  |ddm|= 0.0742
+  HOMO = -2955582.54129473  LUMO = -119644.030747174  gap = 77169817.53949 eV
+cycle= 67 E= -33263335.1503477  delta_E= 2e+03  |g|= 7.92e+04  |ddm|= 0.0744
+  HOMO = -2954255.87260847  LUMO = -105940.539718836  gap = 77506608.02994 eV
+cycle= 68 E= -33255254.9089454  delta_E= 8.08e+03  |g|= 7.96e+04  |ddm|= 0.302
+  HOMO = -2962711.21349248  LUMO = -85188.774581824  gap = 78301373.86641 eV
+cycle= 69 E= -33269801.5787085  delta_E= -1.45e+04  |g|= 8.12e+04  |ddm|= 0.536
+  HOMO = -2959697.17721302  LUMO = -85117.1457562095  gap = 78221306.88135 eV
+cycle= 70 E= -33266254.940848  delta_E= 3.55e+03  |g|= 8.05e+04  |ddm|= 0.157
+  HOMO = -2967036.51238597  LUMO = -85500.4932149567  gap = 78410588.94820 eV
+cycle= 71 E= -33268840.5323332  delta_E= -2.59e+03  |g|= 8.21e+04  |ddm|= 0.271
+  HOMO = -2976381.6135118  LUMO = -84430.6204014488  gap = 78693994.82445 eV
+cycle= 72 E= -33255310.1518087  delta_E= 1.35e+04  |g|= 8.09e+04  |ddm|= 0.704
+  HOMO = -2972037.22451066  LUMO = -84237.9762961657  gap = 78581020.09143 eV
+cycle= 73 E= -33250690.9949205  delta_E= 4.62e+03  |g|= 8.07e+04  |ddm|= 0.19
+  HOMO = -2985517.2771619  LUMO = -84189.7228809511  gap = 78949144.05000 eV
+cycle= 74 E= -33254764.1716071  delta_E= -4.07e+03  |g|= 8.19e+04  |ddm|= 0.711
+  HOMO = -2961842.31259274  LUMO = -107782.018676454  gap = 77662936.38211 eV
+cycle= 75 E= -33268983.2954473  delta_E= -1.42e+04  |g|= 7.93e+04  |ddm|= 0.875
+  HOMO = -2959489.93610014  LUMO = -112610.516167509  gap = 77467534.84818 eV
+cycle= 76 E= -33264709.779358  delta_E= 4.27e+03  |g|= 7.9e+04  |ddm|= 0.186
+  HOMO = -2963774.60360677  LUMO = -98263.0818904011  gap = 77974540.16218 eV
+cycle= 77 E= -33263935.1461932  delta_E=  775  |g|= 7.96e+04  |ddm|= 0.273
+  HOMO = -2985815.92227551  LUMO = -85170.2918223624  gap = 78930587.95749 eV
+cycle= 78 E= -33246540.7814162  delta_E= 1.74e+04  |g|= 8.06e+04  |ddm|= 0.839
+  HOMO = -2971627.91868039  LUMO = -87543.2563631779  gap = 78479941.06067 eV
+cycle= 79 E= -33257818.6797808  delta_E= -1.13e+04  |g|= 7.99e+04  |ddm|= 0.434
+  HOMO = -2974483.79093861  LUMO = -86271.4386693428  gap = 78592261.22533 eV
+cycle= 80 E= -33254279.7038094  delta_E= 3.54e+03  |g|= 8.09e+04  |ddm|= 0.146
+  HOMO = -2992271.67973667  LUMO = -84782.2979524404  gap = 79116815.91678 eV
+cycle= 81 E= -33262660.3787262  delta_E= -8.38e+03  |g|= 8.12e+04  |ddm|= 0.344
+  HOMO = -2994538.26372996  LUMO = -84451.8490532818  gap = 79187484.78132 eV
+cycle= 82 E= -33257297.4700049  delta_E= 5.36e+03  |g|= 7.98e+04  |ddm|= 0.198
+  HOMO = -3007094.10133191  LUMO = -84454.8927881119  gap = 79529063.70087 eV
+cycle= 83 E= -33259470.4999019  delta_E= -2.17e+03  |g|= 8.03e+04  |ddm|= 0.116
+  HOMO = -2982230.81532123  LUMO = -86081.3410175926  gap = 78808241.31690 eV
+cycle= 84 E= -33294197.3889512  delta_E= -3.47e+04  |g|= 8.54e+04  |ddm|=  1.3
+  HOMO = -2985708.78542448  LUMO = -84602.2648773235  gap = 78943129.41575 eV
+cycle= 85 E= -33272003.40479  delta_E= 2.22e+04  |g|= 8.2e+04  |ddm|= 0.797
+  HOMO = -2976790.66895528  LUMO = -84898.2636363015  gap = 78692400.56944 eV
+cycle= 86 E= -33274109.1893626  delta_E= -2.11e+03  |g|= 8.16e+04  |ddm|= 0.198
+  HOMO = -2964739.14802154  LUMO = -85137.5415341743  gap = 78357950.89794 eV
+cycle= 87 E= -33251422.6507151  delta_E= 2.27e+04  |g|= 8.09e+04  |ddm|= 0.98
+  HOMO = -2965135.12887335  LUMO = -87107.1922013445  gap = 78315129.16113 eV
+cycle= 88 E= -33256258.8760818  delta_E= -4.84e+03  |g|= 8.12e+04  |ddm|= 0.349
+  HOMO = -2967067.96577064  LUMO = -88026.0251727034  gap = 78342721.61338 eV
+cycle= 89 E= -33259509.3774417  delta_E= -3.25e+03  |g|= 8.09e+04  |ddm|= 0.138
+  HOMO = -2964910.41561757  LUMO = -88739.8720685257  gap = 78264586.91987 eV
+cycle= 90 E= -33261289.4733258  delta_E= -1.78e+03  |g|= 8.12e+04  |ddm|= 0.11
+  HOMO = -2960872.22372856  LUMO = -89976.4666721201  gap = 78121052.66844 eV
+cycle= 91 E= -33255500.0441151  delta_E= 5.79e+03  |g|= 8.12e+04  |ddm|= 0.236
+  HOMO = -2952541.88875656  LUMO = -128992.277537788  gap = 76832698.41750 eV
+cycle= 92 E= -33261022.6223758  delta_E= -5.52e+03  |g|= 8.04e+04  |ddm|= 0.227
+  HOMO = -2958024.93433157  LUMO = -124484.629715344  gap = 77104559.03214 eV
+cycle= 93 E= -33267432.2860434  delta_E= -6.41e+03  |g|= 8.12e+04  |ddm|= 0.258
+  HOMO = -2956379.38334892  LUMO = -87383.5500258504  gap = 78069353.11033 eV
+cycle= 94 E= -33237354.9350133  delta_E= 3.01e+04  |g|= 8.27e+04  |ddm|= 1.14
+  HOMO = -2984356.94787013  LUMO = -84379.4947038147  gap = 78912405.92741 eV
+cycle= 95 E= -33231721.9094551  delta_E= 5.63e+03  |g|= 8.56e+04  |ddm|= 0.625
+  HOMO = -3007612.83565122  LUMO = -84512.731132282  gap = 79541605.31917 eV
+cycle= 96 E= -33269615.146065  delta_E= -3.79e+04  |g|= 8.14e+04  |ddm|= 1.82
+  HOMO = -2999142.23627472  LUMO = -84578.232066299  gap = 79309326.19851 eV
+cycle= 97 E= -33271124.7203174  delta_E= -1.51e+03  |g|= 8.18e+04  |ddm|= 0.0782
+  HOMO = -3049564.93265932  LUMO = -84595.1361949804  gap = 80680937.66923 eV
+cycle= 98 E= -33276634.7414769  delta_E= -5.51e+03  |g|= 8.12e+04  |ddm|= 0.25
+  HOMO = -3068680.69069144  LUMO = -84072.782162646  gap = 81215317.91732 eV
+cycle= 99 E= -33268470.2562109  delta_E= 8.16e+03  |g|= 8.01e+04  |ddm|= 0.294
+  HOMO = -3065479.13340059  LUMO = -83352.4768116961  gap = 81147799.61297 eV
+cycle= 100 E= -33249376.2299931  delta_E= 1.91e+04  |g|= 8.17e+04  |ddm|= 0.78
+  HOMO = -3118311.28313266  LUMO = -82970.7487503715  gap = 82595822.98323 eV
+cycle= 101 E= -33244643.8886608  delta_E= 4.73e+03  |g|= 8.21e+04  |ddm|= 0.289
+  HOMO = -3110095.60883846  LUMO = -82911.7392619663  gap = 82373868.82856 eV
+cycle= 102 E= -33236590.0102936  delta_E= 8.05e+03  |g|= 8.46e+04  |ddm|= 0.297
+  HOMO = -3087394.30581203  LUMO = -83260.0598627975  gap = 81746656.62243 eV
+cycle= 103 E= -33251320.842057  delta_E= -1.47e+04  |g|= 8.2e+04  |ddm|= 0.55
+  HOMO = -3004643.8202554  LUMO = -84189.6828168677  gap = 79469604.88755 eV
+cycle= 104 E= -33260786.318702  delta_E= -9.47e+03  |g|= 8.01e+04  |ddm|= 0.499
+  HOMO = -2991288.08855343  LUMO = -85834.0834778017  gap = 79061430.49547 eV
+cycle= 105 E= -33289468.6730067  delta_E= -2.87e+04  |g|= 8.47e+04  |ddm|= 1.12
+  HOMO = -2999873.96883474  LUMO = -84022.4117535032  gap = 79344362.29676 eV
+cycle= 106 E= -33252107.1674519  delta_E= 3.74e+04  |g|= 7.99e+04  |ddm|= 1.57
+  HOMO = -2998826.27640925  LUMO = -84111.2013399128  gap = 79313437.04602 eV
+cycle= 107 E= -33253404.3635733  delta_E= -1.3e+03  |g|= 7.99e+04  |ddm|= 0.0581
+  HOMO = -3007594.50329584  LUMO = -83641.1164979669  gap = 79564824.31264 eV
+cycle= 108 E= -33242734.1102358  delta_E= 1.07e+04  |g|= 8.15e+04  |ddm|= 0.403
+  HOMO = -3015838.46978425  LUMO = -83881.9343284754  gap = 79782601.08015 eV
+cycle= 109 E= -33253847.4262315  delta_E= -1.11e+04  |g|= 8.2e+04  |ddm|= 0.681
+  HOMO = -3025095.90002964  LUMO = -83699.1329082911  gap = 80039482.86812 eV
+cycle= 110 E= -33249430.8704114  delta_E= 4.42e+03  |g|= 8.36e+04  |ddm|= 0.527
+  HOMO = -3027764.48128509  LUMO = -83647.8257143352  gap = 80113494.80265 eV
+cycle= 111 E= -33248332.3082355  delta_E= 1.1e+03  |g|= 8.28e+04  |ddm|= 0.043
+  HOMO = -3060188.54966628  LUMO = -83550.8882451349  gap = 80998436.44660 eV
+cycle= 112 E= -33245989.5314067  delta_E= 2.34e+03  |g|= 8.01e+04  |ddm|= 0.225
+  HOMO = -3000618.93786344  LUMO = -84550.6395370006  gap = 79350260.12645 eV
+cycle= 113 E= -33260903.9967086  delta_E= -1.49e+04  |g|= 7.91e+04  |ddm|= 0.592
+  HOMO = -3007061.93335696  LUMO = -86797.2235572447  gap = 79464450.29894 eV
+cycle= 114 E= -33302284.5726762  delta_E= -4.14e+04  |g|= 8.75e+04  |ddm|= 1.51
+  HOMO = -2990933.75109996  LUMO = -83853.9565245025  gap = 79105670.48114 eV
+cycle= 115 E= -33237254.5732775  delta_E= 6.5e+04  |g|= 8.31e+04  |ddm|= 2.54
+  HOMO = -2998454.47154589  LUMO = -84095.0793929365  gap = 79303758.42089 eV
+cycle= 116 E= -33228882.224403  delta_E= 8.37e+03  |g|= 8.48e+04  |ddm|= 0.345
+  HOMO = -2995493.02035698  LUMO = -83605.9171002621  gap = 79236484.01338 eV
+cycle= 117 E= -33247102.7117291  delta_E= -1.82e+04  |g|= 8.14e+04  |ddm|= 0.804
+  HOMO = -3011711.84864983  LUMO = -83777.8546570228  gap = 79673142.15162 eV
+cycle= 118 E= -33254148.8601317  delta_E= -7.05e+03  |g|= 8.23e+04  |ddm|= 0.345
+  HOMO = -3076989.42701576  LUMO = -84872.8464298651  gap = 81419639.29117 eV
+cycle= 119 E= -33270942.23516  delta_E= -1.68e+04  |g|= 8.01e+04  |ddm|= 0.696
+  HOMO = -3097860.95675835  LUMO = -85033.4778255  gap = 81983211.54091 eV
+cycle= 120 E= -33270282.5294592  delta_E=  660  |g|= 8e+04  |ddm|= 0.242
+  HOMO = -3025896.04631018  LUMO = -84757.7756001078  gap = 80032448.82249 eV
+cycle= 121 E= -33272664.4430004  delta_E= -2.38e+03  |g|= 8.06e+04  |ddm|= 0.286
+  HOMO = -2990099.41105024  LUMO = -84532.0162237245  gap = 79064515.98775 eV
+cycle= 122 E= -33265774.4380122  delta_E= 6.89e+03  |g|= 8.16e+04  |ddm|= 0.334
+  HOMO = -3010969.35781425  LUMO = -85568.1812832406  gap = 79604220.67795 eV
+cycle= 123 E= -33287981.8695937  delta_E= -2.22e+04  |g|= 8.43e+04  |ddm|= 0.811
+  HOMO = -3005536.99960874  LUMO = -83559.3479509942  gap = 79511061.82107 eV
+cycle= 124 E= -33245661.8884852  delta_E= 4.23e+04  |g|= 8.37e+04  |ddm|= 1.61
+  HOMO = -2980845.77202067  LUMO = -83577.2769092892  gap = 78838691.42406 eV
+cycle= 125 E= -33246977.9425253  delta_E= -1.32e+03  |g|= 8.25e+04  |ddm|= 0.265
+  HOMO = -2988399.48686805  LUMO = -83646.176955609  gap = 79042363.60890 eV
+cycle= 126 E= -33255320.9161436  delta_E= -8.34e+03  |g|= 8.33e+04  |ddm|= 0.454
+  HOMO = -2986426.87706208  LUMO = -83556.2625525413  gap = 78991132.85753 eV
+cycle= 127 E= -33248649.2345168  delta_E= 6.67e+03  |g|= 8.3e+04  |ddm|= 0.31
+  HOMO = -2988471.34881358  LUMO = -83550.8779691004  gap = 79046912.28955 eV
+cycle= 128 E= -33248129.7714729  delta_E=  519  |g|= 8.31e+04  |ddm|= 0.0249
+  HOMO = -2990357.23221506  LUMO = -83539.8706165114  gap = 79098529.31610 eV
+cycle= 129 E= -33248129.4754396  delta_E= 0.296  |g|= 8.41e+04  |ddm|= 0.138
+  HOMO = -3002414.53989071  LUMO = -83972.7817050721  gap = 79414845.25888 eV
+cycle= 130 E= -33253758.8030852  delta_E= -5.63e+03  |g|= 8.41e+04  |ddm|= 0.853
+  HOMO = -2973660.91593047  LUMO = -90252.0585744055  gap = 78461551.47100 eV
+cycle= 131 E= -33240654.4458486  delta_E= 1.31e+04  |g|= 8.22e+04  |ddm|= 0.479
+  HOMO = -2964773.65497791  LUMO = -114409.689449431  gap = 77562354.16349 eV
+cycle= 132 E= -33248477.514852  delta_E= -7.82e+03  |g|= 8.01e+04  |ddm|=  0.3
+  HOMO = -3019753.52073799  LUMO = -89760.1944660617  gap = 79729179.43721 eV
+cycle= 133 E= -33318447.0565624  delta_E= -7e+04  |g|= 9.68e+04  |ddm|= 2.42
+  HOMO = -3012620.89772117  LUMO = -89186.8989424308  gap = 79550691.04476 eV
+cycle= 134 E= -33310740.9295909  delta_E= 7.71e+03  |g|= 9.27e+04  |ddm|= 0.243
+  HOMO = -2984934.71663039  LUMO = -87289.0688694139  gap = 78848954.27040 eV
+cycle= 135 E= -33295211.3306344  delta_E= 1.55e+04  |g|= 8.6e+04  |ddm|= 0.508
+  HOMO = -3012862.60148882  LUMO = -90189.3971828558  gap = 79529988.77268 eV
+cycle= 136 E= -33317548.5008536  delta_E= -2.23e+04  |g|= 9.67e+04  |ddm|= 0.725
+  HOMO = -3016689.12584144  LUMO = -90333.2108193738  gap = 79630200.43558 eV
+cycle= 137 E= -33321069.4914  delta_E= -3.52e+03  |g|= 9.79e+04  |ddm|= 0.129
+  HOMO = -2999875.31207164  LUMO = -88675.3765807857  gap = 79217785.22604 eV
+cycle= 138 E= -33303818.9456346  delta_E= 1.73e+04  |g|= 9.01e+04  |ddm|= 0.642
+  HOMO = -3013223.77032287  LUMO = -89487.0874870885  gap = 79558927.49748 eV
+cycle= 139 E= -33310963.3330228  delta_E= -7.14e+03  |g|= 9.37e+04  |ddm|= 0.28
+  HOMO = -2985516.16704725  LUMO = -90475.7521647511  gap = 78778062.27287 eV
+cycle= 140 E= -33206410.4014616  delta_E= 1.05e+05  |g|= 9.54e+04  |ddm|= 3.72
+  HOMO = -3085799.44924887  LUMO = -91119.5981209067  gap = 81489389.43536 eV
+cycle= 141 E= -33329774.7855664  delta_E= -1.23e+05  |g|= 1.01e+05  |ddm|= 4.26
+  HOMO = -3100376.76834257  LUMO = -90678.8367622989  gap = 81898052.21983 eV
+cycle= 142 E= -33328710.3786345  delta_E= 1.06e+03  |g|= 1.01e+05  |ddm|= 0.298
+  HOMO = -3124512.34029624  LUMO = -92688.876706539  gap = 82500118.61223 eV
+cycle= 143 E= -33336438.4968487  delta_E= -7.73e+03  |g|= 1.09e+05  |ddm|= 0.398
+  HOMO = -3078910.29053001  LUMO = -90514.4622604932  gap = 81318392.46360 eV
+cycle= 144 E= -33321740.5084423  delta_E= 1.47e+04  |g|= 1.07e+05  |ddm|= 0.952
+  HOMO = -3119166.23320927  LUMO = -92374.8309460824  gap = 82363189.24900 eV
+cycle= 145 E= -33332074.5346772  delta_E= -1.03e+04  |g|= 1.09e+05  |ddm|= 0.531
+  HOMO = -3130508.32686563  LUMO = -91640.7290124085  gap = 82691799.26885 eV
+cycle= 146 E= -33325144.5419999  delta_E= 6.93e+03  |g|= 1.08e+05  |ddm|= 0.457
+  HOMO = -2965798.82868526  LUMO = -152005.268921305  gap = 76567222.73533 eV
+cycle= 147 E= -33286483.4694799  delta_E= 3.87e+04  |g|= 8.55e+04  |ddm|= 1.27
+  HOMO = -3013990.18600717  LUMO = -88449.5071085495  gap = 79608016.73072 eV
+cycle= 148 E= -33309550.6627669  delta_E= -2.31e+04  |g|= 1.05e+05  |ddm|= 0.761
+  HOMO = -2964944.94210728  LUMO = -85050.3210582097  gap = 78365924.23029 eV
+cycle= 149 E= -33256547.8435986  delta_E= 5.3e+04  |g|= 8.09e+04  |ddm|= 1.83
+  HOMO = -3000380.21631286  LUMO = -121598.573837652  gap = 78335638.54068 eV
+cycle= 150 E= -33250531.2102235  delta_E= 6.02e+03  |g|= 8.51e+04  |ddm|= 0.37
+  HOMO = -2985022.44618097  LUMO = -124651.274002447  gap = 77834664.12663 eV
+cycle= 151 E= -33260038.1545553  delta_E= -9.51e+03  |g|= 8.04e+04  |ddm|= 0.946
+  HOMO = -2954666.48931599  LUMO = -102274.680470108  gap = 77617534.59079 eV
+cycle= 152 E= -33264226.7463687  delta_E= -4.19e+03  |g|= 7.91e+04  |ddm|= 0.207
+  HOMO = -2954253.91491636  LUMO = -89055.5406550259  gap = 77966018.98590 eV
+cycle= 153 E= -33261529.8995416  delta_E= 2.7e+03  |g|= 7.91e+04  |ddm|= 0.116
+  HOMO = -2954179.13675564  LUMO = -88391.3836817762  gap = 77982056.80028 eV
+cycle= 154 E= -33262149.7377128  delta_E= -620  |g|= 7.91e+04  |ddm|= 0.0296
+  HOMO = -2954148.09089161  LUMO = -94915.7088865697  gap = 77803676.06762 eV
+cycle= 155 E= -33264775.0785996  delta_E= -2.63e+03  |g|= 7.9e+04  |ddm|= 0.104
+  HOMO = -2954729.55506579  LUMO = -97052.8455889372  gap = 77761344.06194 eV
+cycle= 156 E= -33265365.4192342  delta_E= -590  |g|= 7.91e+04  |ddm|= 0.0329
+  HOMO = -2962851.56439157  LUMO = -100879.548466844  gap = 77878225.30377 eV
+cycle= 157 E= -33275715.0774877  delta_E= -1.03e+04  |g|= 7.94e+04  |ddm|= 0.819
+  HOMO = -3048639.44426504  LUMO = -83782.6036388887  gap = 80677863.98432 eV
+cycle= 158 E= -33247914.4873284  delta_E= 2.78e+04  |g|= 8.09e+04  |ddm|= 1.08
+  HOMO = -3023667.34318902  LUMO = -84305.6375789967  gap = 79984106.02376 eV
+cycle= 159 E= -33267792.407247  delta_E= -1.99e+04  |g|= 8.23e+04  |ddm|= 1.24
+  HOMO = -2962006.42441264  LUMO = -109439.610226791  gap = 77622296.72865 eV
+cycle= 160 E= -33262737.3793928  delta_E= 5.06e+03  |g|= 7.89e+04  |ddm|= 0.469
+  HOMO = -2961041.61678378  LUMO = -109570.835373066  gap = 77592472.15772 eV
+cycle= 161 E= -33263852.6234524  delta_E= -1.12e+03  |g|= 7.86e+04  |ddm|= 0.0583
+  HOMO = -2964977.78649653  LUMO = -102916.288008904  gap = 77880660.24833 eV
+cycle= 162 E= -33261520.1272219  delta_E= 2.33e+03  |g|= 7.89e+04  |ddm|= 0.285
+  HOMO = -2962013.58666461  LUMO = -112763.441248296  gap = 77532045.57446 eV
+cycle= 163 E= -33261481.2098784  delta_E= 38.9  |g|= 7.87e+04  |ddm|= 0.0916
+  HOMO = -2954131.80164816  LUMO = -125581.851135816  gap = 76968764.58024 eV
+cycle= 164 E= -33266386.0250597  delta_E= -4.9e+03  |g|= 7.83e+04  |ddm|= 0.193
+  HOMO = -2956288.44309448  LUMO = -120584.456729994  gap = 77163435.81142 eV
+cycle= 165 E= -33271095.3225139  delta_E= -4.71e+03  |g|= 7.87e+04  |ddm|= 0.181
+  HOMO = -2959530.42893035  LUMO = -100198.387402867  gap = 77806387.94136 eV
+cycle= 166 E= -33263055.9071094  delta_E= 8.04e+03  |g|= 7.82e+04  |ddm|= 0.525
+  HOMO = -2965523.3828276  LUMO = -91616.0547418184  gap = 78203001.69025 eV
+cycle= 167 E= -33264880.9038798  delta_E= -1.82e+03  |g|= 7.84e+04  |ddm|= 0.224
+  HOMO = -2966286.84418071  LUMO = -91424.6743158977  gap = 78228984.25849 eV
+cycle= 168 E= -33266046.5890514  delta_E= -1.17e+03  |g|= 7.88e+04  |ddm|= 0.119
+  HOMO = -2955537.03228341  LUMO = -110097.323496328  gap = 77428358.31244 eV
+cycle= 169 E= -33260096.2126364  delta_E= 5.95e+03  |g|= 7.84e+04  |ddm|= 0.377
+  HOMO = -2955865.90234971  LUMO = -109898.500158895  gap = 77442717.58135 eV
+cycle= 170 E= -33263160.334812  delta_E= -3.06e+03  |g|= 7.81e+04  |ddm|= 0.185
+  HOMO = -2956454.85706423  LUMO = -108930.813707605  gap = 77485075.94501 eV
+cycle= 171 E= -33262287.0409542  delta_E=  873  |g|= 7.83e+04  |ddm|= 0.0946
+  HOMO = -2956380.50378578  LUMO = -108136.660246885  gap = 77504662.70563 eV
+cycle= 172 E= -33260098.0346752  delta_E= 2.19e+03  |g|= 7.85e+04  |ddm|= 0.137
+  HOMO = -2952175.14298689  LUMO = -127249.423667938  gap = 76870144.22621 eV
+cycle= 173 E= -33268497.3514453  delta_E= -8.4e+03  |g|= 7.81e+04  |ddm|= 0.331
+  HOMO = -2953733.06140598  LUMO = -127306.178915243  gap = 76910992.95676 eV
+cycle= 174 E= -33267075.4522192  delta_E= 1.42e+03  |g|= 7.83e+04  |ddm|= 0.0595
+  HOMO = -2953524.31244406  LUMO = -128925.082534737  gap = 76861259.99686 eV
+cycle= 175 E= -33265702.0030148  delta_E= 1.37e+03  |g|= 7.78e+04  |ddm|= 0.0812
+  HOMO = -2956368.43622845  LUMO = -120868.027184959  gap = 77157896.19035 eV
+cycle= 176 E= -33267145.3368446  delta_E= -1.44e+03  |g|= 7.81e+04  |ddm|= 0.16
+  HOMO = -2955312.03619228  LUMO = -111974.535401542  gap = 77371154.31916 eV
+cycle= 177 E= -33258922.2560926  delta_E= 8.22e+03  |g|= 7.79e+04  |ddm|= 0.385
+  HOMO = -2955510.05832643  LUMO = -109515.059585164  gap = 77443468.52174 eV
+cycle= 178 E= -33256627.8848881  delta_E= 2.29e+03  |g|= 7.81e+04  |ddm|= 0.112
+  HOMO = -2963862.50130276  LUMO = -103521.493953133  gap = 77833843.29983 eV
+cycle= 179 E= -33262616.3361133  delta_E= -5.99e+03  |g|= 7.84e+04  |ddm|= 0.318
+  HOMO = -2965547.77672795  LUMO = -103718.904005785  gap = 77874330.17882 eV
+cycle= 180 E= -33263900.853668  delta_E= -1.28e+03  |g|= 7.8e+04  |ddm|= 0.104
+  HOMO = -2968182.3641849  LUMO = -94589.8798759151  gap = 78194434.35470 eV
+cycle= 181 E= -33261047.1462084  delta_E= 2.85e+03  |g|= 7.87e+04  |ddm|= 0.131
+  HOMO = -2970164.34973781  LUMO = -99206.8391555666  gap = 78122733.06747 eV
+cycle= 182 E= -33272166.9536665  delta_E= -1.11e+04  |g|= 7.88e+04  |ddm|= 0.436
+  HOMO = -2965254.36923174  LUMO = -104036.296104545  gap = 77857709.47526 eV
+cycle= 183 E= -33269539.2067175  delta_E= 2.63e+03  |g|= 7.89e+04  |ddm|= 0.136
+  HOMO = -2961508.25571955  LUMO = -112776.233072504  gap = 77517946.73578 eV
+cycle= 184 E= -33268475.9915347  delta_E= 1.06e+03  |g|= 7.81e+04  |ddm|= 0.105
+  HOMO = -2960837.29981901  LUMO = -115638.986685444  gap = 77421789.60213 eV
+cycle= 185 E= -33271977.5575801  delta_E= -3.5e+03  |g|= 7.86e+04  |ddm|= 0.238
+  HOMO = -2957220.26810852  LUMO = -106183.223668758  gap = 77580669.57357 eV
+cycle= 186 E= -33256321.6974889  delta_E= 1.57e+04  |g|= 7.85e+04  |ddm|= 0.718
+  HOMO = -2956022.93793836  LUMO = -112984.060517496  gap = 77363028.36337 eV
+cycle= 187 E= -33261946.6731099  delta_E= -5.62e+03  |g|= 7.82e+04  |ddm|= 0.244
+  HOMO = -2962605.70136071  LUMO = -109611.772876283  gap = 77633919.10071 eV
+cycle= 188 E= -33269691.4531033  delta_E= -7.74e+03  |g|= 7.92e+04  |ddm|= 0.339
+  HOMO = -2972136.88590666  LUMO = -92456.14652795  gap = 78360104.21359 eV
+cycle= 189 E= -33269314.393123  delta_E=  377  |g|= 7.94e+04  |ddm|= 0.235
+  HOMO = -2971807.94629078  LUMO = -91484.7809765179  gap = 78377585.51371 eV
+cycle= 190 E= -33273641.4229609  delta_E= -4.33e+03  |g|= 7.95e+04  |ddm|= 0.176
+  HOMO = -2968985.64755169  LUMO = -93539.1939417031  gap = 78244883.42902 eV
+cycle= 191 E= -33268783.9028309  delta_E= 4.86e+03  |g|= 7.89e+04  |ddm|= 0.184
+  HOMO = -2982964.24649198  LUMO = -84439.3801250348  gap = 78872879.02728 eV
+cycle= 192 E= -33252240.5932528  delta_E= 1.65e+04  |g|= 8.13e+04  |ddm|= 0.739
+  HOMO = -2963949.48189784  LUMO = -85856.0966231924  gap = 78316910.10832 eV
+cycle= 193 E= -33255955.3338351  delta_E= -3.71e+03  |g|= 8e+04  |ddm|= 0.474
+  HOMO = -2963111.91832286  LUMO = -84900.1342605199  gap = 78320131.90343 eV
+cycle= 194 E= -33250799.0642561  delta_E= 5.16e+03  |g|= 8.01e+04  |ddm|= 0.241
+  HOMO = -2967295.8948203  LUMO = -84958.9860301446  gap = 78432382.26478 eV
+cycle= 195 E= -33237553.9269076  delta_E= 1.32e+04  |g|= 8.35e+04  |ddm|= 0.593
+  HOMO = -3007158.5294942  LUMO = -84469.9888474809  gap = 79530406.09577 eV
+cycle= 196 E= -33275109.0108436  delta_E= -3.76e+04  |g|= 8.21e+04  |ddm|= 1.68
+  HOMO = -3005618.13320254  LUMO = -84403.7777023082  gap = 79490291.47468 eV
+cycle= 197 E= -33271196.1802272  delta_E= 3.91e+03  |g|= 8.07e+04  |ddm|= 0.245
+  HOMO = -3009639.95705563  LUMO = -84635.9641434046  gap = 79593412.76118 eV
+cycle= 198 E= -33274503.6861395  delta_E= -3.31e+03  |g|= 8.39e+04  |ddm|= 0.186
+  HOMO = -3051556.36712602  LUMO = -86769.9732214545  gap = 80675947.03138 eV
+cycle= 199 E= -33302067.161572  delta_E= -2.76e+04  |g|= 8.82e+04  |ddm|= 0.999
+  HOMO = -3007119.77610531  LUMO = -84259.3329120123  gap = 79535083.80232 eV
+cycle= 200 E= -33269416.334467  delta_E= 3.27e+04  |g|= 8.18e+04  |ddm|= 1.14
+
+WARN: SCF failed to converge
+
+SCF not converged.
+SCF energy = -33269416.334467
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRKS'> ********
+method = DFRKS
+initial guess = minao
+damping factor = 0.0
+level_shift factor = 0.0
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+XC library gpu4pyscf.dft.libxc version 7.0.0 (CUDA)
+    unable to decode the reference due to https://github.com/NVIDIA/cuda-python/issues/29
+XC functionals = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+** Following is NLC and NLC Grids **
+NLC functional = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+small_rho_cutoff = 0
+init E= -33269416.334467
+  HOMO = -2956550.48244069  LUMO = -126716.67983813  gap = 77003699.97506 eV
+cycle= 1 E= -33271624.7937506  delta_E= -2.21e+03  |g|= 8.28e+04  |ddm|= 0.0865
+  HOMO = -2957135.57596717  LUMO = -127810.708692941  gap = 76989851.13938 eV
+cycle= 2 E= -33273899.3807508  delta_E= -2.27e+03  |g|= 8.48e+04  |ddm|= 0.086
+  HOMO = -2956819.45509603  LUMO = -126451.544913777  gap = 77018233.78259 eV
+cycle= 3 E= -33272055.7261682  delta_E= 1.84e+03  |g|= 8.31e+04  |ddm|= 0.0687
+  HOMO = -2957522.26662374  LUMO = -112138.458467795  gap = 77426837.17879 eV
+cycle= 4 E= -33263065.1721962  delta_E= 8.99e+03  |g|= 7.76e+04  |ddm|= 0.367
+  HOMO = -2995119.75796219  LUMO = -83151.1898270314  gap = 79238700.78563 eV
+cycle= 5 E= -33244009.9632383  delta_E= 1.91e+04  |g|= 8.04e+04  |ddm|= 0.823
+  HOMO = -3015716.31980496  LUMO = -83562.0916723897  gap = 79787980.57189 eV
+cycle= 6 E= -33262735.1458852  delta_E= -1.87e+04  |g|= 7.88e+04  |ddm|= 0.817
+  HOMO = -3050540.44035915  LUMO = -84332.3632606657  gap = 80714633.00157 eV
+cycle= 7 E= -33276251.0617785  delta_E= -1.35e+04  |g|= 8.2e+04  |ddm|= 0.593
+  HOMO = -3098801.39529364  LUMO = -83830.6450712932  gap = 82041532.92331 eV
+cycle= 8 E= -33258107.3016488  delta_E= 1.81e+04  |g|= 7.83e+04  |ddm|=  0.9
+  HOMO = -3109846.97400556  LUMO = -83196.7158276361  gap = 82359348.52281 eV
+cycle= 9 E= -33249051.1140393  delta_E= 9.06e+03  |g|= 7.88e+04  |ddm|= 0.374
+  HOMO = -2984934.56159048  LUMO = -84939.1299236684  gap = 78912895.14732 eV
+cycle= 10 E= -33266532.5419813  delta_E= -1.75e+04  |g|= 7.77e+04  |ddm|= 0.725
+  HOMO = -3112112.41135694  LUMO = -84220.0594938548  gap = 82393147.61355 eV
+cycle= 11 E= -33280497.8936806  delta_E= -1.4e+04  |g|= 8.3e+04  |ddm|= 1.12
+  HOMO = -3116299.09550402  LUMO = -84209.7266142434  gap = 82507354.26400 eV
+cycle= 12 E= -33267189.7995364  delta_E= 1.33e+04  |g|= 8.03e+04  |ddm|= 0.969
+  HOMO = -3019714.96796346  LUMO = -84508.0376221212  gap = 79871048.83010 eV
+cycle= 13 E= -33261482.0578374  delta_E= 5.71e+03  |g|= 7.75e+04  |ddm|= 0.628
+  HOMO = -3054370.22017746  LUMO = -92121.9153635815  gap = 80606882.10938 eV
+cycle= 14 E= -33256263.0665746  delta_E= 5.22e+03  |g|= 7.69e+04  |ddm|= 0.318
+  HOMO = -3020401.67072567  LUMO = -92781.7729962719  gap = 79664595.15695 eV
+cycle= 15 E= -33265892.7035628  delta_E= -9.63e+03  |g|= 7.8e+04  |ddm|= 0.374
+  HOMO = -3090975.31307395  LUMO = -83953.2474452018  gap = 81825238.19848 eV
+cycle= 16 E= -33237257.2823744  delta_E= 2.86e+04  |g|= 8.08e+04  |ddm|= 1.08
+  HOMO = -3027481.16862252  LUMO = -84687.5088036879  gap = 80077494.25454 eV
+cycle= 17 E= -33246320.2790145  delta_E= -9.06e+03  |g|= 7.69e+04  |ddm|= 0.365
+  HOMO = -2981316.32037969  LUMO = -84584.77474096  gap = 78824080.28469 eV
+cycle= 18 E= -33233491.2108648  delta_E= 1.28e+04  |g|= 7.92e+04  |ddm|= 0.683
+  HOMO = -3065847.6613949  LUMO = -82778.9270491573  gap = 81173434.85447 eV
+cycle= 19 E= -33230080.2108156  delta_E= 3.41e+03  |g|= 8.08e+04  |ddm|= 0.231
+  HOMO = -3047355.41305991  LUMO = -82812.4748371693  gap = 80669322.26484 eV
+cycle= 20 E= -33231136.5122207  delta_E= -1.06e+03  |g|= 8.05e+04  |ddm|= 0.0878
+  HOMO = -3040254.07072744  LUMO = -82844.6632663306  gap = 80475209.00560 eV
+cycle= 21 E= -33237896.6865874  delta_E= -6.76e+03  |g|= 8.04e+04  |ddm|= 0.52
+  HOMO = -3040006.41632311  LUMO = -83128.9526033052  gap = 80460734.07912 eV
+cycle= 22 E= -33248211.004696  delta_E= -1.03e+04  |g|= 7.91e+04  |ddm|= 0.574
+  HOMO = -3007621.3459933  LUMO = -85065.6289626299  gap = 79526791.78108 eV
+cycle= 23 E= -33279209.1079605  delta_E= -3.1e+04  |g|= 8.02e+04  |ddm|= 1.16
+  HOMO = -3007958.96794117  LUMO = -84509.534080903  gap = 79551111.05472 eV
+cycle= 24 E= -33269965.6457095  delta_E= 9.24e+03  |g|= 7.86e+04  |ddm|= 0.338
+  HOMO = -3056757.84951436  LUMO = -84048.0448832948  gap = 80891554.01925 eV
+cycle= 25 E= -33214641.9896531  delta_E= 5.53e+04  |g|= 9.05e+04  |ddm|= 2.37
+  HOMO = -3063578.77550936  LUMO = -83970.8260048516  gap = 81079262.10223 eV
+cycle= 26 E= -33209022.7444957  delta_E= 5.62e+03  |g|= 9.58e+04  |ddm|= 0.859
+  HOMO = -3029043.81209109  LUMO = -82600.3144408865  gap = 80176811.40068 eV
+cycle= 27 E= -33231539.1846641  delta_E= -2.25e+04  |g|= 8.23e+04  |ddm|=  0.8
+  HOMO = -3013350.74226453  LUMO = -83968.2193513482  gap = 79712558.63123 eV
+cycle= 28 E= -33245708.2271517  delta_E= -1.42e+04  |g|= 7.94e+04  |ddm|= 0.512
+  HOMO = -3028888.7399382  LUMO = -83937.6122432495  gap = 80136201.94574 eV
+cycle= 29 E= -33251195.5760693  delta_E= -5.49e+03  |g|= 8e+04  |ddm|= 0.628
+  HOMO = -3028955.81648143  LUMO = -85146.5961238376  gap = 80105129.06439 eV
+cycle= 30 E= -33270942.3119153  delta_E= -1.97e+04  |g|= 8.25e+04  |ddm|= 0.861
+  HOMO = -2999062.38955103  LUMO = -85658.5050281845  gap = 79277757.73392 eV
+cycle= 31 E= -33267586.062438  delta_E= 3.36e+03  |g|= 8.02e+04  |ddm|= 0.728
+  HOMO = -2994854.96585223  LUMO = -87464.8002274715  gap = 79114116.10757 eV
+cycle= 32 E= -33284798.8785523  delta_E= -1.72e+04  |g|= 8.4e+04  |ddm|= 0.615
+  HOMO = -2994248.11760953  LUMO = -84478.1157067228  gap = 79178874.75119 eV
+cycle= 33 E= -33252540.4355373  delta_E= 3.23e+04  |g|= 7.89e+04  |ddm|= 1.19
+  HOMO = -3050011.09937303  LUMO = -82911.8472441058  gap = 80738883.10933 eV
+cycle= 34 E= -33224100.4279783  delta_E= 2.84e+04  |g|= 8.5e+04  |ddm|=  1.8
+  HOMO = -3051458.62405128  LUMO = -84637.7304329145  gap = 80731308.58845 eV
+cycle= 35 E= -33203161.1417329  delta_E= 2.09e+04  |g|= 9.83e+04  |ddm|= 1.23
+  HOMO = -3022451.60288355  LUMO = -82539.301436648  gap = 79999088.49962 eV
+cycle= 36 E= -33229025.1792964  delta_E= -2.59e+04  |g|= 8.42e+04  |ddm|= 0.942
+  HOMO = -3048092.92140027  LUMO = -81979.0224175015  gap = 80712070.28451 eV
+cycle= 37 E= -33223133.7312936  delta_E= 5.89e+03  |g|= 9.03e+04  |ddm|= 0.296
+  HOMO = -3045346.96143284  LUMO = -82037.1650131628  gap = 80635766.76722 eV
+cycle= 38 E= -33218245.471197  delta_E= 4.89e+03  |g|= 8.91e+04  |ddm|= 0.427
+  HOMO = -3019982.37296767  LUMO = -82035.4887173702  gap = 79945606.77359 eV
+cycle= 39 E= -33222093.3898408  delta_E= -3.85e+03  |g|= 8.92e+04  |ddm|= 0.354
+  HOMO = -3020880.18927105  LUMO = -82058.8848325758  gap = 79969400.95888 eV
+cycle= 40 E= -33215784.8561313  delta_E= 6.31e+03  |g|= 9.03e+04  |ddm|= 0.418
+  HOMO = -2964806.54085053  LUMO = -87502.7664462796  gap = 78295423.70212 eV
+cycle= 41 E= -33286894.0932218  delta_E= -7.11e+04  |g|= 8.63e+04  |ddm|= 2.55
+  HOMO = -2958078.55482923  LUMO = -84288.4102420853  gap = 78199812.96483 eV
+cycle= 42 E= -33249087.4114505  delta_E= 3.78e+04  |g|= 7.99e+04  |ddm|= 1.42
+  HOMO = -2969637.90378828  LUMO = -82982.3377060763  gap = 78549898.91544 eV
+cycle= 43 E= -33231077.9712402  delta_E= 1.8e+04  |g|= 8.35e+04  |ddm|= 0.691
+  HOMO = -2990955.19059701  LUMO = -82734.2690295576  gap = 79136722.12821 eV
+cycle= 44 E= -33224661.0077224  delta_E= 6.42e+03  |g|= 8.37e+04  |ddm|= 0.579
+  HOMO = -2944652.58430603  LUMO = -83838.281054521  gap = 77846722.33731 eV
+cycle= 45 E= -33236495.9985417  delta_E= -1.18e+04  |g|= 8.1e+04  |ddm|= 0.538
+  HOMO = -2940353.53235144  LUMO = -83813.4621969183  gap = 77730414.53057 eV
+cycle= 46 E= -33235989.6500557  delta_E=  506  |g|= 8.11e+04  |ddm|= 0.0783
+  HOMO = -2999832.16294166  LUMO = -83444.6189839544  gap = 79358947.24255 eV
+cycle= 47 E= -33233011.4607587  delta_E= 2.98e+03  |g|= 8.01e+04  |ddm|= 0.126
+  HOMO = -2994065.96081003  LUMO = -83423.7011268556  gap = 79202610.09436 eV
+cycle= 48 E= -33233717.9570414  delta_E= -706  |g|= 8.06e+04  |ddm|= 0.0901
+  HOMO = -2993129.53218162  LUMO = -83472.3942405654  gap = 79175803.56636 eV
+cycle= 49 E= -33232519.7522765  delta_E= 1.2e+03  |g|= 7.97e+04  |ddm|= 0.132
+  HOMO = -2935362.69570445  LUMO = -87466.8110869037  gap = 77495194.26110 eV
+cycle= 50 E= -33284519.3430342  delta_E= -5.2e+04  |g|= 8.7e+04  |ddm|= 1.93
+  HOMO = -3006570.1425974  LUMO = -96273.1604934737  gap = 79193214.61287 eV
+cycle= 51 E= -33180717.2493362  delta_E= 1.04e+05  |g|= 1.05e+05  |ddm|= 3.83
+  HOMO = -3017592.39069881  LUMO = -86420.7186773846  gap = 79761243.85826 eV
+cycle= 52 E= -33194079.3178234  delta_E= -1.34e+04  |g|= 9.81e+04  |ddm|= 0.793
+  HOMO = -3017423.38336287  LUMO = -85377.9527145008  gap = 79785020.04155 eV
+cycle= 53 E= -33196642.5850212  delta_E= -2.56e+03  |g|= 9.65e+04  |ddm|= 0.129
+  HOMO = -2980511.16545097  LUMO = -83178.902111019  gap = 78840426.64594 eV
+cycle= 54 E= -33207966.4056566  delta_E= -1.13e+04  |g|= 9.31e+04  |ddm|= 0.61
+  HOMO = -2988860.02272222  LUMO = -84627.0867436898  gap = 79028203.51291 eV
+cycle= 55 E= -33198134.0851265  delta_E= 9.83e+03  |g|= 9.71e+04  |ddm|= 0.594
+  HOMO = -3000144.31489585  LUMO = -82727.541110517  gap = 79386954.01270 eV
+cycle= 56 E= -33211709.1828408  delta_E= -1.36e+04  |g|= 9.06e+04  |ddm|= 0.553
+  HOMO = -3010827.23824173  LUMO = -83044.1929605014  gap = 79669034.62796 eV
+cycle= 57 E= -33205516.793667  delta_E= 6.19e+03  |g|= 9.42e+04  |ddm|= 0.362
+  HOMO = -2933589.11713595  LUMO = -87349.1396221432  gap = 77450134.73368 eV
+cycle= 58 E= -33275232.3890744  delta_E= -6.97e+04  |g|= 9.44e+04  |ddm|= 2.39
+  HOMO = -2998098.90930544  LUMO = -83737.2313303317  gap = 79303820.62128 eV
+cycle= 59 E= -33204069.0212162  delta_E= 7.12e+04  |g|= 1.01e+05  |ddm|= 2.85
+  HOMO = -2953543.66714549  LUMO = -83853.4873897384  gap = 78088247.23914 eV
+cycle= 60 E= -33217625.736968  delta_E= -1.36e+04  |g|= 8.95e+04  |ddm|= 1.15
+  HOMO = -2954991.04516481  LUMO = -84057.6925024314  gap = 78122075.69699 eV
+cycle= 61 E= -33223756.3184334  delta_E= -6.13e+03  |g|= 8.85e+04  |ddm|= 0.774
+  HOMO = -2959670.67266028  LUMO = -84346.7334371592  gap = 78241549.64275 eV
+cycle= 62 E= -33229773.4306387  delta_E= -6.02e+03  |g|= 8.4e+04  |ddm|= 0.747
+  HOMO = -2978301.70154759  LUMO = -84351.9419671251  gap = 78748384.03043 eV
+cycle= 63 E= -33248060.8738534  delta_E= -1.83e+04  |g|= 8.67e+04  |ddm|=  1.1
+  HOMO = -2991402.08223116  LUMO = -84174.254152355  gap = 79109698.67794 eV
+cycle= 64 E= -33241285.2017574  delta_E= 6.78e+03  |g|= 8.05e+04  |ddm|= 0.617
+  HOMO = -2969314.78507358  LUMO = -84765.0914721422  gap = 78492595.20646 eV
+cycle= 65 E= -33240559.7471693  delta_E=  725  |g|= 8.02e+04  |ddm|= 0.492
+  HOMO = -2958650.38751895  LUMO = -84816.7370363323  gap = 78200996.82055 eV
+cycle= 66 E= -33242594.0383663  delta_E= -2.03e+03  |g|= 8.17e+04  |ddm|= 0.344
+  HOMO = -2966401.17071  LUMO = -84372.9918207613  gap = 78423981.29627 eV
+cycle= 67 E= -33245558.1793327  delta_E= -2.96e+03  |g|= 7.98e+04  |ddm|= 0.187
+  HOMO = -2986630.95916379  LUMO = -85004.5447829115  gap = 78957276.44755 eV
+cycle= 68 E= -33257532.7743117  delta_E= -1.2e+04  |g|= 7.96e+04  |ddm|=  0.9
+  HOMO = -2955234.62961166  LUMO = -113704.002697749  gap = 77321986.77661 eV
+cycle= 69 E= -33243521.0019456  delta_E= 1.4e+04  |g|= 7.75e+04  |ddm|= 0.625
+  HOMO = -2939000.18595307  LUMO = -128595.780223334  gap = 76474999.15662 eV
+cycle= 70 E= -33243380.3521603  delta_E=  141  |g|= 7.66e+04  |ddm|= 0.266
+  HOMO = -2945583.30658343  LUMO = -119857.126021903  gap = 76891925.88608 eV
+cycle= 71 E= -33246580.0909894  delta_E= -3.2e+03  |g|= 7.67e+04  |ddm|= 0.249
+  HOMO = -2950832.36174612  LUMO = -113785.297845293  gap = 77199982.81271 eV
+cycle= 72 E= -33241967.7396559  delta_E= 4.61e+03  |g|= 7.6e+04  |ddm|= 0.238
+  HOMO = -2942954.5001692  LUMO = -116126.665668883  gap = 76921903.41667 eV
+cycle= 73 E= -33241290.4795565  delta_E=  677  |g|= 7.64e+04  |ddm|= 0.0973
+  HOMO = -2943691.6084186  LUMO = -114692.062559096  gap = 76980998.69279 eV
+cycle= 74 E= -33239940.7456236  delta_E= 1.35e+03  |g|= 7.55e+04  |ddm|= 0.0603
+  HOMO = -2940007.01340339  LUMO = -116899.29974964  gap = 76820673.77227 eV
+cycle= 75 E= -33239659.8770459  delta_E=  281  |g|= 7.53e+04  |ddm|= 0.0322
+  HOMO = -2938387.59161176  LUMO = -121001.54808272  gap = 76664979.19783 eV
+cycle= 76 E= -33241733.9326515  delta_E= -2.07e+03  |g|= 7.54e+04  |ddm|= 0.0945
+  HOMO = -2939034.32964936  LUMO = -116835.23921842  gap = 76795948.87501 eV
+cycle= 77 E= -33239340.9735315  delta_E= 2.39e+03  |g|= 7.54e+04  |ddm|= 0.0983
+  HOMO = -2937314.40597203  LUMO = -120564.487131504  gap = 76647669.36337 eV
+cycle= 78 E= -33242217.819171  delta_E= -2.88e+03  |g|= 7.53e+04  |ddm|= 0.21
+  HOMO = -2936978.81522134  LUMO = -121161.882265565  gap = 76622281.52431 eV
+cycle= 79 E= -33242257.8800075  delta_E= -40.1  |g|= 7.53e+04  |ddm|= 0.0258
+  HOMO = -2936783.41681901  LUMO = -120543.846244378  gap = 76633782.07971 eV
+cycle= 80 E= -33241666.0328425  delta_E=  592  |g|= 7.53e+04  |ddm|= 0.0462
+  HOMO = -2936787.83671934  LUMO = -121352.975312999  gap = 76611884.82789 eV
+cycle= 81 E= -33242556.7670617  delta_E= -891  |g|= 7.53e+04  |ddm|= 0.0379
+  HOMO = -2936797.87095977  LUMO = -121426.70453849  gap = 76610151.59907 eV
+cycle= 82 E= -33242694.6033739  delta_E= -138  |g|= 7.54e+04  |ddm|= 0.0208
+  HOMO = -2936554.45059155  LUMO = -121062.645189376  gap = 76613434.35295 eV
+cycle= 83 E= -33241971.9921365  delta_E=  723  |g|= 7.52e+04  |ddm|= 0.0482
+  HOMO = -2936284.88738849  LUMO = -117967.40987399  gap = 76690324.80756 eV
+cycle= 84 E= -33239642.1992098  delta_E= 2.33e+03  |g|= 7.51e+04  |ddm|= 0.102
+  HOMO = -2936428.65934267  LUMO = -119278.049127548  gap = 76658572.73104 eV
+cycle= 85 E= -33241053.9432202  delta_E= -1.41e+03  |g|= 7.53e+04  |ddm|= 0.0584
+  HOMO = -2936164.04314065  LUMO = -116702.638956622  gap = 76721452.63774 eV
+cycle= 86 E= -33238588.9652717  delta_E= 2.46e+03  |g|= 7.5e+04  |ddm|= 0.115
+  HOMO = -2936704.59822752  LUMO = -124279.030642221  gap = 76529997.77208 eV
+cycle= 87 E= -33247273.2830654  delta_E= -8.68e+03  |g|= 7.48e+04  |ddm|= 0.438
+  HOMO = -2937890.83518942  LUMO = -124157.529734061  gap = 76565583.13208 eV
+cycle= 88 E= -33245734.8071929  delta_E= 1.54e+03  |g|= 7.47e+04  |ddm|= 0.109
+  HOMO = -2937314.277268  LUMO = -124526.424691631  gap = 76539856.04882 eV
+cycle= 89 E= -33246661.5463085  delta_E= -927  |g|= 7.49e+04  |ddm|= 0.052
+  HOMO = -2936679.59405878  LUMO = -121919.115168078  gap = 76593533.94494 eV
+cycle= 90 E= -33243440.8072589  delta_E= 3.22e+03  |g|= 7.44e+04  |ddm|= 0.14
+  HOMO = -2936812.41762339  LUMO = -120142.591985366  gap = 76645489.91632 eV
+cycle= 91 E= -33243966.1837603  delta_E= -525  |g|= 7.45e+04  |ddm|= 0.0648
+  HOMO = -2936712.65053404  LUMO = -120308.062151341  gap = 76638272.44298 eV
+cycle= 92 E= -33242071.0670812  delta_E= 1.9e+03  |g|= 7.44e+04  |ddm|= 0.0827
+  HOMO = -2936681.58207167  LUMO = -120323.932568877  gap = 76636995.17100 eV
+cycle= 93 E= -33242171.245561  delta_E= -100  |g|= 7.45e+04  |ddm|= 0.016
+  HOMO = -2936772.30160562  LUMO = -122267.187386128  gap = 76586585.11829 eV
+cycle= 94 E= -33243725.7797578  delta_E= -1.55e+03  |g|= 7.43e+04  |ddm|= 0.0827
+  HOMO = -2937536.86147752  LUMO = -122587.797635361  gap = 76598665.60285 eV
+cycle= 95 E= -33246932.2812608  delta_E= -3.21e+03  |g|= 7.44e+04  |ddm|= 0.15
+  HOMO = -2938250.82710306  LUMO = -118046.933499197  gap = 76741656.80396 eV
+cycle= 96 E= -33248786.4338573  delta_E= -1.85e+03  |g|= 7.43e+04  |ddm|= 0.132
+  HOMO = -2938489.40517757  LUMO = -110119.179410713  gap = 76963874.02082 eV
+cycle= 97 E= -33245848.7245327  delta_E= 2.94e+03  |g|= 7.42e+04  |ddm|= 0.122
+  HOMO = -2938578.20577606  LUMO = -111277.472390502  gap = 76934771.65078 eV
+cycle= 98 E= -33247334.811719  delta_E= -1.49e+03  |g|= 7.45e+04  |ddm|= 0.0628
+  HOMO = -2937462.80324495  LUMO = -116934.253083888  gap = 76750491.15886 eV
+cycle= 99 E= -33244722.3292249  delta_E= 2.61e+03  |g|= 7.42e+04  |ddm|= 0.162
+  HOMO = -2936989.15310666  LUMO = -119377.576864747  gap = 76671116.25554 eV
+cycle= 100 E= -33244307.1761451  delta_E=  415  |g|= 7.4e+04  |ddm|= 0.0291
+  HOMO = -2936969.34508867  LUMO = -117697.737425359  gap = 76716288.01135 eV
+cycle= 101 E= -33243057.2043852  delta_E= 1.25e+03  |g|= 7.38e+04  |ddm|= 0.0685
+  HOMO = -2936471.93929464  LUMO = -123342.70469859  gap = 76549145.52674 eV
+cycle= 102 E= -33244740.5185796  delta_E= -1.68e+03  |g|= 7.39e+04  |ddm|= 0.0745
+  HOMO = -2936354.61397762  LUMO = -122545.271621397  gap = 76567652.20154 eV
+cycle= 103 E= -33243825.687894  delta_E=  915  |g|= 7.38e+04  |ddm|= 0.0443
+  HOMO = -2936564.59485988  LUMO = -115919.379191847  gap = 76753665.78901 eV
+cycle= 104 E= -33240470.2017253  delta_E= 3.36e+03  |g|= 7.39e+04  |ddm|= 0.189
+  HOMO = -2936674.58142463  LUMO = -116696.308727549  gap = 76735517.34637 eV
+cycle= 105 E= -33241353.258581  delta_E= -883  |g|= 7.37e+04  |ddm|= 0.0538
+  HOMO = -2936840.36252512  LUMO = -119065.228307341  gap = 76675566.89476 eV
+cycle= 106 E= -33243100.5240784  delta_E= -1.75e+03  |g|= 7.36e+04  |ddm|= 0.0802
+  HOMO = -2936883.72624885  LUMO = -118166.326442999  gap = 76701207.24741 eV
+cycle= 107 E= -33242771.4418827  delta_E=  329  |g|= 7.36e+04  |ddm|= 0.0129
+  HOMO = -2937022.33032015  LUMO = -118256.780704382  gap = 76702517.47047 eV
+cycle= 108 E= -33243116.856343  delta_E= -345  |g|= 7.37e+04  |ddm|= 0.0293
+  HOMO = -2936967.56220443  LUMO = -119383.198662892  gap = 76670375.76024 eV
+cycle= 109 E= -33243364.8931983  delta_E= -248  |g|= 7.35e+04  |ddm|= 0.0554
+  HOMO = -2936872.8005623  LUMO = -120556.75906754  gap = 76635862.95943 eV
+cycle= 110 E= -33243696.5383533  delta_E= -332  |g|= 7.35e+04  |ddm|= 0.022
+  HOMO = -2936956.33820156  LUMO = -122443.855296739  gap = 76586785.63043 eV
+cycle= 111 E= -33244682.6076861  delta_E= -986  |g|= 7.36e+04  |ddm|= 0.0551
+  HOMO = -2936915.75834438  LUMO = -121300.602124269  gap = 76616790.89967 eV
+cycle= 112 E= -33243356.960177  delta_E= 1.33e+03  |g|= 7.34e+04  |ddm|= 0.0614
+  HOMO = -2936647.70270319  LUMO = -117056.800703697  gap = 76724976.45279 eV
+cycle= 113 E= -33240035.0365625  delta_E= 3.32e+03  |g|= 7.34e+04  |ddm|= 0.173
+  HOMO = -2936532.96669621  LUMO = -118932.794435049  gap = 76670805.93742 eV
+cycle= 114 E= -33241216.6369256  delta_E= -1.18e+03  |g|= 7.34e+04  |ddm|= 0.0561
+  HOMO = -2936549.60835486  LUMO = -118893.572526371  gap = 76672326.06251 eV
+cycle= 115 E= -33241139.5628272  delta_E= 77.1  |g|= 7.34e+04  |ddm|= 0.00388
+  HOMO = -2936543.13204996  LUMO = -119071.94714075  gap = 76667296.01279 eV
+cycle= 116 E= -33241322.631123  delta_E= -183  |g|= 7.34e+04  |ddm|= 0.0206
+  HOMO = -2936526.80180173  LUMO = -118976.166098974  gap = 76669457.97900 eV
+cycle= 117 E= -33241348.8868244  delta_E= -26.3  |g|= 7.34e+04  |ddm|= 0.00871
+  HOMO = -2936607.23137859  LUMO = -119486.614039489  gap = 76657756.58332 eV
+cycle= 118 E= -33241735.6989964  delta_E= -387  |g|= 7.34e+04  |ddm|= 0.0152
+  HOMO = -2936511.01788699  LUMO = -119400.58774421  gap = 76657479.37558 eV
+cycle= 119 E= -33241275.4556075  delta_E=  460  |g|= 7.33e+04  |ddm|= 0.0182
+  HOMO = -2936442.50159518  LUMO = -122161.247234366  gap = 76580493.58126 eV
+cycle= 120 E= -33242685.1622939  delta_E= -1.41e+03  |g|= 7.34e+04  |ddm|= 0.0523
+  HOMO = -2936276.40444873  LUMO = -119866.995897578  gap = 76638403.60645 eV
+cycle= 121 E= -33240467.9371476  delta_E= 2.22e+03  |g|= 7.33e+04  |ddm|=  0.1
+  HOMO = -2936303.69268575  LUMO = -119762.430955544  gap = 76641991.51420 eV
+cycle= 122 E= -33240406.7059412  delta_E= 61.2  |g|= 7.33e+04  |ddm|= 0.0155
+  HOMO = -2936343.95542113  LUMO = -120023.500297309  gap = 76635983.06040 eV
+cycle= 123 E= -33240680.6478236  delta_E= -274  |g|= 7.33e+04  |ddm|= 0.0124
+  HOMO = -2936272.65286468  LUMO = -119233.668735401  gap = 76655535.23053 eV
+cycle= 124 E= -33239978.4682532  delta_E=  702  |g|= 7.33e+04  |ddm|= 0.0306
+  HOMO = -2936207.31771355  LUMO = -119239.592756369  gap = 76653596.16969 eV
+cycle= 125 E= -33239642.3935184  delta_E=  336  |g|= 7.32e+04  |ddm|= 0.0255
+  HOMO = -2936237.91313208  LUMO = -119495.757841424  gap = 76647458.10642 eV
+cycle= 126 E= -33239897.8203891  delta_E= -255  |g|= 7.32e+04  |ddm|= 0.0186
+  HOMO = -2936250.78493569  LUMO = -120307.98882825  gap = 76625706.43512 eV
+cycle= 127 E= -33240179.8136965  delta_E= -282  |g|= 7.32e+04  |ddm|= 0.0168
+  HOMO = -2936338.8503424  LUMO = -120798.970451272  gap = 76614742.52642 eV
+cycle= 128 E= -33240559.6253542  delta_E= -380  |g|= 7.33e+04  |ddm|= 0.0215
+  HOMO = -2936234.2727532  LUMO = -119694.674865354  gap = 76641946.23874 eV
+cycle= 129 E= -33239509.3558217  delta_E= 1.05e+03  |g|= 7.31e+04  |ddm|= 0.042
+  HOMO = -2936199.21741147  LUMO = -119826.739335071  gap = 76637398.67704 eV
+cycle= 130 E= -33239584.5853923  delta_E= -75.2  |g|= 7.31e+04  |ddm|= 0.0066
+  HOMO = -2936310.47132731  LUMO = -120526.464138644  gap = 76621385.56855 eV
+cycle= 131 E= -33240329.1196402  delta_E= -745  |g|= 7.32e+04  |ddm|= 0.0302
+  HOMO = -2936089.34884199  LUMO = -119114.393246147  gap = 76653792.92539 eV
+cycle= 132 E= -33238909.3307781  delta_E= 1.42e+03  |g|= 7.3e+04  |ddm|= 0.0603
+  HOMO = -2936135.44774065  LUMO = -119045.288217894  gap = 76656927.78392 eV
+cycle= 133 E= -33238850.1564183  delta_E= 59.2  |g|= 7.3e+04  |ddm|= 0.00901
+  HOMO = -2936211.7109073  LUMO = -119514.344478164  gap = 76646239.33942 eV
+cycle= 134 E= -33239285.2072105  delta_E= -435  |g|= 7.31e+04  |ddm|= 0.0206
+  HOMO = -2936195.82485198  LUMO = -119710.42050205  gap = 76640471.55746 eV
+cycle= 135 E= -33239316.9860002  delta_E= -31.8  |g|= 7.3e+04  |ddm|= 0.0302
+  HOMO = -2936198.65195706  LUMO = -119689.859744409  gap = 76641107.97362 eV
+cycle= 136 E= -33239282.1430044  delta_E= 34.8  |g|= 7.3e+04  |ddm|= 0.00457
+  HOMO = -2936199.61900083  LUMO = -119692.729050917  gap = 76641056.21042 eV
+cycle= 137 E= -33239284.7153607  delta_E= -2.57  |g|= 7.3e+04  |ddm|= 0.000367
+  HOMO = -2936226.69643371  LUMO = -119966.474919115  gap = 76634344.02040 eV
+cycle= 138 E= -33239498.8868166  delta_E= -214  |g|= 7.3e+04  |ddm|= 0.00959
+  HOMO = -2936380.93984157  LUMO = -120726.610157299  gap = 76617856.86392 eV
+cycle= 139 E= -33240413.0458108  delta_E= -914  |g|= 7.31e+04  |ddm|= 0.0377
+  HOMO = -2936202.45577161  LUMO = -119602.748311209  gap = 76643581.90352 eV
+cycle= 140 E= -33239305.4675518  delta_E= 1.11e+03  |g|= 7.29e+04  |ddm|= 0.0488
+  HOMO = -2936201.42816349  LUMO = -120813.571998191  gap = 76610605.75013 eV
+cycle= 141 E= -33239929.7682561  delta_E= -624  |g|= 7.28e+04  |ddm|= 0.0296
+  HOMO = -2936774.52494889  LUMO = -122096.5559179  gap = 76591288.73729 eV
+cycle= 142 E= -33243758.6118768  delta_E= -3.83e+03  |g|= 7.3e+04  |ddm|= 0.151
+  HOMO = -2936273.33608266  LUMO = -106688.231656703  gap = 76996932.55298 eV
+cycle= 143 E= -33238003.4913129  delta_E= 5.76e+03  |g|= 7.26e+04  |ddm|= 0.218
+  HOMO = -2936872.90121376  LUMO = -96812.9982440229  gap = 77281966.33963 eV
+cycle= 144 E= -33241555.7327645  delta_E= -3.55e+03  |g|= 7.3e+04  |ddm|= 0.163
+  HOMO = -2936899.17055285  LUMO = -99137.7272142507  gap = 77219422.06736 eV
+cycle= 145 E= -33241814.9625469  delta_E= -259  |g|= 7.28e+04  |ddm|= 0.0836
+  HOMO = -2936774.93621747  LUMO = -108554.290134168  gap = 76959803.75031 eV
+cycle= 146 E= -33241833.9039869  delta_E= -18.9  |g|= 7.26e+04  |ddm|= 0.0359
+  HOMO = -2936163.40119356  LUMO = -118799.317883191  gap = 76664381.62984 eV
+cycle= 147 E= -33239164.3516369  delta_E= 2.67e+03  |g|= 7.23e+04  |ddm|= 0.123
+  HOMO = -2936908.90364728  LUMO = -114358.364803287  gap = 76805512.27344 eV
+cycle= 148 E= -33240433.0315339  delta_E= -1.27e+03  |g|= 7.24e+04  |ddm|= 0.0684
+  HOMO = -2936465.61554942  LUMO = -119121.861043192  gap = 76663828.45491 eV
+cycle= 149 E= -33240325.6145508  delta_E=  107  |g|= 7.22e+04  |ddm|= 0.0247
+  HOMO = -2936637.09370387  LUMO = -120113.877270365  gap = 76641500.47666 eV
+cycle= 150 E= -33241414.9223206  delta_E= -1.09e+03  |g|= 7.22e+04  |ddm|= 0.043
+  HOMO = -2936687.78968033  LUMO = -121921.525505398  gap = 76593691.37054 eV
+cycle= 151 E= -33242532.0187809  delta_E= -1.12e+03  |g|= 7.22e+04  |ddm|= 0.0447
+  HOMO = -2936729.78514747  LUMO = -122305.543092578  gap = 76584384.47460 eV
+cycle= 152 E= -33242907.4824937  delta_E= -375  |g|= 7.22e+04  |ddm|= 0.0147
+  HOMO = -2936723.71261269  LUMO = -122054.820040126  gap = 76591041.75428 eV
+cycle= 153 E= -33242752.481795  delta_E=  155  |g|= 7.22e+04  |ddm|= 0.00756
+  HOMO = -2936752.15653384  LUMO = -121896.532919406  gap = 76596122.96474 eV
+cycle= 154 E= -33242797.3081785  delta_E= -44.8  |g|= 7.22e+04  |ddm|= 0.00931
+  HOMO = -2936568.56882995  LUMO = -120451.231677602  gap = 76630455.93887 eV
+cycle= 155 E= -33241341.6112738  delta_E= 1.46e+03  |g|= 7.21e+04  |ddm|= 0.0577
+  HOMO = -2936446.89691763  LUMO = -120030.107570898  gap = 76638604.44812 eV
+cycle= 156 E= -33240722.821512  delta_E=  619  |g|= 7.21e+04  |ddm|= 0.0231
+  HOMO = -2936402.10046839  LUMO = -120371.608571559  gap = 76628092.75910 eV
+cycle= 157 E= -33240681.9612026  delta_E= 40.9  |g|= 7.21e+04  |ddm|= 0.00421
+  HOMO = -2936851.8087727  LUMO = -120651.678049134  gap = 76632708.86669 eV
+cycle= 158 E= -33242711.7291913  delta_E= -2.03e+03  |g|= 7.2e+04  |ddm|= 0.104
+  HOMO = -2936831.50512569  LUMO = -121664.558377593  gap = 76604594.49871 eV
+cycle= 159 E= -33242990.3875326  delta_E= -279  |g|= 7.2e+04  |ddm|= 0.0135
+  HOMO = -2936842.11411263  LUMO = -122599.383146851  gap = 76579445.30629 eV
+cycle= 160 E= -33243495.4165465  delta_E= -505  |g|= 7.2e+04  |ddm|= 0.0192
+  HOMO = -2936880.40748302  LUMO = -122788.922863346  gap = 76575329.68358 eV
+cycle= 161 E= -33243760.7932756  delta_E= -265  |g|= 7.2e+04  |ddm|= 0.0103
+  HOMO = -2936696.50175771  LUMO = -120561.572068806  gap = 76630934.65617 eV
+cycle= 162 E= -33242088.1193706  delta_E= 1.67e+03  |g|= 7.2e+04  |ddm|= 0.0653
+  HOMO = -2936688.91304406  LUMO = -117997.354174651  gap = 76700504.07971 eV
+cycle= 163 E= -33241214.8408333  delta_E=  873  |g|= 7.2e+04  |ddm|= 0.0358
+  HOMO = -2936676.95550615  LUMO = -118682.980417104  gap = 76681521.85818 eV
+cycle= 164 E= -33241237.1200951  delta_E= -22.3  |g|= 7.19e+04  |ddm|= 0.00983
+  HOMO = -2936659.29433669  LUMO = -118784.194524281  gap = 76678287.09714 eV
+cycle= 165 E= -33241333.7750213  delta_E= -96.7  |g|= 7.19e+04  |ddm|= 0.0109
+  HOMO = -2936822.21433509  LUMO = -121710.102466415  gap = 76603102.36564 eV
+cycle= 166 E= -33243444.4573843  delta_E= -2.11e+03  |g|= 7.19e+04  |ddm|= 0.0841
+  HOMO = -2937318.61478449  LUMO = -123133.639636803  gap = 76577873.69043 eV
+cycle= 167 E= -33246700.7348028  delta_E= -3.26e+03  |g|= 7.2e+04  |ddm|= 0.128
+  HOMO = -2936925.672064  LUMO = -99840.2201802127  gap = 77201027.40294 eV
+cycle= 168 E= -33237971.5211218  delta_E= 8.73e+03  |g|= 7.23e+04  |ddm|= 0.345
+  HOMO = -2937796.99808629  LUMO = -87706.8995381759  gap = 77554901.86337 eV
+cycle= 169 E= -33235286.6143271  delta_E= 2.68e+03  |g|= 7.26e+04  |ddm|= 0.114
+  HOMO = -2938030.49298881  LUMO = -88726.4605569914  gap = 77533511.91484 eV
+cycle= 170 E= -33237240.1024108  delta_E= -1.95e+03  |g|= 7.24e+04  |ddm|= 0.0783
+  HOMO = -2939326.5586716  LUMO = -87159.6779759908  gap = 77611413.98407 eV
+cycle= 171 E= -33242767.3924748  delta_E= -5.53e+03  |g|= 7.26e+04  |ddm|= 0.224
+  HOMO = -2939387.14779048  LUMO = -91741.7891211121  gap = 77488377.10281 eV
+cycle= 172 E= -33247579.2373213  delta_E= -4.81e+03  |g|= 7.29e+04  |ddm|= 0.201
+  HOMO = -2939783.07323753  LUMO = -89144.0584199281  gap = 77569838.63587 eV
+cycle= 173 E= -33247186.091903  delta_E=  393  |g|= 7.25e+04  |ddm|= 0.0559
+  HOMO = -2939836.98292242  LUMO = -91855.5680353734  gap = 77497521.65828 eV
+cycle= 174 E= -33247870.4597092  delta_E= -684  |g|= 7.26e+04  |ddm|= 0.0315
+  HOMO = -2940528.66083691  LUMO = -96622.8999229571  gap = 77386617.46473 eV
+cycle= 175 E= -33256926.0556586  delta_E= -9.06e+03  |g|= 7.38e+04  |ddm|= 0.363
+  HOMO = -2937494.41386369  LUMO = -88248.3870767377  gap = 77531933.50085 eV
+cycle= 176 E= -33233444.9623115  delta_E= 2.35e+04  |g|= 7.33e+04  |ddm|= 0.918
+  HOMO = -2937666.99339438  LUMO = -92061.4463301146  gap = 77432871.00182 eV
+cycle= 177 E= -33237722.8490418  delta_E= -4.28e+03  |g|= 7.26e+04  |ddm|= 0.176
+  HOMO = -2937484.70879592  LUMO = -89520.9733404564  gap = 77497040.57644 eV
+cycle= 178 E= -33234212.6718843  delta_E= 3.51e+03  |g|= 7.33e+04  |ddm|= 0.158
+  HOMO = -2941791.64567492  LUMO = -84639.8293717402  gap = 77747060.99117 eV
+cycle= 179 E= -33247333.4984145  delta_E= -1.31e+04  |g|= 7.45e+04  |ddm|= 0.524
+  HOMO = -2940372.15618059  LUMO = -85171.6943502431  gap = 77693961.93135 eV
+cycle= 180 E= -33244946.2349527  delta_E= 2.39e+03  |g|= 7.35e+04  |ddm|= 0.175
+  HOMO = -2940464.55352707  LUMO = -85280.8025710035  gap = 77693507.20530 eV
+cycle= 181 E= -33246485.932691  delta_E= -1.54e+03  |g|= 7.38e+04  |ddm|= 0.0632
+  HOMO = -2940152.79336661  LUMO = -87736.5806044176  gap = 77618198.65518 eV
+cycle= 182 E= -33246890.6393817  delta_E= -405  |g|= 7.39e+04  |ddm|= 0.0698
+  HOMO = -2938318.84702114  LUMO = -99690.9159763228  gap = 77243000.39881 eV
+cycle= 183 E= -33242997.7762227  delta_E= 3.89e+03  |g|= 7.3e+04  |ddm|= 0.154
+  HOMO = -2938462.33419652  LUMO = -102742.972360299  gap = 77163854.19931 eV
+cycle= 184 E= -33244676.8160436  delta_E= -1.68e+03  |g|= 7.32e+04  |ddm|= 0.069
+  HOMO = -2936565.12219213  LUMO = -105394.903900365  gap = 77040065.69826 eV
+cycle= 185 E= -33235145.1126338  delta_E= 9.53e+03  |g|= 7.3e+04  |ddm|= 0.375
+  HOMO = -2936329.45201636  LUMO = -119768.301976715  gap = 76642532.70266 eV
+cycle= 186 E= -33238687.8559612  delta_E= -3.54e+03  |g|= 7.27e+04  |ddm|= 0.146
+  HOMO = -2936675.84588109  LUMO = -114531.303070111  gap = 76794464.55867 eV
+cycle= 187 E= -33238266.8607228  delta_E=  421  |g|= 7.31e+04  |ddm|= 0.0349
+  HOMO = -2938352.64960016  LUMO = -105025.540124984  gap = 77098757.69686 eV
+cycle= 188 E= -33241586.2035077  delta_E= -3.32e+03  |g|= 7.22e+04  |ddm|= 0.224
+  HOMO = -2938103.84603786  LUMO = -112887.385804412  gap = 76878055.68947 eV
+cycle= 189 E= -33244026.9158524  delta_E= -2.44e+03  |g|= 7.22e+04  |ddm|= 0.108
+  HOMO = -2938177.2510983  LUMO = -113032.843816945  gap = 76876095.02878 eV
+cycle= 190 E= -33244086.6209041  delta_E= -59.7  |g|= 7.22e+04  |ddm|= 0.0158
+  HOMO = -2938373.30861442  LUMO = -114050.367343099  gap = 76853741.80008 eV
+cycle= 191 E= -33247483.9473734  delta_E= -3.4e+03  |g|= 7.25e+04  |ddm|= 0.127
+  HOMO = -2938179.22205475  LUMO = -114194.473131961  gap = 76844539.11753 eV
+cycle= 192 E= -33245929.2513806  delta_E= 1.55e+03  |g|= 7.23e+04  |ddm|= 0.0697
+  HOMO = -2938192.1242688  LUMO = -113754.023807546  gap = 76856875.44125 eV
+cycle= 193 E= -33245853.0333085  delta_E= 76.2  |g|= 7.23e+04  |ddm|= 0.00358
+  HOMO = -2937385.12270053  LUMO = -121048.613770277  gap = 76636419.90672 eV
+cycle= 194 E= -33243728.6506246  delta_E= 2.12e+03  |g|= 7.18e+04  |ddm|= 0.092
+  HOMO = -2936659.9759584  LUMO = -120906.805049179  gap = 76620546.47065 eV
+cycle= 195 E= -33243029.6100213  delta_E=  699  |g|= 7.18e+04  |ddm|= 0.0407
+  HOMO = -2936536.14299696  LUMO = -118713.525523837  gap = 76676858.97995 eV
+cycle= 196 E= -33242046.5349342  delta_E=  983  |g|= 7.17e+04  |ddm|= 0.0682
+  HOMO = -2936643.23401894  LUMO = -118953.264379098  gap = 76673249.44855 eV
+cycle= 197 E= -33242687.6697136  delta_E= -641  |g|= 7.17e+04  |ddm|= 0.0252
+  HOMO = -2936560.87092863  LUMO = -118250.92006449  gap = 76690119.99697 eV
+cycle= 198 E= -33242197.9321119  delta_E=  490  |g|= 7.17e+04  |ddm|= 0.02
+  HOMO = -2936604.89881928  LUMO = -118562.392864741  gap = 76682842.45030 eV
+cycle= 199 E= -33242604.5821344  delta_E= -407  |g|= 7.18e+04  |ddm|= 0.02
+  HOMO = -2936644.37673914  LUMO = -115439.774684417  gap = 76768887.46791 eV
+cycle= 200 E= -33241070.6293002  delta_E= 1.53e+03  |g|= 7.19e+04  |ddm|= 0.0598
+
+WARN: SCF failed to converge
+
+SCF not converged.
+SCF energy = -33241070.6293002

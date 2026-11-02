@@ -1,0 +1,628 @@
+#INFO: **** input file is /opt/data/bcmdata/ZONES/home/PROJECTS/homefile/PRIVATE/yuanjiao/NNAO_basis_accuracy_20261029/run_gpu.py ****
+"""GPU4PySCF-only electronic calculations on pre-exported, frozen bases."""
+from pathlib import Path
+import argparse
+import gc
+import hashlib
+import importlib.metadata as metadata
+import json
+import os
+import resource
+import threading
+import time
+import traceback
+
+import cupy as cp
+import numpy as np
+from pyscf import gto,lib
+from gpu4pyscf.scf import hf
+from gpu4pyscf.dft import rks
+from gpu4pyscf.mp import dfmp2
+from protocols import basis_counts,frozen_core_count,cp_estimate
+
+ROOT=Path(__file__).resolve().parent
+DRIVER_SHA=hashlib.sha256(Path(__file__).read_bytes()+(ROOT/'protocols.py').read_bytes()).hexdigest()
+SETTINGS=json.loads((ROOT/'inputs/settings.json').read_text())
+AUXILIARY=json.loads((ROOT/'inputs/auxiliary-bases.json').read_text())
+ROWS={r['structure_id']:r for r in json.loads((ROOT/'inputs/structures.json').read_text())}
+VERSIONS={name:metadata.version(name) for name in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x','cutensor-cu12','numpy','scipy']}
+lib.num_threads(int(os.environ.get('SLURM_CPUS_PER_TASK','16')))
+
+
+def write(path,row):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_suffix('.tmp');temp.write_text(json.dumps(row,indent=2,allow_nan=False)+'\n');temp.replace(path)
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def load_basis(key):
+    data=json.loads((ROOT/'frozen'/f'{key}.json').read_text())
+    return data,{r['structure_id']:r for r in data['records']}
+
+
+def molecule(row,shells,active=None,output=None):
+    active=set(range(len(shells))) if active is None else set(active)
+    labels=[f'{s}{i}' if i in active else f'ghost-{s}{i}' for i,s in enumerate(row['symbols'])]
+    mol=gto.M(atom=list(zip(labels,row['coords_angstrom'])),basis=dict(zip(labels,shells)),
+        unit='Angstrom',charge=0,spin=0,cart=False,verbose=4 if output else 0,
+        output=str(output) if output else None,max_memory=50000)
+    assert mol.nao_nr()==basis_counts(shells)['nao_spherical']
+    assert mol.nelectron==sum(z for i,z in enumerate(row['atomic_numbers']) if i in active)
+    return mol
+
+
+class MemorySample:
+    def __enter__(self):
+        self.stop=threading.Event();self.peak=0
+        self.total=cp.cuda.runtime.memGetInfo()[1]
+        self.baseline=self.total-cp.cuda.runtime.memGetInfo()[0]
+        def sample():
+            with cp.cuda.Device(0):
+                while not self.stop.is_set():
+                    self.peak=max(self.peak,self.total-cp.cuda.runtime.memGetInfo()[0])
+                    self.stop.wait(.1)
+        self.thread=threading.Thread(target=sample,daemon=True);self.thread.start()
+        return self
+    def __exit__(self,*args):
+        self.stop.set();self.thread.join()
+
+
+def solve(key,identifier,method,*,shells=None,row=None,active=None,variant='physical',level=3,auxiliary_identifier=None,
+          jkfit=None,mp2fit=None):
+    basis,records=load_basis(key)
+    row=ROWS[identifier] if row is None else row
+    shells=records[identifier]['atom_shells'] if shells is None else shells
+    jkfit=SETTINGS['jkfit'] if jkfit is None else jkfit
+    mp2fit=SETTINGS['mp2fit'] if mp2fit is None else mp2fit
+    identity=dict(driver_sha256=DRIVER_SHA,key=key,row=row,shells=shells,method=method,active=active,variant=variant,
+                  grid_level=level,jkfit=jkfit,mp2fit=mp2fit,auxiliary_identifier=auxiliary_identifier,
+                  auxiliary_sha256=digest(AUXILIARY),settings=SETTINGS,versions=VERSIONS)
+    signature=digest(identity);path=ROOT/'results'/key/method/(signature[:20]+'.json')
+    if path.exists():
+        saved=json.loads(path.read_text())
+        if saved.get('status')=='passed' and saved['signature']==signature:return saved
+    log=ROOT/'scf-logs'/key/method/(signature[:20]+'.log');log.parent.mkdir(parents=True,exist_ok=True)
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    start=time.perf_counter()
+    result=dict(status='running',signature=signature,driver_sha256=DRIVER_SHA,basis_key=key,structure_id=identifier,
+        method=method,variant=variant,active_nuclei=active,grid_level=level,
+        auxiliary_identifier=auxiliary_identifier,
+        jkfit=jkfit,mp2fit=mp2fit,
+        timing_note='First evaluation in a persistent worker; kernel cache may be warm; not controlled hot timing',
+        basis_file_sha256=hashlib.sha256((ROOT/'frozen'/f'{key}.json').read_bytes()).hexdigest(),
+        counts=basis_counts(shells),device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),
+        versions=VERSIONS,cuda_runtime_version=cp.cuda.runtime.runtimeGetVersion(),
+        job_id=os.environ.get('SLURM_JOB_ID'))
+    mf=pt=None
+    try:
+        mol=molecule(row,shells,active=active,output=log)
+        jk_aux=mp2_aux=None
+        if auxiliary_identifier is not None:
+            from pyscf.df.addons import make_auxmol
+            scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+            jk_aux=make_auxmol(scaffold,AUXILIARY['bases'][jkfit])
+            mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][mp2fit])
+        with MemorySample() as memory:
+            mf=(hf.RHF(mol) if method=='mp2' else rks.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][jkfit])
+            if jk_aux is not None:mf.with_df.auxmol=jk_aux
+            assert type(mf).__module__.startswith('gpu4pyscf')
+            mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad']
+            mf.max_cycle=SETTINGS['max_cycle'];mf.chkfile=None;mf.init_guess='minao'
+            mf.level_shift=0.;mf.damp=0.
+            if method!='mp2':
+                mf.grids.level=level;mf.nlcgrids.level=level
+                assert mf.do_nlc(),'VV10 must be enabled'
+            tick=time.perf_counter();mf.kernel();rescued=False
+            if not mf.converged:
+                rescued=True;mf.level_shift=.2;mf.damp=.2;mf.kernel(dm0=mf.make_rdm1())
+                seed=mf.make_rdm1();mf.level_shift=0.;mf.damp=0.;mf.kernel(dm0=seed)
+            cp.cuda.get_current_stream().synchronize()
+            assert mf.converged and mf.level_shift==0.,'Unshifted SCF failed'
+            result.update(scf_seconds=time.perf_counter()-tick,scf_energy_hartree=float(mf.e_tot),
+                scf_cycles=int(getattr(mf,'cycles',0)),rescue_used=rescued,solver_class=type(mf).__module__)
+            number=float(cp.einsum('ij,ji',mf.make_rdm1(),mf.get_ovlp()))
+            assert abs(number-mol.nelectron)<1e-7
+            energy=float(mf.e_tot)
+            if method=='mp2':
+                ncore=frozen_core_count(mol.atom_charges())
+                pt=dfmp2.DFMP2(mf,frozen=ncore,auxbasis=mp2_aux if mp2_aux is not None else AUXILIARY['bases'][mp2fit])
+                pt.fp_type='FP64';pt.with_t2=False
+                tick=time.perf_counter();pt.kernel();cp.cuda.get_current_stream().synchronize()
+                assert pt.t2 is None and type(pt).__module__.startswith('gpu4pyscf')
+                energy+=float(pt.e_corr)
+                result.update(correlation_energy_hartree=float(pt.e_corr),frozen_core=ncore,
+                    mp2_seconds=time.perf_counter()-tick,mp2_class=type(pt).__module__,fp_type='FP64',with_t2=False)
+            else:
+                result.update(nlc_enabled=bool(mf.do_nlc()),grid_points=len(mf.grids.weights),
+                              nlc_grid_points=len(mf.nlcgrids.weights))
+                assert result['nlc_grid_points']>0
+            assert np.isfinite(energy)
+            result.update(status='passed',energy_hartree=energy,electron_number=number,
+                nocc=mol.nelectron//2,nvir=mol.nao_nr()-mol.nelectron//2,
+                gpu_baseline_bytes=memory.baseline,gpu_peak_sampled_bytes=memory.peak,
+                cupy_pool_reserved_bytes=cp.get_default_memory_pool().total_bytes())
+        result.update(seconds=time.perf_counter()-start,process_max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception as error:
+        result.update(status='failed',error=str(error),traceback=traceback.format_exc(),seconds=time.perf_counter()-start)
+        write(ROOT/'failures'/key/method/(signature[:20]+f'-{time.time_ns()}.json'),result)
+    write(path,result)
+    print('CASE',key,identifier,method,variant,result['status'],result.get('energy_hartree'),result['seconds'],flush=True)
+    del mf,pt
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    if result['status']!='passed':raise RuntimeError(f'{key}/{identifier}/{method}: {result["error"]}')
+    return result
+
+
+def cpu_check(key,identifier,method,gpu,*,active=None,auxiliary_identifier=None):
+    from pyscf import scf,dft,mp,df
+    _,records=load_basis(key);row=ROWS[identifier]
+    mol=molecule(row,records[identifier]['atom_shells'],active=active)
+    mf=(scf.RHF(mol) if method=='mp2' else dft.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][SETTINGS['jkfit']])
+    mp2_aux=None
+    if auxiliary_identifier is not None:
+        from pyscf.df.addons import make_auxmol
+        scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+        mf.with_df.auxmol=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['jkfit']])
+        mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['mp2fit']])
+    mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad'];mf.max_cycle=200;mf.chkfile=None
+    if method!='mp2':mf.grids.level=3;mf.nlcgrids.level=3;assert mf.do_nlc()
+    mf.kernel();assert mf.converged
+    energy=float(mf.e_tot)
+    if method=='mp2':
+        fitting=df.DF(mol,auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']])
+        pt=mp.MP2(mf,frozen=frozen_core_count(mol.atom_charges())).density_fit(
+            auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']],with_df=fitting)
+        assert pt.with_df._cderi is None
+        if mp2_aux is not None:pt.with_df.auxmol=mp2_aux
+        pt.kernel(with_t2=False);energy+=float(pt.e_corr)
+    error=abs(energy-gpu['energy_hartree']);tolerance=1e-7 if method=='mp2' else 1e-6
+    assert error<tolerance,(identifier,method,error,tolerance)
+    return dict(key=key,structure_id=identifier,method=method,active_nuclei=active,
+                cpu_energy_hartree=energy,gpu_energy_hartree=gpu['energy_hartree'],error_hartree=error,tolerance=tolerance)
+
+
+def cp_diagnostics(key,identifier,method):
+    basis,records=load_basis(key);row=ROWS[identifier];shells=records[identifier]['atom_shells']
+    total=solve(key,identifier,method)['energy_hartree'];isolated=[];conditioned=[];ghosts=[]
+    for letter,indices in zip('AB',row['fragment_indices']):
+        isolated.append(solve(key,identifier+'/'+letter,method)['energy_hartree'])
+        ghosts.append(solve(key,identifier,method,active=indices,variant='ghost-'+letter,
+                            auxiliary_identifier=identifier)['energy_hartree'])
+        if basis['kind']=='nnao':
+            fragment=ROWS[identifier+'/'+letter]
+            conditioned.append(solve(key,identifier+'/'+letter,method,row=fragment,
+                shells=[shells[i] for i in indices],variant='conditioned-'+letter,
+                auxiliary_identifier=identifier)['energy_hartree'])
+        else:conditioned.append(isolated[-1])
+    result=cp_estimate(total,isolated,conditioned,ghosts)
+    result.update(basis_key=key,structure_id=identifier,method=method,
+        cp_kind='frozen-parameter CP estimate' if basis['kind']=='nnao' else 'standard CP')
+    write(ROOT/'cp'/key/method/(identifier.replace('/','-')+'.json'),result)
+    return result
+
+
+def preflight():
+    import importlib.metadata as metadata
+    gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+    for name,sha in gate['files'].items():assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha
+    cp.zeros(1,dtype=cp.float64);cp.cuda.get_current_stream().synchronize()
+    cases=[];checks=[]
+    families=[f'nnao_{z}p_{s}' for z in ['sz','dz','tz'] for s in ['s','m','l']]
+    for key in families:
+        for method in SETTINGS['methods']:cases.append(solve(key,'S22/02/A',method))
+    for key in ['t01','t14','reference']:
+        for identifier in ['ISO34/E14','S22/02','S22/10']:
+            for method in SETTINGS['methods']:cases.append(solve(key,identifier,method))
+    for key in ['t01','t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            result=solve(key,'S22/02/A',method);cases.append(result);checks.append(cpu_check(key,'S22/02/A',method,result))
+    for key in ['t01','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            row=ROWS['S22/02'];active=row['fragment_indices'][0]
+            result=solve(key,'S22/02',method,active=active,variant='ghost-A',auxiliary_identifier='S22/02');cases.append(result)
+            checks.append(cpu_check(key,'S22/02',method,result,active=active,auxiliary_identifier='S22/02'))
+    grid_checks=[];fit_checks=[]
+    for key in ['t14','nnao_szp_l','reference']:
+        energies={}
+        for level in [3,5]:
+            energies[level]=[solve(key,sid,'wb97m-v',level=level)['energy_hartree']
+                             for sid in ['S22/02','S22/02/A','S22/02/B']]
+        interaction=lambda e:e[0]-e[1]-e[2]
+        grid_checks.append(dict(basis_key=key,water_interaction_level3_hartree=interaction(energies[3]),
+            water_interaction_level5_hartree=interaction(energies[5]),
+            difference_kcal_mol=(interaction(energies[5])-interaction(energies[3]))*627.5094740631))
+    for key in ['t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            base=solve(key,'S22/02/A',method)
+            control=solve(key,'S22/02/A',method,jkfit='cc-pvqz-jkfit',variant='jkfit-control')
+            fit_checks.append(dict(basis_key=key,method=method,kind='jkfit',
+                difference_hartree=control['energy_hartree']-base['energy_hartree']))
+        base=solve(key,'S22/02/A','mp2')
+        control=solve(key,'S22/02/A','mp2',mp2fit='def2-qzvpp-ri',variant='mp2fit-control')
+        fit_checks.append(dict(basis_key=key,method='mp2',kind='correlation-fit',
+            difference_hartree=control['energy_hartree']-base['energy_hartree']))
+    assert max(abs(r['difference_hartree']) for r in fit_checks)<1e-5,fit_checks
+    all_cases=[json.loads(p.read_text()) for p in (ROOT/'results').glob('*/*/*.json')]
+    all_cases=[r for r in all_cases if r.get('driver_sha256')==DRIVER_SHA and r['status']=='passed']
+    write(ROOT/'preflight.json',dict(status='passed',driver_sha256=DRIVER_SHA,case_references=len(cases),cpu_gpu_checks=checks,
+        unique_gpu_cases=len(all_cases),auxiliary_fit_gate_hartree=1e-5,
+        grid_sensitivity=grid_checks,auxiliary_fit_sensitivity=fit_checks,
+        device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),max_nao=max(r['counts']['nao_spherical'] for r in cases),
+        max_gpu_peak_sampled_bytes=max(r['gpu_peak_sampled_bytes'] for r in all_cases),
+        max_process_rss_kib=max(r['process_max_rss_kib'] for r in all_cases),
+        versions={n:metadata.version(n) for n in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x']},
+        all_nine_models_exercised=True,vv10_and_ghosts_exercised=True,with_t2=False,fp_type='FP64'))
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--preflight',action='store_true');p.add_argument('--lane',choices=['small','tz','qz'])
+    p.add_argument('--direct',action='store_true',help='Run frozen benchmark directly, as explicitly requested; no CPU comparisons')
+    args=p.parse_args()
+    if args.preflight:preflight();return
+    assert args.lane is not None,'Specify --lane'
+    if args.direct:
+        gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+        for name,sha in gate['files'].items():
+            assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha,name
+    else:
+        gate=json.loads((ROOT/'preflight.json').read_text())
+        assert gate['status']=='passed' and gate['driver_sha256']==DRIVER_SHA
+    groups=dict(small=['t%02d'%i for i in [0,1,2,3,4,5,8,9,14,15]]+
+                [f'nnao_{z}p_{s}' for z in ['sz','dz'] for s in ['s','m','l']],
+        tz=['t%02d'%i for i in [6,7,10,11,16]]+[f'nnao_tzp_{s}' for s in ['s','m','l']],
+        qz=['t12','t13','t17','reference'])
+    failures=[];started=time.perf_counter()
+    for key in groups[args.lane]:
+        for identifier in ROWS:
+            for method in SETTINGS['methods']:
+                try:solve(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+        for identifier,row in ROWS.items():
+            if row.get('task')!='dimer':continue
+            for method in SETTINGS['methods']:
+                try:cp_diagnostics(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+    write(ROOT/f'lane-{args.lane}.json',dict(status='passed' if not failures else 'failed',
+        failures=failures,seconds=time.perf_counter()-started,bases=groups[args.lane],
+        execution_mode='direct' if args.direct else 'validated',cpu_comparisons_run=False))
+    if failures:raise RuntimeError(f'{len(failures)} explicit failed cases; no score will omit them')
+
+
+if __name__=='__main__':main()
+#INFO: ******************** input file end ********************
+
+
+System: uname_result(system='Linux', node='n002', release='4.18.0-553.16.1.el8_10.x86_64', version='#1 SMP Thu Aug 8 17:47:08 UTC 2024', machine='x86_64')  Threads 16
+Python 3.11.18 (main, Oct 26 2026, 18:19:35) [GCC 14.3.0]
+numpy 2.2.6  scipy 1.15.3  h5py 3.12.1
+Date: Thu Oct 29 16:17:00 2026
+PySCF version 2.8.0
+PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/pyscf/__init__.py
+CUDA Environment
+    CuPy 13.4.1
+    CUDA Path /opt/data/hpc/common/softwares/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8
+    CUDA Build Version 12080
+    CUDA Driver Version 12040
+    CUDA Runtime Version 12080
+CUDA toolkit
+    cuSolver (11, 7, 3)
+    cuBLAS 120804
+    cuTENSOR 20200
+Device info
+    Device name b'Tesla V100-SXM2-32GB'
+    Device global memory 31.73 GB
+    CuPy memory fraction 0.9
+    Num. Devices 1
+GPU4PySCF 1.7.0
+GPU4PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/gpu4pyscf
+
+[ENV] _GPU4PYSCF_BENCH_LD_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD 
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_LD_ACTIVE 1
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD 
+[ENV] _GPU4PYSCF_BENCH_LD_OLD 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD_SET 
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 3
+[INPUT] num. electrons = 10
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry False subgroup None
+[INPUT] Mole.unit = Angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 O0    -1.655420490753  -0.123300375328   0.000000000000 AA   -3.128291348516  -0.233003940426   0.000000000000 Bohr   0.0
+[INPUT]  2 H1    -0.704090206303   0.031931671808   0.000000000000 AA   -1.330537656900   0.060342114417   0.000000000000 Bohr   0.0
+[INPUT]  3 H2    -2.038672585167   0.753722882094   0.000000000000 AA   -3.852532843625   1.424329820975   0.000000000000 Bohr   0.0
+
+nuclear repulsion = 9.16382750817564
+number of shells = 8
+number of NR pGTOs = 46
+number of NR cGTOs = 24
+basis = {'O0': [[0, [5484.67166, 0.00183107443], [825.234946, 0.0139501722], [188.046958, 0.0684450781], [52.9645, 0.232714336], [16.8975704, 0.470192898], [5.79963534, 0.358520853]], [0, [6.33596468146364, -0.18367798875913927, 0.1986574143448584], [1.4506111736001583, 0.6020284462725971, -0.635349990715433], [0.3679460319652993, 0.7770612243086127, 0.7462342936529484]], [1, [8.20344196365063, 0.15982071009323853, -0.12145200173123476], [1.6224444245271883, 0.6203420691886588, -0.5839494885928725], [0.35913339129056, 0.7678756786225401, 0.8026533536014154]], [2, [1.0924348707391929, 0.5532237920674713], [0.48825713383711444, 0.833032673963325]]], 'H1': [[0, [5.043127244259862, 0.1367250628558018, -0.09943136296714486], [0.7059429681487858, 0.7286995113812269, -0.38714614411621623], [0.14736400890640122, 0.6710464062193005, 0.9166412968846874]], [1, [0.7226222894192105, 0.5692584524218113], [1.3122309349670476, 0.8221586308896381]]], 'H2': [[0, [5.043127244259862, 0.1378141699043522, -0.10132440641208856], [0.7059429681487858, 0.7314351527833594, -0.3733407937407715], [0.14736400890640122, 0.6678397052035452, 0.9221442492334097]], [1, [0.7226222894192105, 0.4770913474134615], [1.3122309349670476, 0.8788537115033468]]]}
+ecp = {}
+CPU time:      3775.31
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRKS'> ********
+method = DFRKS
+initial guess = minao
+damping factor = 0.0
+level_shift factor = 0.0
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+XC library gpu4pyscf.dft.libxc version 7.0.0 (CUDA)
+    unable to decode the reference due to https://github.com/NVIDIA/cuda-python/issues/29
+XC functionals = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+** Following is NLC and NLC Grids **
+NLC functional = wb97m-v
+radial grids: 
+    Treutler-Ahlrichs [JCP 102, 346 (1995); DOI:10.1063/1.469408] (M4) radial grids
+    
+becke partition: Becke, JCP 88, 2547 (1988); DOI:10.1063/1.454033
+pruning grids: <function nwchem_prune at 0x7f4aa80440e0>
+grids dens level: 3
+symmetrized grids: False
+atomic radii adjust function: <function treutler_atomic_radii_adjust at 0x7f4aa8044720>
+small_rho_cutoff = 0
+tot grids = 33792
+tot grids = 33792
+Create RSH-DF object <gpu4pyscf.df.df.DF object at 0x7f4a5e0e0e10> for omega=0.3
+init E= -167764.809580604
+  HOMO = -62511.4191740061  LUMO = -42460.8521919709  gap = 545603.71807 eV
+cycle= 1 E= -990636.138730108  delta_E= -8.23e+05  |g|= 1.17e+05  |ddm|= 10.2
+  HOMO = -172566.230802792  LUMO = -131999.168471248  gap = 1103885.99280 eV
+cycle= 2 E= -975760.370546512  delta_E= 1.49e+04  |g|= 1.04e+05  |ddm|= 5.97
+  HOMO = -157487.30530219  LUMO = -125795.515946533  gap = 862377.51382 eV
+cycle= 3 E= -972806.331654598  delta_E= 2.95e+03  |g|= 7.21e+04  |ddm|=    6
+  HOMO = -147986.846176606  LUMO = -135265.467139923  gap = 346166.35567 eV
+cycle= 4 E= -1091970.48253242  delta_E= -1.19e+05  |g|= 2.52e+05  |ddm|= 7.78
+  HOMO = -149459.75116998  LUMO = -134292.276879261  gap = 412727.99787 eV
+cycle= 5 E= -1257564.18096828  delta_E= -1.66e+05  |g|= 2.33e+05  |ddm|= 6.17
+  HOMO = -190908.16207985  LUMO = -89129.7821590472  gap = 2769530.78452 eV
+cycle= 6 E= -1329485.08763884  delta_E= -7.19e+04  |g|= 8.68e+04  |ddm|= 1.58
+  HOMO = -191774.114477495  LUMO = -88369.1910352924  gap = 2813791.28815 eV
+cycle= 7 E= -1339714.24097385  delta_E= -1.02e+04  |g|= 6.33e+04  |ddm|= 0.859
+  HOMO = -192372.032744093  LUMO = -84366.7051511283  gap = 2938974.66135 eV
+cycle= 8 E= -1348529.1508049  delta_E= -8.81e+03  |g|= 5.2e+04  |ddm|= 0.886
+  HOMO = -194839.252843071  LUMO = -70920.8718540086  gap = 3371990.90007 eV
+cycle= 9 E= -1358753.81321988  delta_E= -1.02e+04  |g|= 3.76e+04  |ddm|= 1.41
+  HOMO = -198080.102918093  LUMO = -72287.5882287938  gap = 3422988.67564 eV
+cycle= 10 E= -1354706.95320063  delta_E= 4.05e+03  |g|= 1.02e+05  |ddm|= 0.844
+  HOMO = -199423.73566403  LUMO = -69325.4767416019  gap = 3540153.94407 eV
+cycle= 11 E= -1364965.34358326  delta_E= -1.03e+04  |g|= 4.3e+04  |ddm|= 0.403
+  HOMO = -210235.762322792  LUMO = -44166.3750526495  gap = 4518978.20311 eV
+cycle= 12 E= -1372590.50109607  delta_E= -7.63e+03  |g|= 1.97e+04  |ddm|= 0.955
+  HOMO = -210856.036077234  LUMO = -45439.3754445199  gap = 4501216.60662 eV
+cycle= 13 E= -1375481.90270885  delta_E= -2.89e+03  |g|= 1.47e+04  |ddm|= 0.693
+  HOMO = -211187.522152848  LUMO = -51612.9862259628  gap = 4342244.29607 eV
+cycle= 14 E= -1377507.93434188  delta_E= -2.03e+03  |g|= 1.28e+04  |ddm|= 0.712
+  HOMO = -216008.986258205  LUMO = -51135.9597577972  gap = 4486423.56839 eV
+cycle= 15 E= -1379857.304546  delta_E= -2.35e+03  |g|= 1.01e+04  |ddm|= 1.11
+  HOMO = -223460.708345522  LUMO = -51555.7291468815  gap = 4677772.74773 eV
+cycle= 16 E= -1381817.13351921  delta_E= -1.96e+03  |g|= 6.96e+03  |ddm|= 1.39
+  HOMO = -217640.14060257  LUMO = -53131.812072338  gap = 4476499.63114 eV
+cycle= 17 E= -1382571.38235017  delta_E= -754  |g|= 4.96e+03  |ddm|= 0.843
+  HOMO = -218104.423957606  LUMO = -53063.8896502221  gap = 4490981.68799 eV
+cycle= 18 E= -1382928.25556631  delta_E= -357  |g|= 3.33e+03  |ddm|= 0.584
+  HOMO = -220638.108163543  LUMO = -53575.5740457458  gap = 4546003.10536 eV
+cycle= 19 E= -1383058.28982816  delta_E= -130  |g|= 2.46e+03  |ddm|= 0.307
+  HOMO = -220736.609711183  LUMO = -53689.0137728036  gap = 4545596.61679 eV
+cycle= 20 E= -1383121.06002066  delta_E= -62.8  |g|= 1.77e+03  |ddm|= 0.198
+  HOMO = -219659.987613521  LUMO = -53745.6308472662  gap = 4514759.60823 eV
+cycle= 21 E= -1383156.23987001  delta_E= -35.2  |g|= 1.22e+03  |ddm|= 0.138
+  HOMO = -220800.297697326  LUMO = -53882.9834416183  gap = 4542051.47163 eV
+cycle= 22 E= -1383171.94202269  delta_E= -15.7  |g|=  892  |ddm|= 0.095
+  HOMO = -220682.835025839  LUMO = -53906.0205798798  gap = 4538228.27707 eV
+cycle= 23 E= -1383180.53074386  delta_E= -8.59  |g|=  629  |ddm|= 0.0625
+  HOMO = -220605.547786666  LUMO = -53892.1322966172  gap = 4536503.10361 eV
+cycle= 24 E= -1383184.07763627  delta_E= -3.55  |g|=  447  |ddm|= 0.0317
+  HOMO = -220853.529102474  LUMO = -53893.7557127349  gap = 4543206.84352 eV
+cycle= 25 E= -1383185.46809347  delta_E= -1.39  |g|=  340  |ddm|= 0.0144
+  HOMO = -220869.686814783  LUMO = -53871.7206995443  gap = 4544246.12052 eV
+cycle= 26 E= -1383186.33157775  delta_E= -0.863  |g|=  250  |ddm|= 0.0126
+  HOMO = -220879.268114956  LUMO = -53850.7291130602  gap = 4545078.05114 eV
+cycle= 27 E= -1383186.94459298  delta_E= -0.613  |g|=  160  |ddm|= 0.0129
+  HOMO = -220881.449431015  LUMO = -53838.4348170936  gap = 4545471.95260 eV
+cycle= 28 E= -1383187.19326724  delta_E= -0.249  |g|=  110  |ddm|= 0.00975
+  HOMO = -220883.458626558  LUMO = -53830.5794884799  gap = 4545740.37998 eV
+cycle= 29 E= -1383187.30428118  delta_E= -0.111  |g|= 83.3  |ddm|= 0.00644
+  HOMO = -220884.211288193  LUMO = -53824.038790936  gap = 4545938.84239 eV
+cycle= 30 E= -1383187.37030943  delta_E= -0.066  |g|= 63.6  |ddm|= 0.00522
+  HOMO = -220885.258633557  LUMO = -53819.9426294565  gap = 4546078.80434 eV
+cycle= 31 E= -1383187.41033584  delta_E= -0.04  |g|= 46.8  |ddm|= 0.00428
+  HOMO = -220886.288336874  LUMO = -53818.0675148877  gap = 4546157.84846 eV
+cycle= 32 E= -1383187.43192179  delta_E= -0.0216  |g|=   35  |ddm|= 0.00348
+  HOMO = -220887.841006793  LUMO = -53817.8531777126  gap = 4546205.93117 eV
+cycle= 33 E= -1383187.44304189  delta_E= -0.0111  |g|=   28  |ddm|= 0.00286
+  HOMO = -220889.340034173  LUMO = -53818.5013498975  gap = 4546229.08412 eV
+cycle= 34 E= -1383187.44990909  delta_E= -0.00687  |g|= 22.6  |ddm|= 0.00225
+  HOMO = -220891.392231765  LUMO = -53819.6893698804  gap = 4546252.59959 eV
+cycle= 35 E= -1383187.45590352  delta_E= -0.00599  |g|= 16.3  |ddm|= 0.00271
+  HOMO = -220892.791731978  LUMO = -53820.3102622245  gap = 4546273.78659 eV
+cycle= 36 E= -1383187.4586795  delta_E= -0.00278  |g|= 12.1  |ddm|= 0.0017
+  HOMO = -220893.686260823  LUMO = -53820.797260697  gap = 4546284.87606 eV
+cycle= 37 E= -1383187.46000483  delta_E= -0.00133  |g|= 9.09  |ddm|= 0.000943
+  HOMO = -220894.364495071  LUMO = -53821.0492340333  gap = 4546296.47521 eV
+cycle= 38 E= -1383187.46083919  delta_E= -0.000834  |g|= 6.48  |ddm|= 0.000678
+  HOMO = -220894.855443575  LUMO = -53821.1705447306  gap = 4546306.53357 eV
+cycle= 39 E= -1383187.46126259  delta_E= -0.000423  |g|= 4.55  |ddm|= 0.000412
+  HOMO = -220895.166852294  LUMO = -53821.1731984971  gap = 4546314.93522 eV
+cycle= 40 E= -1383187.46144342  delta_E= -0.000181  |g|= 3.24  |ddm|= 0.000252
+  HOMO = -220895.385405435  LUMO = -53821.1114077206  gap = 4546322.56376 eV
+cycle= 41 E= -1383187.46154006  delta_E= -9.66e-05  |g|= 2.07  |ddm|= 0.000166
+  HOMO = -220895.525613854  LUMO = -53821.0281274267  gap = 4546328.64520 eV
+cycle= 42 E= -1383187.46157341  delta_E= -3.34e-05  |g|= 1.38  |ddm|= 0.000109
+  HOMO = -220895.56844277  LUMO = -53820.9792501811  gap = 4546331.14065 eV
+cycle= 43 E= -1383187.46158334  delta_E= -9.92e-06  |g|= 1.05  |ddm|= 5.54e-05
+  HOMO = -220895.584707683  LUMO = -53820.9504068404  gap = 4546332.36811 eV
+cycle= 44 E= -1383187.46158867  delta_E= -5.33e-06  |g|= 0.839  |ddm|= 4.67e-05
+  HOMO = -220895.585448187  LUMO = -53820.9385673276  gap = 4546332.71043 eV
+cycle= 45 E= -1383187.46159319  delta_E= -4.52e-06  |g|= 0.676  |ddm|= 5.67e-05
+  HOMO = -220895.581643651  LUMO = -53820.9380252835  gap = 4546332.62165 eV
+cycle= 46 E= -1383187.46159674  delta_E= -3.55e-06  |g|= 0.538  |ddm|= 6.03e-05
+  HOMO = -220895.574021834  LUMO = -53820.9488530032  gap = 4546332.11962 eV
+cycle= 47 E= -1383187.4615994  delta_E= -2.66e-06  |g|= 0.42  |ddm|= 5.57e-05
+  HOMO = -220895.56664689  LUMO = -53820.9595236045  gap = 4546331.62857 eV
+cycle= 48 E= -1383187.46160114  delta_E= -1.74e-06  |g|= 0.327  |ddm|= 4.47e-05
+  HOMO = -220895.556238065  LUMO = -53820.9671134434  gap = 4546331.13880 eV
+cycle= 49 E= -1383187.46160227  delta_E= -1.12e-06  |g|= 0.255  |ddm|= 3.21e-05
+  HOMO = -220895.545581379  LUMO = -53820.9698454964  gap = 4546330.77448 eV
+cycle= 50 E= -1383187.46160294  delta_E= -6.74e-07  |g|= 0.198  |ddm|= 2.49e-05
+  HOMO = -220895.534273757  LUMO = -53820.9674198002  gap = 4546330.53279 eV
+cycle= 51 E= -1383187.46160335  delta_E= -4.1e-07  |g|= 0.155  |ddm|= 1.68e-05
+  HOMO = -220895.524088406  LUMO = -53820.964940518  gap = 4546330.32309 eV
+cycle= 52 E= -1383187.46160359  delta_E= -2.41e-07  |g|= 0.124  |ddm|= 1.16e-05
+  HOMO = -220895.514576507  LUMO = -53820.9623948216  gap = 4546330.13353 eV
+cycle= 53 E= -1383187.46160375  delta_E= -1.59e-07  |g|= 0.0952  |ddm|= 9.34e-06
+  HOMO = -220895.505565125  LUMO = -53820.9617193863  gap = 4546329.90670 eV
+cycle= 54 E= -1383187.46160386  delta_E= -1.05e-07  |g|= 0.0669  |ddm|= 8.81e-06
+  HOMO = -220895.500016939  LUMO = -53820.9623329041  gap = 4546329.73903 eV
+cycle= 55 E= -1383187.46160391  delta_E= -4.82e-08  |g|= 0.0477  |ddm|= 5.23e-06
+  HOMO = -220895.496893352  LUMO = -53820.9634079506  gap = 4546329.62478 eV
+cycle= 56 E= -1383187.46160393  delta_E= -2e-08  |g|= 0.035  |ddm|= 2.83e-06
+  HOMO = -220895.49540218  LUMO = -53820.9643014459  gap = 4546329.55989 eV
+cycle= 57 E= -1383187.46160393  delta_E= -3.49e-09  |g|= 0.0268  |ddm|= 1.39e-06
+  HOMO = -220895.494211107  LUMO = -53820.9649158185  gap = 4546329.51076 eV
+cycle= 58 E= -1383187.46160393  delta_E= -4.19e-09  |g|= 0.0202  |ddm|= 1.29e-06
+  HOMO = -220895.493544788  LUMO = -53820.9650601803  gap = 4546329.48870 eV
+cycle= 59 E= -1383187.46160394  delta_E= -6.29e-09  |g|= 0.0158  |ddm|= 1.02e-06
+  HOMO = -220895.493101508  LUMO = -53820.9648737359  gap = 4546329.48172 eV
+cycle= 60 E= -1383187.46160394  delta_E= 1.86e-09  |g|= 0.0127  |ddm|= 8.92e-07
+  HOMO = -220895.492827099  LUMO = -53820.9645530806  gap = 4546329.48297 eV
+cycle= 61 E= -1383187.46160394  delta_E= -2.33e-09  |g|= 0.0102  |ddm|= 8.36e-07
+  HOMO = -220895.492660971  LUMO = -53820.9641560726  gap = 4546329.48926 eV
+cycle= 62 E= -1383187.46160394  delta_E= 6.98e-10  |g|= 0.00772  |ddm|= 8.31e-07
+  HOMO = -220895.49266005  LUMO = -53820.963879273  gap = 4546329.49676 eV
+cycle= 63 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 0.00581  |ddm|= 7.2e-07
+  HOMO = -220895.492740672  LUMO = -53820.9637707659  gap = 4546329.50191 eV
+cycle= 64 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 0.0048  |ddm|= 4.11e-07
+  HOMO = -220895.492872167  LUMO = -53820.9637201468  gap = 4546329.50687 eV
+cycle= 65 E= -1383187.46160394  delta_E= 3.03e-09  |g|= 0.00395  |ddm|= 3.57e-07
+  HOMO = -220895.493038692  LUMO = -53820.9637062207  gap = 4546329.51178 eV
+cycle= 66 E= -1383187.46160394  delta_E= -2.79e-09  |g|= 0.00316  |ddm|= 3.43e-07
+  HOMO = -220895.493194007  LUMO = -53820.9636843444  gap = 4546329.51660 eV
+cycle= 67 E= -1383187.46160394  delta_E= 2.33e-10  |g|= 0.00251  |ddm|= 2.62e-07
+  HOMO = -220895.493320849  LUMO = -53820.9636549757  gap = 4546329.52085 eV
+cycle= 68 E= -1383187.46160394  delta_E= 4.66e-10  |g|= 0.00201  |ddm|= 1.93e-07
+  HOMO = -220895.493449209  LUMO = -53820.9636141508  gap = 4546329.52545 eV
+cycle= 69 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 0.00152  |ddm|= 1.64e-07
+  HOMO = -220895.493548597  LUMO = -53820.9635806767  gap = 4546329.52907 eV
+cycle= 70 E= -1383187.46160394  delta_E= 3.03e-09  |g|= 0.00117  |ddm|= 1.09e-07
+  HOMO = -220895.493621041  LUMO = -53820.9635640308  gap = 4546329.53149 eV
+cycle= 71 E= -1383187.46160394  delta_E= -1.63e-09  |g|= 0.000927  |ddm|= 6.61e-08
+  HOMO = -220895.493685809  LUMO = -53820.9635634471  gap = 4546329.53327 eV
+cycle= 72 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 0.000725  |ddm|= 4.9e-08
+  HOMO = -220895.493733517  LUMO = -53820.9635728643  gap = 4546329.53431 eV
+cycle= 73 E= -1383187.46160394  delta_E= -6.98e-10  |g|= 0.000572  |ddm|= 3.24e-08
+  HOMO = -220895.49376963  LUMO = -53820.9635871347  gap = 4546329.53491 eV
+cycle= 74 E= -1383187.46160394  delta_E= 6.52e-09  |g|= 0.000441  |ddm|= 2.52e-08
+  HOMO = -220895.493794353  LUMO = -53820.9636029627  gap = 4546329.53515 eV
+cycle= 75 E= -1383187.46160394  delta_E= -3.49e-09  |g|= 0.000325  |ddm|= 2.43e-08
+  HOMO = -220895.493808941  LUMO = -53820.9636146545  gap = 4546329.53523 eV
+cycle= 76 E= -1383187.46160394  delta_E= -6.98e-10  |g|= 0.000243  |ddm|= 2.21e-08
+  HOMO = -220895.493814717  LUMO = -53820.9636219462  gap = 4546329.53519 eV
+cycle= 77 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 0.000189  |ddm|= 1.66e-08
+  HOMO = -220895.493817607  LUMO = -53820.9636268499  gap = 4546329.53513 eV
+cycle= 78 E= -1383187.46160394  delta_E= 2.79e-09  |g|= 0.000151  |ddm|= 1.31e-08
+  HOMO = -220895.493818385  LUMO = -53820.9636303199  gap = 4546329.53506 eV
+cycle= 79 E= -1383187.46160394  delta_E= -1.16e-09  |g|= 0.000124  |ddm|= 9.06e-09
+  HOMO = -220895.493818295  LUMO = -53820.9636331918  gap = 4546329.53498 eV
+cycle= 80 E= -1383187.46160394  delta_E= 2.33e-10  |g|= 0.000104  |ddm|= 6.57e-09
+  HOMO = -220895.493817813  LUMO = -53820.9636363257  gap = 4546329.53488 eV
+cycle= 81 E= -1383187.46160394  delta_E= -1.63e-09  |g|= 8.62e-05  |ddm|= 5.9e-09
+  HOMO = -220895.493816554  LUMO = -53820.9636391466  gap = 4546329.53477 eV
+cycle= 82 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 7.14e-05  |ddm|= 5.41e-09
+  HOMO = -220895.493814559  LUMO = -53820.9636415199  gap = 4546329.53465 eV
+cycle= 83 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 5.78e-05  |ddm|= 4.95e-09
+  HOMO = -220895.493812066  LUMO = -53820.9636434642  gap = 4546329.53453 eV
+cycle= 84 E= -1383187.46160394  delta_E= 3.03e-09  |g|= 4.61e-05  |ddm|= 4.92e-09
+  HOMO = -220895.493809493  LUMO = -53820.9636443472  gap = 4546329.53443 eV
+cycle= 85 E= -1383187.46160394  delta_E= 2.33e-10  |g|= 3.73e-05  |ddm|= 3.61e-09
+  HOMO = -220895.493807176  LUMO = -53820.9636446514  gap = 4546329.53436 eV
+cycle= 86 E= -1383187.46160394  delta_E= -1.16e-09  |g|= 3.02e-05  |ddm|= 2.58e-09
+  HOMO = -220895.493805106  LUMO = -53820.9636445199  gap = 4546329.53431 eV
+cycle= 87 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 2.37e-05  |ddm|= 1.79e-09
+  HOMO = -220895.493803189  LUMO = -53820.9636441343  gap = 4546329.53427 eV
+cycle= 88 E= -1383187.46160394  delta_E= 4.66e-10  |g|= 1.77e-05  |ddm|= 1.37e-09
+  HOMO = -220895.493801934  LUMO = -53820.9636437345  gap = 4546329.53424 eV
+cycle= 89 E= -1383187.46160394  delta_E= 1.16e-09  |g|= 1.33e-05  |ddm|= 8.89e-10
+  HOMO = -220895.493801095  LUMO = -53820.963643417  gap = 4546329.53423 eV
+cycle= 90 E= -1383187.46160394  delta_E= 4.66e-10  |g|= 9.87e-06  |ddm|= 6.55e-10
+  HOMO = -220895.49380056  LUMO = -53820.9636431114  gap = 4546329.53422 eV
+cycle= 91 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 7.4e-06  |ddm|= 4.68e-10
+  HOMO = -220895.493800188  LUMO = -53820.9636428866  gap = 4546329.53422 eV
+cycle= 92 E= -1383187.46160394  delta_E= 6.98e-10  |g|= 5.78e-06  |ddm|= 3e-10
+  HOMO = -220895.493799976  LUMO = -53820.9636426882  gap = 4546329.53422 eV
+cycle= 93 E= -1383187.46160394  delta_E= -2.33e-10  |g|= 4.63e-06  |ddm|= 2.03e-10
+  HOMO = -220895.493799801  LUMO = -53820.9636425053  gap = 4546329.53422 eV
+cycle= 94 E= -1383187.46160394  delta_E= 1.16e-09  |g|= 3.81e-06  |ddm|= 1.71e-10
+  HOMO = -220895.493799704  LUMO = -53820.9636423452  gap = 4546329.53422 eV
+cycle= 95 E= -1383187.46160394  delta_E= 2.33e-10  |g|= 3.15e-06  |ddm|= 1.69e-10
+  HOMO = -220895.49379964  LUMO = -53820.9636421999  gap = 4546329.53422 eV
+cycle= 96 E= -1383187.46160394  delta_E= -1.86e-09  |g|= 2.6e-06  |ddm|= 1.72e-10
+  HOMO = -220895.493799621  LUMO = -53820.9636420797  gap = 4546329.53423 eV
+cycle= 97 E= -1383187.46160394  delta_E= 1.16e-09  |g|= 2.15e-06  |ddm|= 1.82e-10
+  HOMO = -220895.493799639  LUMO = -53820.9636420016  gap = 4546329.53423 eV
+cycle= 98 E= -1383187.46160394  delta_E= -9.31e-10  |g|= 1.81e-06  |ddm|= 1.36e-10
+  HOMO = -220895.493799679  LUMO = -53820.9636419476  gap = 4546329.53423 eV
+cycle= 99 E= -1383187.46160394  delta_E= 4.66e-10  |g|= 1.5e-06  |ddm|= 1.11e-10
+  HOMO = -220895.493799729  LUMO = -53820.9636419001  gap = 4546329.53423 eV
+cycle= 100 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 1.22e-06  |ddm|= 9.12e-11
+  HOMO = -220895.493799779  LUMO = -53820.9636418758  gap = 4546329.53424 eV
+cycle= 101 E= -1383187.46160394  delta_E= 3.26e-09  |g|= 9.93e-07  |ddm|= 5.99e-11
+  HOMO = -220895.493799831  LUMO = -53820.9636418591  gap = 4546329.53424 eV
+cycle= 102 E= -1383187.46160394  delta_E= -2.33e-09  |g|= 7.7e-07  |ddm|= 5.3e-11
+  HOMO = -220895.493799881  LUMO = -53820.9636418552  gap = 4546329.53424 eV
+cycle= 103 E= -1383187.46160394  delta_E= 1.16e-09  |g|= 5.61e-07  |ddm|= 4.46e-11
+  HOMO = -220895.493799923  LUMO = -53820.9636418596  gap = 4546329.53424 eV
+cycle= 104 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 4.08e-07  |ddm|= 3.43e-11
+  HOMO = -220895.493799949  LUMO = -53820.9636418664  gap = 4546329.53424 eV
+cycle= 105 E= -1383187.46160394  delta_E= 2.1e-09  |g|= 3.17e-07  |ddm|= 2.07e-11
+  HOMO = -220895.493799969  LUMO = -53820.963641876  gap = 4546329.53424 eV
+cycle= 106 E= -1383187.46160394  delta_E= -2.33e-10  |g|= 2.52e-07  |ddm|= 1.34e-11
+  HOMO = -220895.49379998  LUMO = -53820.963641882  gap = 4546329.53424 eV
+cycle= 107 E= -1383187.46160394  delta_E= -2.56e-09  |g|= 2.16e-07  |ddm|= 7.2e-12
+  HOMO = -220895.493799986  LUMO = -53820.9636418868  gap = 4546329.53424 eV
+cycle= 108 E= -1383187.46160394  delta_E= -6.98e-10  |g|= 1.93e-07  |ddm|= 3.94e-12
+  HOMO = -220895.493799989  LUMO = -53820.9636418906  gap = 4546329.53424 eV
+cycle= 109 E= -1383187.46160394  delta_E= 1.86e-09  |g|= 1.77e-07  |ddm|= 3.06e-12
+  HOMO = -220895.493799994  LUMO = -53820.963641896  gap = 4546329.53424 eV
+cycle= 110 E= -1383187.46160394  delta_E= -1.16e-09  |g|= 1.55e-07  |ddm|= 4.35e-12
+  HOMO = -220895.493799997  LUMO = -53820.9636419  gap = 4546329.53424 eV
+cycle= 111 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 1.36e-07  |ddm|= 3.84e-12
+  HOMO = -220895.493800002  LUMO = -53820.9636419018  gap = 4546329.53424 eV
+cycle= 112 E= -1383187.46160394  delta_E=    0  |g|= 1.29e-07  |ddm|= 3.11e-12
+  HOMO = -220895.493800006  LUMO = -53820.9636419075  gap = 4546329.53424 eV
+cycle= 113 E= -1383187.46160394  delta_E= -6.98e-10  |g|= 1.04e-07  |ddm|= 5.8e-12
+  HOMO = -220895.49380001  LUMO = -53820.963641911  gap = 4546329.53424 eV
+cycle= 114 E= -1383187.46160394  delta_E= -4.66e-10  |g|= 9.17e-08  |ddm|= 3.21e-12
+  HOMO = -220895.493800013  LUMO = -53820.963641915  gap = 4546329.53424 eV
+cycle= 115 E= -1383187.46160394  delta_E= 3.96e-09  |g|= 7.63e-08  |ddm|= 4.23e-12
+  HOMO = -220895.493800015  LUMO = -53820.9636419168  gap = 4546329.53424 eV
+cycle= 116 E= -1383187.46160394  delta_E= -3.26e-09  |g|= 6.88e-08  |ddm|= 2.07e-12
+  HOMO = -220895.493800016  LUMO = -53820.9636419181  gap = 4546329.53424 eV
+cycle= 117 E= -1383187.46160394  delta_E= 6.98e-10  |g|= 6.41e-08  |ddm|= 1.3e-12
+  HOMO = -220895.493800017  LUMO = -53820.9636419196  gap = 4546329.53424 eV
+cycle= 118 E= -1383187.46160394  delta_E=    0  |g|= 5.93e-08  |ddm|= 1.44e-12
+  HOMO = -220895.493800016  LUMO = -53820.96364192  gap = 4546329.53424 eV
+Extra cycle  E= -1383187.46160394  delta_E= 9.31e-10  |g|= 5.2e-08  |ddm|= 8.3e-13
+converged SCF energy = -1383187.46160394

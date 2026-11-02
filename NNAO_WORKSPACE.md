@@ -17,9 +17,11 @@ development on `release/v1.0.0`.
   vendor sources, derivative kernels, and offline build entry point.
 - `tests/nnao/` and `tests/comparisons/nnao_*/`: model regressions and comparison
   utilities, including fixed/adaptive dimer protocols and basis-cost accounting.
-- `reproducibility/nnao/`: campaign recipes, fixed S/M/L exponent pools, source
-  hashes, and compact results. Training datasets, integral caches, binaries, and
-  large model checkpoints remain in their data workspaces.
+- `reproducibility/nnao/`: [paper-data index](reproducibility/nnao/README.md),
+  training structures, scientific test outputs, figure scripts, inference-only
+  weights, campaign recipes, fixed S/M/L exponent pools and source/data hashes.
+  Large payloads use Git LFS. Integral caches, binaries and full optimizer
+  checkpoints remain in their data workspaces.
 
 Training covers the nine S/M/L × SZP/DZP/TZP families. Exponents are shared by
 element/angular channel; MACE predicts complete environment-dependent radial
@@ -59,17 +61,21 @@ GPU4PySCF MP2/ωB97M-V comparison scripts and protocol, including reference leve
 the active accuracy campaign omits CP/BSSE.
 
 These orchestration files retain historical working-directory paths and input
-hashes. Treat them as execution records: recover the external reference geometry
-JSON and matching native cache identity before resuming an old job. The model's
+hashes. Treat them as execution records: use the released reference geometry
+JSON, adapt the paths and rebuild a matching native cache before a new run. The model's
 portable workflow entry point is
 `python -m gradscf.model.nnao.workflows.fixed_pool --help`.
 Do not launch the archived scheduler/controller scripts on another cluster
 without adapting its paths and resource settings.
 
-The complete 500-system geometry archive is maintained separately in the
-`NNAO_paper/data/training/nnao500-20261021/` project. Historical trained weights
-remain under the remote `GradSCF_family500_20261021` campaign; the hidden-L
-checkpoints remain under `nnao-dzpm-hidden-l50-20261030/runs/L1` and `runs/L2`.
+The complete ordered 500-system geometry archive is now included at
+`reproducibility/nnao/paper/data/training/nnao500-20261021/`. All located model
+exports are indexed at `reproducibility/nnao/models/catalog.csv`; the nine
+formal training endpoints and their frozen benchmark matches have separate
+JSON indexes. The original paper model update 3351 is preserved independently.
+Exports contain exact numeric inference parameters and model identities, without
+Adam or training gradients; they are not optimizer-resume checkpoints. Original
+training checkpoints and source data were preserved unchanged on the server.
 
 ## Provenance
 

@@ -1,0 +1,461 @@
+#INFO: **** input file is /opt/data/bcmdata/ZONES/home/PROJECTS/homefile/PRIVATE/yuanjiao/NNAO_basis_accuracy_20261029/run_gpu.py ****
+"""GPU4PySCF-only electronic calculations on pre-exported, frozen bases."""
+from pathlib import Path
+import argparse
+import gc
+import hashlib
+import importlib.metadata as metadata
+import json
+import os
+import resource
+import threading
+import time
+import traceback
+
+import cupy as cp
+import numpy as np
+from pyscf import gto,lib
+from gpu4pyscf.scf import hf
+from gpu4pyscf.dft import rks
+from gpu4pyscf.mp import dfmp2
+from protocols import basis_counts,frozen_core_count,cp_estimate
+
+ROOT=Path(__file__).resolve().parent
+DRIVER_SHA=hashlib.sha256(Path(__file__).read_bytes()+(ROOT/'protocols.py').read_bytes()).hexdigest()
+SETTINGS=json.loads((ROOT/'inputs/settings.json').read_text())
+AUXILIARY=json.loads((ROOT/'inputs/auxiliary-bases.json').read_text())
+ROWS={r['structure_id']:r for r in json.loads((ROOT/'inputs/structures.json').read_text())}
+VERSIONS={name:metadata.version(name) for name in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x','cutensor-cu12','numpy','scipy']}
+lib.num_threads(int(os.environ.get('SLURM_CPUS_PER_TASK','16')))
+
+
+def write(path,row):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    temp=path.with_suffix('.tmp');temp.write_text(json.dumps(row,indent=2,allow_nan=False)+'\n');temp.replace(path)
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def load_basis(key):
+    data=json.loads((ROOT/'frozen'/f'{key}.json').read_text())
+    return data,{r['structure_id']:r for r in data['records']}
+
+
+def molecule(row,shells,active=None,output=None):
+    active=set(range(len(shells))) if active is None else set(active)
+    labels=[f'{s}{i}' if i in active else f'ghost-{s}{i}' for i,s in enumerate(row['symbols'])]
+    mol=gto.M(atom=list(zip(labels,row['coords_angstrom'])),basis=dict(zip(labels,shells)),
+        unit='Angstrom',charge=0,spin=0,cart=False,verbose=4 if output else 0,
+        output=str(output) if output else None,max_memory=50000)
+    assert mol.nao_nr()==basis_counts(shells)['nao_spherical']
+    assert mol.nelectron==sum(z for i,z in enumerate(row['atomic_numbers']) if i in active)
+    return mol
+
+
+class MemorySample:
+    def __enter__(self):
+        self.stop=threading.Event();self.peak=0
+        self.total=cp.cuda.runtime.memGetInfo()[1]
+        self.baseline=self.total-cp.cuda.runtime.memGetInfo()[0]
+        def sample():
+            with cp.cuda.Device(0):
+                while not self.stop.is_set():
+                    self.peak=max(self.peak,self.total-cp.cuda.runtime.memGetInfo()[0])
+                    self.stop.wait(.1)
+        self.thread=threading.Thread(target=sample,daemon=True);self.thread.start()
+        return self
+    def __exit__(self,*args):
+        self.stop.set();self.thread.join()
+
+
+def solve(key,identifier,method,*,shells=None,row=None,active=None,variant='physical',level=3,auxiliary_identifier=None,
+          jkfit=None,mp2fit=None):
+    basis,records=load_basis(key)
+    row=ROWS[identifier] if row is None else row
+    shells=records[identifier]['atom_shells'] if shells is None else shells
+    jkfit=SETTINGS['jkfit'] if jkfit is None else jkfit
+    mp2fit=SETTINGS['mp2fit'] if mp2fit is None else mp2fit
+    identity=dict(driver_sha256=DRIVER_SHA,key=key,row=row,shells=shells,method=method,active=active,variant=variant,
+                  grid_level=level,jkfit=jkfit,mp2fit=mp2fit,auxiliary_identifier=auxiliary_identifier,
+                  auxiliary_sha256=digest(AUXILIARY),settings=SETTINGS,versions=VERSIONS)
+    signature=digest(identity);path=ROOT/'results'/key/method/(signature[:20]+'.json')
+    if path.exists():
+        saved=json.loads(path.read_text())
+        if saved.get('status')=='passed' and saved['signature']==signature:return saved
+    log=ROOT/'scf-logs'/key/method/(signature[:20]+'.log');log.parent.mkdir(parents=True,exist_ok=True)
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    start=time.perf_counter()
+    result=dict(status='running',signature=signature,driver_sha256=DRIVER_SHA,basis_key=key,structure_id=identifier,
+        method=method,variant=variant,active_nuclei=active,grid_level=level,
+        auxiliary_identifier=auxiliary_identifier,
+        jkfit=jkfit,mp2fit=mp2fit,
+        timing_note='First evaluation in a persistent worker; kernel cache may be warm; not controlled hot timing',
+        basis_file_sha256=hashlib.sha256((ROOT/'frozen'/f'{key}.json').read_bytes()).hexdigest(),
+        counts=basis_counts(shells),device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),
+        versions=VERSIONS,cuda_runtime_version=cp.cuda.runtime.runtimeGetVersion(),
+        job_id=os.environ.get('SLURM_JOB_ID'))
+    mf=pt=None
+    try:
+        mol=molecule(row,shells,active=active,output=log)
+        jk_aux=mp2_aux=None
+        if auxiliary_identifier is not None:
+            from pyscf.df.addons import make_auxmol
+            scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+            jk_aux=make_auxmol(scaffold,AUXILIARY['bases'][jkfit])
+            mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][mp2fit])
+        with MemorySample() as memory:
+            mf=(hf.RHF(mol) if method=='mp2' else rks.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][jkfit])
+            if jk_aux is not None:mf.with_df.auxmol=jk_aux
+            assert type(mf).__module__.startswith('gpu4pyscf')
+            mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad']
+            mf.max_cycle=SETTINGS['max_cycle'];mf.chkfile=None;mf.init_guess='minao'
+            mf.level_shift=0.;mf.damp=0.
+            if method!='mp2':
+                mf.grids.level=level;mf.nlcgrids.level=level
+                assert mf.do_nlc(),'VV10 must be enabled'
+            tick=time.perf_counter();mf.kernel();rescued=False
+            if not mf.converged:
+                rescued=True;mf.level_shift=.2;mf.damp=.2;mf.kernel(dm0=mf.make_rdm1())
+                seed=mf.make_rdm1();mf.level_shift=0.;mf.damp=0.;mf.kernel(dm0=seed)
+            cp.cuda.get_current_stream().synchronize()
+            assert mf.converged and mf.level_shift==0.,'Unshifted SCF failed'
+            result.update(scf_seconds=time.perf_counter()-tick,scf_energy_hartree=float(mf.e_tot),
+                scf_cycles=int(getattr(mf,'cycles',0)),rescue_used=rescued,solver_class=type(mf).__module__)
+            number=float(cp.einsum('ij,ji',mf.make_rdm1(),mf.get_ovlp()))
+            assert abs(number-mol.nelectron)<1e-7
+            energy=float(mf.e_tot)
+            if method=='mp2':
+                ncore=frozen_core_count(mol.atom_charges())
+                pt=dfmp2.DFMP2(mf,frozen=ncore,auxbasis=mp2_aux if mp2_aux is not None else AUXILIARY['bases'][mp2fit])
+                pt.fp_type='FP64';pt.with_t2=False
+                tick=time.perf_counter();pt.kernel();cp.cuda.get_current_stream().synchronize()
+                assert pt.t2 is None and type(pt).__module__.startswith('gpu4pyscf')
+                energy+=float(pt.e_corr)
+                result.update(correlation_energy_hartree=float(pt.e_corr),frozen_core=ncore,
+                    mp2_seconds=time.perf_counter()-tick,mp2_class=type(pt).__module__,fp_type='FP64',with_t2=False)
+            else:
+                result.update(nlc_enabled=bool(mf.do_nlc()),grid_points=len(mf.grids.weights),
+                              nlc_grid_points=len(mf.nlcgrids.weights))
+                assert result['nlc_grid_points']>0
+            assert np.isfinite(energy)
+            result.update(status='passed',energy_hartree=energy,electron_number=number,
+                nocc=mol.nelectron//2,nvir=mol.nao_nr()-mol.nelectron//2,
+                gpu_baseline_bytes=memory.baseline,gpu_peak_sampled_bytes=memory.peak,
+                cupy_pool_reserved_bytes=cp.get_default_memory_pool().total_bytes())
+        result.update(seconds=time.perf_counter()-start,process_max_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception as error:
+        result.update(status='failed',error=str(error),traceback=traceback.format_exc(),seconds=time.perf_counter()-start)
+        write(ROOT/'failures'/key/method/(signature[:20]+f'-{time.time_ns()}.json'),result)
+    write(path,result)
+    print('CASE',key,identifier,method,variant,result['status'],result.get('energy_hartree'),result['seconds'],flush=True)
+    del mf,pt
+    gc.collect();cp.get_default_memory_pool().free_all_blocks()
+    if result['status']!='passed':raise RuntimeError(f'{key}/{identifier}/{method}: {result["error"]}')
+    return result
+
+
+def cpu_check(key,identifier,method,gpu,*,active=None,auxiliary_identifier=None):
+    from pyscf import scf,dft,mp,df
+    _,records=load_basis(key);row=ROWS[identifier]
+    mol=molecule(row,records[identifier]['atom_shells'],active=active)
+    mf=(scf.RHF(mol) if method=='mp2' else dft.RKS(mol,xc='wb97m-v')).density_fit(auxbasis=AUXILIARY['bases'][SETTINGS['jkfit']])
+    mp2_aux=None
+    if auxiliary_identifier is not None:
+        from pyscf.df.addons import make_auxmol
+        scaffold=molecule(ROWS[auxiliary_identifier],records[auxiliary_identifier]['atom_shells'])
+        mf.with_df.auxmol=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['jkfit']])
+        mp2_aux=make_auxmol(scaffold,AUXILIARY['bases'][SETTINGS['mp2fit']])
+    mf.conv_tol=SETTINGS['conv_tol'];mf.conv_tol_grad=SETTINGS['conv_tol_grad'];mf.max_cycle=200;mf.chkfile=None
+    if method!='mp2':mf.grids.level=3;mf.nlcgrids.level=3;assert mf.do_nlc()
+    mf.kernel();assert mf.converged
+    energy=float(mf.e_tot)
+    if method=='mp2':
+        fitting=df.DF(mol,auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']])
+        pt=mp.MP2(mf,frozen=frozen_core_count(mol.atom_charges())).density_fit(
+            auxbasis=AUXILIARY['bases'][SETTINGS['mp2fit']],with_df=fitting)
+        assert pt.with_df._cderi is None
+        if mp2_aux is not None:pt.with_df.auxmol=mp2_aux
+        pt.kernel(with_t2=False);energy+=float(pt.e_corr)
+    error=abs(energy-gpu['energy_hartree']);tolerance=1e-7 if method=='mp2' else 1e-6
+    assert error<tolerance,(identifier,method,error,tolerance)
+    return dict(key=key,structure_id=identifier,method=method,active_nuclei=active,
+                cpu_energy_hartree=energy,gpu_energy_hartree=gpu['energy_hartree'],error_hartree=error,tolerance=tolerance)
+
+
+def cp_diagnostics(key,identifier,method):
+    basis,records=load_basis(key);row=ROWS[identifier];shells=records[identifier]['atom_shells']
+    total=solve(key,identifier,method)['energy_hartree'];isolated=[];conditioned=[];ghosts=[]
+    for letter,indices in zip('AB',row['fragment_indices']):
+        isolated.append(solve(key,identifier+'/'+letter,method)['energy_hartree'])
+        ghosts.append(solve(key,identifier,method,active=indices,variant='ghost-'+letter,
+                            auxiliary_identifier=identifier)['energy_hartree'])
+        if basis['kind']=='nnao':
+            fragment=ROWS[identifier+'/'+letter]
+            conditioned.append(solve(key,identifier+'/'+letter,method,row=fragment,
+                shells=[shells[i] for i in indices],variant='conditioned-'+letter,
+                auxiliary_identifier=identifier)['energy_hartree'])
+        else:conditioned.append(isolated[-1])
+    result=cp_estimate(total,isolated,conditioned,ghosts)
+    result.update(basis_key=key,structure_id=identifier,method=method,
+        cp_kind='frozen-parameter CP estimate' if basis['kind']=='nnao' else 'standard CP')
+    write(ROOT/'cp'/key/method/(identifier.replace('/','-')+'.json'),result)
+    return result
+
+
+def preflight():
+    import importlib.metadata as metadata
+    gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+    for name,sha in gate['files'].items():assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha
+    cp.zeros(1,dtype=cp.float64);cp.cuda.get_current_stream().synchronize()
+    cases=[];checks=[]
+    families=[f'nnao_{z}p_{s}' for z in ['sz','dz','tz'] for s in ['s','m','l']]
+    for key in families:
+        for method in SETTINGS['methods']:cases.append(solve(key,'S22/02/A',method))
+    for key in ['t01','t14','reference']:
+        for identifier in ['ISO34/E14','S22/02','S22/10']:
+            for method in SETTINGS['methods']:cases.append(solve(key,identifier,method))
+    for key in ['t01','t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            result=solve(key,'S22/02/A',method);cases.append(result);checks.append(cpu_check(key,'S22/02/A',method,result))
+    for key in ['t01','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            row=ROWS['S22/02'];active=row['fragment_indices'][0]
+            result=solve(key,'S22/02',method,active=active,variant='ghost-A',auxiliary_identifier='S22/02');cases.append(result)
+            checks.append(cpu_check(key,'S22/02',method,result,active=active,auxiliary_identifier='S22/02'))
+    grid_checks=[];fit_checks=[]
+    for key in ['t14','nnao_szp_l','reference']:
+        energies={}
+        for level in [3,5]:
+            energies[level]=[solve(key,sid,'wb97m-v',level=level)['energy_hartree']
+                             for sid in ['S22/02','S22/02/A','S22/02/B']]
+        interaction=lambda e:e[0]-e[1]-e[2]
+        grid_checks.append(dict(basis_key=key,water_interaction_level3_hartree=interaction(energies[3]),
+            water_interaction_level5_hartree=interaction(energies[5]),
+            difference_kcal_mol=(interaction(energies[5])-interaction(energies[3]))*627.5094740631))
+    for key in ['t14','nnao_szp_l']:
+        for method in SETTINGS['methods']:
+            base=solve(key,'S22/02/A',method)
+            control=solve(key,'S22/02/A',method,jkfit='cc-pvqz-jkfit',variant='jkfit-control')
+            fit_checks.append(dict(basis_key=key,method=method,kind='jkfit',
+                difference_hartree=control['energy_hartree']-base['energy_hartree']))
+        base=solve(key,'S22/02/A','mp2')
+        control=solve(key,'S22/02/A','mp2',mp2fit='def2-qzvpp-ri',variant='mp2fit-control')
+        fit_checks.append(dict(basis_key=key,method='mp2',kind='correlation-fit',
+            difference_hartree=control['energy_hartree']-base['energy_hartree']))
+    assert max(abs(r['difference_hartree']) for r in fit_checks)<1e-5,fit_checks
+    all_cases=[json.loads(p.read_text()) for p in (ROOT/'results').glob('*/*/*.json')]
+    all_cases=[r for r in all_cases if r.get('driver_sha256')==DRIVER_SHA and r['status']=='passed']
+    write(ROOT/'preflight.json',dict(status='passed',driver_sha256=DRIVER_SHA,case_references=len(cases),cpu_gpu_checks=checks,
+        unique_gpu_cases=len(all_cases),auxiliary_fit_gate_hartree=1e-5,
+        grid_sensitivity=grid_checks,auxiliary_fit_sensitivity=fit_checks,
+        device=cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),max_nao=max(r['counts']['nao_spherical'] for r in cases),
+        max_gpu_peak_sampled_bytes=max(r['gpu_peak_sampled_bytes'] for r in all_cases),
+        max_process_rss_kib=max(r['process_max_rss_kib'] for r in all_cases),
+        versions={n:metadata.version(n) for n in ['pyscf','gpu4pyscf-cuda12x','cupy-cuda12x']},
+        all_nine_models_exercised=True,vv10_and_ghosts_exercised=True,with_t2=False,fp_type='FP64'))
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--preflight',action='store_true');p.add_argument('--lane',choices=['small','tz','qz'])
+    p.add_argument('--direct',action='store_true',help='Run frozen benchmark directly, as explicitly requested; no CPU comparisons')
+    args=p.parse_args()
+    if args.preflight:preflight();return
+    assert args.lane is not None,'Specify --lane'
+    if args.direct:
+        gate=json.loads((ROOT/'export-gate.json').read_text());assert gate['status']=='passed'
+        for name,sha in gate['files'].items():
+            assert hashlib.sha256((ROOT/'frozen'/name).read_bytes()).hexdigest()==sha,name
+    else:
+        gate=json.loads((ROOT/'preflight.json').read_text())
+        assert gate['status']=='passed' and gate['driver_sha256']==DRIVER_SHA
+    groups=dict(small=['t%02d'%i for i in [0,1,2,3,4,5,8,9,14,15]]+
+                [f'nnao_{z}p_{s}' for z in ['sz','dz'] for s in ['s','m','l']],
+        tz=['t%02d'%i for i in [6,7,10,11,16]]+[f'nnao_tzp_{s}' for s in ['s','m','l']],
+        qz=['t12','t13','t17','reference'])
+    failures=[];started=time.perf_counter()
+    for key in groups[args.lane]:
+        for identifier in ROWS:
+            for method in SETTINGS['methods']:
+                try:solve(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+        for identifier,row in ROWS.items():
+            if row.get('task')!='dimer':continue
+            for method in SETTINGS['methods']:
+                try:cp_diagnostics(key,identifier,method)
+                except Exception as error:failures.append(str(error))
+    write(ROOT/f'lane-{args.lane}.json',dict(status='passed' if not failures else 'failed',
+        failures=failures,seconds=time.perf_counter()-started,bases=groups[args.lane],
+        execution_mode='direct' if args.direct else 'validated',cpu_comparisons_run=False))
+    if failures:raise RuntimeError(f'{len(failures)} explicit failed cases; no score will omit them')
+
+
+if __name__=='__main__':main()
+#INFO: ******************** input file end ********************
+
+
+System: uname_result(system='Linux', node='n002', release='4.18.0-553.16.1.el8_10.x86_64', version='#1 SMP Thu Aug 8 17:47:08 UTC 2024', machine='x86_64')  Threads 16
+Python 3.11.18 (main, Oct 26 2026, 18:19:35) [GCC 14.3.0]
+numpy 2.2.6  scipy 1.15.3  h5py 3.12.1
+Date: Thu Oct 29 16:34:33 2026
+PySCF version 2.8.0
+PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/pyscf/__init__.py
+CUDA Environment
+    CuPy 13.4.1
+    CUDA Path /opt/data/hpc/common/softwares/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda/12.8
+    CUDA Build Version 12080
+    CUDA Driver Version 12040
+    CUDA Runtime Version 12080
+CUDA toolkit
+    cuSolver (11, 7, 3)
+    cuBLAS 120804
+    cuTENSOR 20200
+Device info
+    Device name b'Tesla V100-SXM2-32GB'
+    Device global memory 31.73 GB
+    CuPy memory fraction 0.9
+    Num. Devices 1
+GPU4PySCF 1.7.0
+GPU4PySCF path  /home/user_yuanjiao/private/homefile/conda-envs/gpu4pyscf_bench/lib/python3.11/site-packages/gpu4pyscf
+
+[ENV] _GPU4PYSCF_BENCH_LD_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD 
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD_SET 
+[ENV] _GPU4PYSCF_BENCH_LD_ACTIVE 1
+[ENV] _GPU4PYSCF_BENCH_PATH_OLD 
+[ENV] _GPU4PYSCF_BENCH_LD_OLD 
+[ENV] _GPU4PYSCF_BENCH_HOME_OLD_SET 
+[CONFIG] conf_file None
+[INPUT] verbose = 4
+[INPUT] num. atoms = 5
+[INPUT] num. electrons = 10
+[INPUT] charge = 0
+[INPUT] spin (= nelec alpha-beta = 2S) = 0
+[INPUT] symmetry False subgroup None
+[INPUT] Mole.unit = Angstrom
+[INPUT] Symbol           X                Y                Z      unit          X                Y                Z       unit  Magmom
+[INPUT]  1 C0     0.000000000000   0.000000000000  -1.859161546315 AA    0.000000000000   0.000000000000  -3.513306143858 Bohr   0.0
+[INPUT]  2 H1     0.888621330270  -0.513045764239  -1.494593141564 AA    1.679250942658  -0.969515983780  -2.824371705210 Bohr   0.0
+[INPUT]  3 H2     0.000000000000   1.026091528478  -1.494593141564 AA    0.000000000000   1.939031967561  -2.824371705210 Bohr   0.0
+[INPUT]  4 H3     0.000000000000   0.000000000000  -2.948284727871 AA    0.000000000000   0.000000000000  -5.571450672914 Bohr   0.0
+[INPUT]  5 H4    -0.888621330270  -0.513045764239  -1.494593141564 AA   -1.679250942658  -0.969515983780  -2.824371705210 Bohr   0.0
+
+nuclear repulsion = 13.4479736646657
+number of shells = 12
+number of NR pGTOs = 93
+number of NR cGTOs = 34
+basis = {'C0': [[0, [3047.52488, 0.001834737132], [457.369518, 0.01403732281], [103.948685, 0.06884262226], [29.2101553, 0.2321844432], [9.28666296, 0.4679413484], [3.16392696, 0.3623119853]], [0, [2.4294756543907132, -0.045185435033317865, 0.13857800013864674], [0.63120788606279, 0.5897914443628787, -0.5300266130917417], [0.19322350760464452, 0.7383414681968516, 0.7346350570158299], [0.10614314031943467, -0.24890375266254897, -0.3762062993700856], [4.422629725941036, -0.11321425335459537, -0.010131199414323187], [0.05830743048057779, 0.17374020751103955, 0.13618164123005547]], [1, [3.4784152348669046, 0.12408375153916006, -0.019329370419542975], [0.8593146306086815, 0.5647424176805544, -0.2912035569388443], [0.2516600408050395, 0.7519209030030978, 0.10758126784574155], [0.13518145656641747, 0.018010504969254403, 0.6113018571328237], [6.475578397939399, 0.04256088445481389, -0.03377945409422004], [0.0726139364078665, 0.3132864068683363, 0.7269264905209533]], [2, [0.6885663811400462, 0.5086411529341113], [0.30775056409957524, 0.8175941626435608], [1.5406102101664803, 0.2698591535468694]]], 'H1': [[0, [5.28685138889269, 0.014542355455038243, 0.023097221606508636], [0.9781467354447106, 0.5352582914557584, 0.011198812702416495], [0.25500177608666275, 0.812974491151935, 0.08090148237036564], [9.822611754937629, 0.06336341914194028, -0.008229408658424326], [0.13725030854407796, 0.17588017691461771, 0.996337858095979], [2.2740528636834103, 0.13194998501348734, -0.006261346200555528]], [1, [0.6542095926963143, 0.5803988896378713], [1.4637397434769692, 0.8143323209274738]]], 'H2': [[0, [5.28685138889269, 0.014542355454978565, 0.02309722160661538], [0.9781467354447106, 0.5352582914559854, 0.01119881270254075], [0.25500177608666275, 0.8129744911516719, 0.08090148237083783], [9.822611754937629, 0.06336341914198702, -0.008229408658438974], [0.13725030854407796, 0.17588017691503227, 0.9963378580959373], [2.2740528636834103, 0.13194998501362032, -0.006261346200427241]], [1, [0.6542095926963143, 0.5803988896346017], [1.4637397434769692, 0.814332320929804]]], 'H3': [[0, [5.28685138889269, 0.014994789971200174, 0.022740978600440415], [0.9781467354447106, 0.5357219423126772, 0.0090029882831416], [0.25500177608666275, 0.8131502558446212, 0.0775014215440018], [9.822611754937629, 0.06309183763555364, -0.008008662601594855], [0.13725030854407796, 0.17448154950912362, 0.9966432794624045], [2.2740528636834103, 0.1309176348814149, -0.005775688589625615]], [1, [0.6542095926963143, 0.60010808347796], [1.4637397434769692, 0.7999189259821334]]], 'H4': [[0, [5.28685138889269, 0.014542355455038234, 0.023097221606508626], [0.9781467354447106, 0.5352582914557584, 0.011198812702416495], [0.25500177608666275, 0.812974491151935, 0.08090148237036564], [9.822611754937629, 0.06336341914194028, -0.008229408658424323], [0.13725030854407796, 0.17588017691461771, 0.996337858095979], [2.2740528636834103, 0.13194998501348737, -0.006261346200555531]], [1, [0.6542095926963143, 0.5803988896378713], [1.4637397434769692, 0.8143323209274738]]]}
+ecp = {}
+CPU time:      4968.75
+
+
+******** <class 'gpu4pyscf.df.df_jk.DFRHF'> ********
+method = DFRHF
+initial guess = minao
+damping factor = 0.0
+level_shift factor = 0.0
+DIIS = <class 'gpu4pyscf.scf.diis.CDIIS'>
+diis_start_cycle = 1
+diis_space = 8
+diis_damp = 0
+SCF conv_tol = 1e-10
+SCF conv_tol_grad = 1e-07
+SCF max_cycles = 200
+direct_scf = False
+init E= 327301.346970735
+  HOMO = 24510.5373840145  LUMO = 30549.5066086406  gap = 164328.72273 eV
+cycle= 1 E= 39801.4338934706  delta_E= -2.87e+05  |g|= 1.29e+04  |ddm|= 70.7
+  HOMO = -459.840398995835  LUMO = 1848.31177297056  gap = 62808.01974 eV
+cycle= 2 E= 310136.711346349  delta_E= 2.7e+05  |g|= 3.22e+04  |ddm|= 60.8
+  HOMO = 8085.07060456329  LUMO = 8553.82923920772  gap = 12755.57216 eV
+cycle= 3 E= 26313.6507242772  delta_E= -2.84e+05  |g|= 9.72e+03  |ddm|= 61.7
+  HOMO = 6346.13714859956  LUMO = 7827.82882607416  gap = 40318.88420 eV
+cycle= 4 E= 15464.314386424  delta_E= -1.08e+04  |g|= 3.74e+03  |ddm|= 22.2
+  HOMO = 5530.45407024213  LUMO = 7386.65948834379  gap = 50509.92216 eV
+cycle= 5 E= 14669.1162947164  delta_E= -795  |g|=  844  |ddm|= 7.96
+  HOMO = 5124.90828477674  LUMO = 7258.56882869599  gap = 58059.86070 eV
+cycle= 6 E= 14620.0262280431  delta_E= -49.1  |g|=  435  |ddm|= 2.18
+  HOMO = 5110.92788197677  LUMO = 7194.18761526971  gap = 56688.38478 eV
+cycle= 7 E= 14606.6650586288  delta_E= -13.4  |g|=  244  |ddm|= 0.524
+  HOMO = 5083.45711502403  LUMO = 7174.06028803131  gap = 56888.20996 eV
+cycle= 8 E= 14599.9755026668  delta_E= -6.69  |g|=  152  |ddm|= 0.425
+  HOMO = 5077.39252456727  LUMO = 7184.11244157605  gap = 57326.76890 eV
+cycle= 9 E= 14596.5413173115  delta_E= -3.43  |g|=  121  |ddm|= 0.261
+  HOMO = 5080.8973261535  LUMO = 7198.51699610189  gap = 57623.36628 eV
+cycle= 10 E= 14593.2692289165  delta_E= -3.27  |g|= 81.3  |ddm|= 0.346
+  HOMO = 5083.10102225934  LUMO = 7219.05103152082  gap = 58122.16022 eV
+cycle= 11 E= 14591.0113013866  delta_E= -2.26  |g|= 43.8  |ddm|= 0.418
+  HOMO = 5084.34125730999  LUMO = 7231.44274238555  gap = 58425.60733 eV
+cycle= 12 E= 14590.4338751809  delta_E= -0.577  |g|= 22.3  |ddm|= 0.225
+  HOMO = 5084.00326665927  LUMO = 7235.09551787088  gap = 58534.20161 eV
+cycle= 13 E= 14590.2781685186  delta_E= -0.156  |g|= 9.97  |ddm|= 0.13
+  HOMO = 5085.01397196793  LUMO = 7237.48444976891  gap = 58571.70507 eV
+cycle= 14 E= 14590.2585420402  delta_E= -0.0196  |g|= 3.92  |ddm|= 0.0427
+  HOMO = 5084.57227620135  LUMO = 7237.96089423128  gap = 58596.68894 eV
+cycle= 15 E= 14590.2561475392  delta_E= -0.00239  |g|=  1.5  |ddm|= 0.0157
+  HOMO = 5084.7194793055  LUMO = 7238.10214438664  gap = 58596.52695 eV
+cycle= 16 E= 14590.255925533  delta_E= -0.000222  |g|= 0.618  |ddm|= 0.00356
+  HOMO = 5084.66364078696  LUMO = 7238.16296099469  gap = 58599.70130 eV
+cycle= 17 E= 14590.2558853447  delta_E= -4.02e-05  |g|= 0.233  |ddm|= 0.00157
+  HOMO = 5084.67573080298  LUMO = 7238.18022039153  gap = 58599.84196 eV
+cycle= 18 E= 14590.2558789899  delta_E= -6.35e-06  |g|= 0.11  |ddm|= 0.000467
+  HOMO = 5084.68351441034  LUMO = 7238.17824060944  gap = 58599.57629 eV
+cycle= 19 E= 14590.2558774062  delta_E= -1.58e-06  |g|= 0.0426  |ddm|= 0.000267
+  HOMO = 5084.68274681671  LUMO = 7238.17798020815  gap = 58599.59009 eV
+cycle= 20 E= 14590.2558772233  delta_E= -1.83e-07  |g|= 0.0176  |ddm|= 5.43e-05
+  HOMO = 5084.68285610875  LUMO = 7238.17775851905  gap = 58599.58108 eV
+cycle= 21 E= 14590.255877195  delta_E= -2.84e-08  |g|= 0.00818  |ddm|= 2.7e-05
+  HOMO = 5084.68236353464  LUMO = 7238.17856938758  gap = 58599.61655 eV
+cycle= 22 E= 14590.2558771843  delta_E= -1.07e-08  |g|= 0.00437  |ddm|= 2.04e-05
+  HOMO = 5084.6822104476  LUMO = 7238.17920979263  gap = 58599.63814 eV
+cycle= 23 E= 14590.2558771796  delta_E= -4.7e-09  |g|= 0.00249  |ddm|= 1.65e-05
+  HOMO = 5084.68229006636  LUMO = 7238.17964467001  gap = 58599.64781 eV
+cycle= 24 E= 14590.2558771776  delta_E= -1.92e-09  |g|= 0.00173  |ddm|= 9.05e-06
+  HOMO = 5084.68224387332  LUMO = 7238.18008125913  gap = 58599.66095 eV
+cycle= 25 E= 14590.2558771767  delta_E= -9.51e-10  |g|= 0.000998  |ddm|= 9.52e-06
+  HOMO = 5084.68234578519  LUMO = 7238.18029394388  gap = 58599.66396 eV
+cycle= 26 E= 14590.2558771764  delta_E= -2.84e-10  |g|= 0.000449  |ddm|= 4.54e-06
+  HOMO = 5084.68232766503  LUMO = 7238.180370449  gap = 58599.66654 eV
+cycle= 27 E= 14590.2558771766  delta_E= 1.53e-10  |g|= 0.000143  |ddm|= 2.52e-06
+  HOMO = 5084.68233210679  LUMO = 7238.18038582102  gap = 58599.66683 eV
+cycle= 28 E= 14590.2558771765  delta_E= -9.82e-11  |g|= 7.58e-05  |ddm|= 3.87e-07
+  HOMO = 5084.68233423993  LUMO = 7238.18038666179  gap = 58599.66680 eV
+cycle= 29 E= 14590.2558771764  delta_E= -1.27e-11  |g|= 3.76e-05  |ddm|= 1.19e-07
+  HOMO = 5084.68233477766  LUMO = 7238.18038918933  gap = 58599.66685 eV
+cycle= 30 E= 14590.2558771765  delta_E= 8.91e-11  |g|= 1.67e-05  |ddm|= 6.65e-08
+  HOMO = 5084.68233543139  LUMO = 7238.18038922212  gap = 58599.66684 eV
+cycle= 31 E= 14590.2558771764  delta_E= -1.31e-10  |g|= 8.39e-06  |ddm|= 2.4e-08
+  HOMO = 5084.68233536197  LUMO = 7238.18038927227  gap = 58599.66684 eV
+cycle= 32 E= 14590.2558771765  delta_E= 5.09e-11  |g|= 3.51e-06  |ddm|= 8.39e-09
+  HOMO = 5084.68233518852  LUMO = 7238.1803891941  gap = 58599.66684 eV
+cycle= 33 E= 14590.2558771767  delta_E= 2.27e-10  |g|= 1.93e-06  |ddm|= 5.46e-09
+  HOMO = 5084.6823352349  LUMO = 7238.18038932658  gap = 58599.66684 eV
+cycle= 34 E= 14590.2558771764  delta_E= -2.87e-10  |g|= 1.34e-06  |ddm|= 3.29e-09
+  HOMO = 5084.68233514512  LUMO = 7238.18038948804  gap = 58599.66685 eV
+cycle= 35 E= 14590.2558771765  delta_E= 1.44e-10  |g|= 8.28e-07  |ddm|= 3.97e-09
+  HOMO = 5084.68233520043  LUMO = 7238.18038966153  gap = 58599.66685 eV
+cycle= 36 E= 14590.2558771765  delta_E= -4.91e-11  |g|= 5.46e-07  |ddm|= 3.03e-09
+  HOMO = 5084.68233520237  LUMO = 7238.18038977859  gap = 58599.66686 eV
+cycle= 37 E= 14590.2558771766  delta_E= 7.64e-11  |g|= 3.18e-07  |ddm|= 2.75e-09
+  HOMO = 5084.6823352138  LUMO = 7238.18038987281  gap = 58599.66686 eV
+cycle= 38 E= 14590.2558771765  delta_E= -5.64e-11  |g|= 1.33e-07  |ddm|= 1.91e-09
+  HOMO = 5084.68233521763  LUMO = 7238.18038989231  gap = 58599.66686 eV
+cycle= 39 E= 14590.2558771764  delta_E= -1.46e-10  |g|= 7.38e-08  |ddm|= 5.06e-10
+  HOMO = 5084.682335219  LUMO = 7238.18038989755  gap = 58599.66686 eV
+cycle= 40 E= 14590.2558771766  delta_E= 1.96e-10  |g|= 5.2e-08  |ddm|= 1.45e-10
+  HOMO = 5084.68233521935  LUMO = 7238.18038989934  gap = 58599.66686 eV
+cycle= 41 E= 14590.2558771763  delta_E= -2.82e-10  |g|= 4.11e-08  |ddm|= 6e-11
+  HOMO = 5084.68233522011  LUMO = 7238.18038990028  gap = 58599.66686 eV
+cycle= 42 E= 14590.2558771765  delta_E= 2.24e-10  |g|= 3.75e-08  |ddm|= 2.76e-11
+  HOMO = 5084.68233521867  LUMO = 7238.18038989872  gap = 58599.66686 eV
+cycle= 43 E= 14590.2558771764  delta_E= -6.18e-11  |g|= 2.79e-08  |ddm|= 4.09e-11
+  HOMO = 5084.68233521967  LUMO = 7238.18038990038  gap = 58599.66686 eV
+Extra cycle  E= 14590.2558771765  delta_E= 4.18e-11  |g|= 1.84e-08  |ddm|= 3.52e-11
+converged SCF energy = 14590.2558771765
+e_corr_os: -9.878630928782061e-07
+e_corr_ss: -4.907037933358963e-08
+E(DFMP2) = 14590.2558761395  E_corr = -1.0369334722118e-06
+E(SCS-DFMP2) = 14590.2558759747  E_corr = -1.20179250456504e-06
+E_corr(same-spin) = -4.90703793335896e-08
+E_corr(oppo-spin) = -9.87863092878206e-07

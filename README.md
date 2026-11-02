@@ -4,6 +4,28 @@
 neural-basis training and benchmark workspace. See [NNAO_WORKSPACE.md](NNAO_WORKSPACE.md)
 for source provenance, setup, campaign recipes, and archived results.
 
+## NNAO paper data
+
+All collected NNAO training data, scientific test results, figures and final
+inference parameters are organized under **[reproducibility/nnao/](reproducibility/nnao/README.md)**.
+Start with the [data index](reproducibility/nnao/README.md), the
+[exact 500-system training structures](reproducibility/nnao/paper/data/training/nnao500-20261021/README.md),
+the [nine formal trained models](reproducibility/nnao/models/canonical-nine.json),
+and the [paper-case index](reproducibility/nnao/paper/data/computational_examples/README.md).
+The archive includes earlier 24/50/200/1000-system selections and training
+records, basis calibration and free-contraction comparisons, ethane energy/
+radial-function scans, ethylene density maps, dimers, barriers and basis-accuracy
+benchmarks. Historical corrections and incomplete/failed run states remain
+identified in their original records.
+
+Large data and weight payloads use **Git LFS**: run
+`git lfs pull --include='reproducibility/nnao/**'` after cloning this branch.
+The [data verification command](reproducibility/nnao/README.md#download-and-verify)
+checks file hashes, the ordered training input and inference parameters.
+Final parameter exports omit Adam and training gradients; rebuildable integral
+and JIT caches are not distributed. Source/data provenance and third-party
+attribution are retained for the forthcoming paper-data release.
+
 **Differentiable electronic structure in JAX.**
 
 GradSCF is a Python framework for molecular and periodic electronic-structure
@@ -58,7 +80,7 @@ repository tests use Python 3.11+. Native CPU integrals require CMake 3.20+,
 a C99/C++17 compiler, and a BLAS library (Accelerate on macOS).
 
 ```bash
-git clone --branch release/v1.0.0 https://github.com/STOKES-DOT/GradSCF.git
+GIT_LFS_SKIP_SMUDGE=1 git clone --branch gradscf_nnao https://github.com/STOKES-DOT/GradSCF.git
 cd GradSCF
 python -m venv .venv
 source .venv/bin/activate
