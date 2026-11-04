@@ -4,6 +4,8 @@ The catalog freezes60 physical systems, five balanced bases and four XC classes.
 See [FIXTURE_CATALOG.md](FIXTURE_CATALOG.md) for input provenance and constructed
 geometries. All numerical commands below run inside a Slurm allocation. Metadata
 generation and summary commands require only Python's standard library.
+Canonical inputs/geometries are versioned. Raw `sources/` responses remain an
+ignored download cache; `prepare_catalog.py` recreates them from the recorded URLs.
 
 ## Reproduce inputs and run one worker
 

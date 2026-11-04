@@ -102,8 +102,8 @@ allocation disappears. Its dated source/harness paths are specific to this run.
 Initial43 runs overlapped some small diagnostics: conservatively excluded from
 speed ratios in timing-exclusions-20261104.json, not scientific acceptance.
 No diagnostic calculations now overlap clean matrix measurements.
-Snapshot2026-11-04T14:37:33+08:91unique attempts,81scientifically accepted,
-3unsupported,7nonconverged,35matched energy pairs;8systems have at least one
+Snapshot2026-11-04T14:52:37+08:206unique attempts,188scientifically accepted,
+8unsupported,10nonconverged,85matched energy pairs;18systems have at least one
 completed configuration, not all six methods. Static closing-summary-20261104/
 may lag remote results/summary-20261104/. Closing matrix is NOT complete.
 

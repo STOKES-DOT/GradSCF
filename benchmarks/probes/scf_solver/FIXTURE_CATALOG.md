@@ -7,10 +7,6 @@ def2-SVP,cc-pVDZ and def2-TZVP. This is60 primary system/basis cases, **not**
 No SCF calculation, integral evaluation or molecular optimization was executed
 while preparing these fixtures.
 
-Canonical executable inputs and geometries are versioned. Raw source responses
-under `sources/` are an ignored download cache; `prepare_catalog.py` can recreate
-them. Their URLs and content hashes remain recorded in the catalog/manifest.
-
 ## Files and sources
 
 - `systems.json`: executable input data: `id`, `atom` (Angstrom), `basis`,
