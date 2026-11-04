@@ -1,0 +1,129 @@
+"""Shared bounded SCF scan; Fock/energy physics remains with the caller."""
+from typing import NamedTuple
+
+import jax
+import jax.numpy as jnp
+
+from ..nonlinear.diis import diis_extrapolate
+from .metrics import convergence_reached
+from .types import SCFConfig, SCFHistory, SCFMetrics, SCFResult, SCFState
+
+
+class _Carry(NamedTuple):
+    state: SCFState
+    last_fock: jax.Array
+    focks: jax.Array
+    errors: jax.Array
+    head: jax.Array
+    count: jax.Array
+    cycles: jax.Array
+    converged: jax.Array
+    metrics: SCFMetrics
+    best_state: SCFState
+    best_cycle: jax.Array
+    best_rms: jax.Array
+
+
+def _pack_error(error):
+    error = jnp.asarray(error)
+    if jnp.iscomplexobj(error):
+        return jnp.concatenate((error.real.reshape(-1), error.imag.reshape(-1)))
+    return error.reshape(-1)
+
+
+def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
+              diis_error, orbital_gradient, config=None, shift_fock=None,
+              initial_last_fock=None, energy_change=None):
+    """Converge a matrix fixed point with DIIS, preserving explicit AD.
+
+    ``evaluate(D,C,eps,previous)`` returns ``(energy,raw_fock,aux)``; previous
+    is a state for incremental builds and None for a fresh convergence check.
+    ``diis_error(fock,state)`` may return a real or complex array. Complex errors
+    use a real+imaginary metric. ``orbital_gradient(state)`` certifies the raw
+    Fock, never the DIIS extrapolate. ``shift_fock(fock,state)`` acts after DIIS.
+
+    All physical arrays and auxiliary PyTrees remain live to JAX. The fixed
+    scan supports reverse mode without attaching an implicit rule or stopping
+    gradients; callers retain their existing implicit/explicit differentiation.
+    Only scalar histories are retained unless store_iterates is requested.
+    """
+    cfg = SCFConfig() if config is None else config
+    dtype = initial_state.fock.real.dtype
+    error_shape = jax.eval_shape(lambda f, state: _pack_error(diis_error(f, state)),
+                                initial_state.fock, initial_state)
+    zero = jnp.asarray(0, dtype=jnp.int32)
+    infinity = jnp.asarray(jnp.inf, dtype=dtype)
+    initial = _Carry(initial_state,
+        initial_state.fock if initial_last_fock is None else initial_last_fock,
+        jnp.zeros((cfg.diis_space,)+initial_state.fock.shape, dtype=initial_state.fock.dtype),
+        jnp.zeros((cfg.diis_space,)+error_shape.shape, dtype=error_shape.dtype),
+        zero, zero, zero, jnp.asarray(False), SCFMetrics(infinity, infinity, infinity),
+        initial_state, zero, infinity)
+
+    def assess(old, state, density_rms):
+        delta = (state.energy-old.state.energy if energy_change is None
+                 else energy_change(old.state, state))
+        metrics = SCFMetrics(jnp.abs(delta), density_rms, orbital_gradient(state))
+        passed = convergence_reached(*metrics, conv_tol=cfg.conv_tol,
+            conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
+            energy_only=cfg.energy_only, has_prior_cycle=old.cycles > 0)
+        finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in
+            (state.density, state.mo_coeff, state.mo_energy, state.energy, state.fock)]))
+        return metrics, passed & finite
+
+    def advance(old):
+        damp = ((old.cycles < cfg.fock_damping_cycles)
+                & ((old.cycles > 0) | (not cfg.skip_first_fock_damping)))
+        factor = jnp.where(damp, jnp.asarray(cfg.damping, dtype=dtype), 0.)
+        fock = (1-factor)*old.state.fock+factor*old.last_fock
+
+        def extrapolate(_):
+            return diis_extrapolate(fock, _pack_error(diis_error(fock, old.state)),
+                                    old.focks, old.errors, old.head, old.count)
+
+        effective, focks, errors, head, count = jax.lax.cond(
+            old.cycles >= cfg.diis_start_cycle, extrapolate,
+            lambda _: (fock, old.focks, old.errors, old.head, old.count), operand=None)
+        shifted = effective if shift_fock is None else shift_fock(effective, old.state)
+        energies, coeff = diagonalize(shifted)
+        density = density_from_coeff(coeff)
+        if cfg.density_damping != "none":
+            active = jnp.asarray(True) if cfg.density_damping == "all" else count < 2
+            mixing = jnp.where(active, jnp.asarray(cfg.damping, dtype=dtype), 0.)
+            density = (1-mixing)*density+mixing*old.state.density
+        energy, raw_fock, aux = evaluate(density, coeff, energies, old.state)
+        state = SCFState(density, coeff, energies, energy, raw_fock, aux)
+        rms = jnp.sqrt(jnp.mean(jnp.abs(density-old.state.density)**2))
+        metrics, passed = assess(old, state, rms)
+        if cfg.refresh_on_convergence:
+            def refresh(_):
+                energy, fock, aux = evaluate(density, coeff, energies, None)
+                fresh = SCFState(density, coeff, energies, energy, fock, aux)
+                fresh_metrics, fresh_passed = assess(old, fresh, rms)
+                return fresh, fresh_metrics, fresh_passed
+            state, metrics, passed = jax.lax.cond(
+                passed, refresh, lambda unchanged: unchanged, (state, metrics, passed))
+        return old._replace(state=state, last_fock=effective, focks=focks,
+            errors=errors, head=head, count=count, cycles=old.cycles+1,
+            converged=passed, metrics=metrics)
+
+    def step(old, _):
+        current = jax.lax.cond(old.converged, lambda value: value, advance, old)
+        rms = jnp.where(old.converged, 0., current.metrics.density_rms)
+        delta = jnp.where(old.converged, 0., current.metrics.energy_delta)
+        better = jnp.isfinite(rms) & (rms < old.best_rms)
+        best = jax.lax.cond(better, lambda _: current.state, lambda _: old.best_state, operand=None)
+        current = current._replace(best_state=best,
+            best_cycle=jnp.where(better, current.cycles, old.best_cycle),
+            best_rms=jnp.where(better, rms, old.best_rms))
+        iterates = ((current.state.density, current.state.mo_coeff, current.state.mo_energy)
+                    if cfg.store_iterates else ())
+        return current, SCFHistory(rms, delta, current.metrics.gradient, current.converged, iterates)
+
+    final, history = jax.lax.scan(step, initial, xs=None, length=cfg.max_cycle)
+    # A wholly invalid history must expose the failed iterate, not the seed.
+    valid_best = jnp.isfinite(final.best_rms)
+    best = jax.lax.cond(valid_best, lambda _: final.best_state, lambda _: final.state, operand=None)
+    best_cycle = jnp.where(valid_best, final.best_cycle, final.cycles)
+    return SCFResult(final.state, best, best_cycle, final.converged,
+                     final.cycles, final.metrics, history)

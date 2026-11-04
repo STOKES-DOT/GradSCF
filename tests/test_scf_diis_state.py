@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from gradscf.solvers.nonlinear.diis import DIIS_SPACE, diis_push, diis_extrapolate
-from gradscf.scf import rks
 
 
 @pytest.mark.parametrize('shape', [(2, 2), (2, 2, 2)])
@@ -24,14 +23,14 @@ def test_history_wraparound_preserves_recent_entries_under_jit(shape):
     np.testing.assert_array_equal(eh[:, 0], -expected)
 
 
-def test_start_cadence_and_rks_solve_patchpoint(monkeypatch):
+def test_start_cadence_and_explicit_solve_hook():
     fock = jnp.eye(2)
     state = (jnp.zeros((DIIS_SPACE, 2, 2)), jnp.zeros((DIIS_SPACE, 4)),
              jnp.asarray(0, jnp.int32), jnp.asarray(0, jnp.int32))
-    monkeypatch.setattr(rks, '_diis_solve', lambda *_: jnp.full((2, 2), 7.))
-    first, *state = rks._diis_extrapolate(fock, fock, *state)
+    solve = lambda *_: jnp.full((2, 2), 7.)
+    first, *state = diis_extrapolate(fock, fock, *state, solve=solve)
     np.testing.assert_array_equal(first, fock)
-    second, *state = rks._diis_extrapolate(fock, -fock, *state)
+    second, *state = diis_extrapolate(fock, -fock, *state, solve=solve)
     np.testing.assert_array_equal(second, jnp.full((2, 2), 7.))
     assert int(state[-1]) == 2
 

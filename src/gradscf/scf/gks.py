@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from numbers import Integral
-from typing import Any, NamedTuple
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -15,8 +15,8 @@ from ..dft.xc import grid_energy, grid_value_and_grad, hybrid_coeff, parse_recip
 from .core import _contains_jax_tracer, _host_float_unless_traced
 from .facade import _BaseKS
 from gradscf.scf.inputs.assembly import build_uks_integral_inputs
-from .convergence import convergence_reached
-from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
+from ..solvers.scf import SCFConfig, SCFState, orbital_gradient_norm, orbital_orthogonalizer, solve_scf
+from .rks import RKSResult
 from .uks import UKSConfig
 from .uks import _unrestricted_vxc_matrices, _unrestricted_xc_energy_and_potential_on_grid
 
@@ -49,7 +49,10 @@ def _validate_hermitian(a: Array, shape: tuple[int, int], name: str) -> None:
     if a.shape != shape:
         raise ValueError(f"{name} must have shape {shape}.")
     if not _contains_jax_tracer(a):
-        tolerance = 100 * jnp.finfo(a.real.dtype).eps
+        # Native integral roundoff scales with the operator, e.g. core levels
+        # of heavier atoms. Keep rejecting finite, materially asymmetric data.
+        scale = jnp.maximum(1., jnp.max(jnp.abs(a)))
+        tolerance = 100 * jnp.finfo(a.real.dtype).eps * scale
         if not bool(jnp.all(jnp.isfinite(a))) or not bool(jnp.allclose(a, a.conj().T, atol=tolerance, rtol=0)):
             raise ValueError(f"{name} must be finite and Hermitian.")
 
@@ -174,22 +177,6 @@ def generalized_energy_and_fock(
     return energy, exc, _hermitian(h + potential + vxc)
 
 
-class _GeneralizedIteration(NamedTuple):
-    coeff: Array
-    density: Array
-    energy: Array
-    xc_energy: Array
-    fock: Array
-    last_fock: Array
-    fock_hist: Array
-    err_hist: Array
-    head: Array
-    count: Array
-    cycles: Array
-    converged: Array
-    gradient: Array
-
-
 def run_gks_from_integrals(
     *, overlap: Array, hcore: Array, eri: Array, nelectron: int,
     nuclear_repulsion: float | Array, ao: Array, ao_deriv1: Array, grid_weights: Array,
@@ -229,81 +216,56 @@ def run_gks_from_integrals(
     _validate_hermitian(h, (2*n, 2*n), "hcore")
     if ao.shape != (weights.size, n) or deriv.shape != (4, weights.size, n):
         raise ValueError("AO values/first derivatives must match the grid and spatial AO dimensions.")
-    eig, vec = jnp.linalg.eigh(s)
+    eig = jnp.linalg.eigvalsh(s)
     if not _contains_jax_tracer(eig) and bool(jnp.any(eig <= 0)):
         raise ValueError("overlap must be positive definite.")
-    x = _spin_diagonal((vec * jnp.maximum(eig, cfg.orthogonalization_eps)**-.5) @ vec.T)
+    x = _spin_diagonal(orbital_orthogonalizer(s, cfg.orthogonalization_eps))
     s2 = _spin_diagonal(s)
     occ = jnp.zeros((2*n,), dtype=real_dtype).at[:nelectron].set(1.)
 
     def diagonalize(fock):
-        _, c = jnp.linalg.eigh(_hermitian(x.conj().T @ fock @ x))
-        return x @ c
+        values, c = jnp.linalg.eigh(_hermitian(x.conj().T @ fock @ x))
+        return values, x @ c
 
     def density_from(coeff):
         return _hermitian((coeff * occ) @ coeff.conj().T)
 
-    def evaluate(dm):
-        return generalized_energy_and_fock(
+    def evaluate(dm, coeff, energies, previous):
+        energy, exc, fock = generalized_energy_and_fock(
             density=dm, hcore=h, eri=eri, nuclear_repulsion=nuclear_repulsion,
             ao=ao, ao_deriv1=deriv, grid_weights=weights, config=cfg,
         )
+        return energy, fock, exc
 
-    def gradient(c, f):
-        fmo = c.conj().T @ f @ c
-        return jnp.linalg.norm((1 - occ[:, None]) * occ[None, :] * fmo)
-
-    c0 = diagonalize(h)
+    eps0, c0 = diagonalize(h)
     dm0 = density_from(c0) if init_density is None else jnp.asarray(init_density, dtype=complex_dtype)
     _validate_hermitian(dm0, (2*n, 2*n), "init_density")
-    e0, xc0, f0 = evaluate(dm0)
-    initial = _GeneralizedIteration(
-        c0, dm0, e0, xc0, f0, f0,
-        jnp.zeros((_PYSCF_LIKE_DIIS_SPACE, 2*n, 2*n), dtype=complex_dtype),
-        jnp.zeros((_PYSCF_LIKE_DIIS_SPACE, 2*(2*n)**2), dtype=real_dtype),
-        jnp.asarray(0, jnp.int32), jnp.asarray(0, jnp.int32), jnp.asarray(0, jnp.int32),
-        jnp.asarray(False), gradient(c0, f0),
-    )
-
-    def advance(old):
-        f = jnp.where(old.cycles < 2, (1-cfg.damping)*old.fock + cfg.damping*old.last_fock, old.fock)
-        residual = x.conj().T @ (f @ old.density @ s2 - s2 @ old.density @ f) @ x
-        # Real DIIS metric Re(<e_i|e_j>) retains both parts of complex errors.
-        error = jnp.concatenate([residual.real.ravel(), residual.imag.ravel()])
-        f, fh, eh, head, count = _diis_extrapolate(
-            f, error, old.fock_hist, old.err_hist, old.head, old.count,
-        )
-        shifted = _hermitian(f + cfg.level_shift * (s2 - s2 @ old.density @ s2))
-        coeff = diagonalize(shifted)
-        dm = density_from(coeff)
-        energy, exc, raw = evaluate(dm)
-        grad = gradient(coeff, raw)
-        delta = jnp.sqrt(jnp.mean(jnp.abs(dm - old.density)**2))
-        converged = convergence_reached(
-            energy - old.energy, delta, grad, conv_tol=cfg.conv_tol,
+    e0, f0, xc0 = evaluate(dm0, c0, eps0, None)
+    result = solve_scf(SCFState(dm0, c0, eps0, e0, f0, xc0),
+        evaluate=evaluate, diagonalize=diagonalize, density_from_coeff=density_from,
+        diis_error=lambda f, state: x.conj().T @ (
+            f @ state.density @ s2 - s2 @ state.density @ f) @ x,
+        orbital_gradient=lambda state: orbital_gradient_norm(state.fock, state.mo_coeff, occ),
+        shift_fock=lambda f, state: _hermitian(
+            f+cfg.level_shift*(s2-s2 @ state.density @ s2)),
+        config=SCFConfig(max_cycle=cfg.max_cycle, conv_tol=cfg.conv_tol,
             conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
-            energy_only=cfg.convergence_metric == "energy", has_prior_cycle=old.cycles > 0,
-        )
-        return _GeneralizedIteration(coeff, dm, energy, exc, raw, f, fh, eh, head, count,
-                                     old.cycles+1, converged, grad)
-
-    def step(old, _):
-        return jax.lax.cond(old.converged, lambda x: x, advance, old), None
-
-    final, _ = jax.lax.scan(step, initial, xs=None, length=cfg.max_cycle)
-    traced = _contains_jax_tracer(final)
+            damping=cfg.damping, fock_damping_cycles=2,
+            energy_only=cfg.convergence_metric == "energy"))
+    final = result.state
+    traced = _contains_jax_tracer(result)
     return GKSResult(
-        converged=final.converged if traced else bool(final.converged),
-        cycles=final.cycles if traced else int(final.cycles),
+        converged=result.converged if traced else bool(result.converged),
+        cycles=result.cycles if traced else int(result.cycles),
         total_energy=_host_float_unless_traced(final.energy),
         electronic_energy=_host_float_unless_traced(final.energy - nuclear_repulsion),
         nuclear_repulsion=_host_float_unless_traced(nuclear_repulsion),
-        xc_energy=_host_float_unless_traced(final.xc_energy),
+        xc_energy=_host_float_unless_traced(final.aux),
         exact_exchange_fraction=float(hybrid_coeff(cfg.xc_spec)),
-        mo_energy=jnp.diag(final.coeff.conj().T @ final.fock @ final.coeff).real,
-        mo_coeff=final.coeff, mo_occ=occ, density_matrix=final.density,
+        mo_energy=jnp.diag(final.mo_coeff.conj().T @ final.fock @ final.mo_coeff).real,
+        mo_coeff=final.mo_coeff, mo_occ=occ, density_matrix=final.density,
         fock_matrix=final.fock, overlap_matrix=s2, hcore_matrix=h,
-        orbital_gradient_norm=_host_float_unless_traced(final.gradient),
+        orbital_gradient_norm=_host_float_unless_traced(result.metrics.gradient),
     )
 
 

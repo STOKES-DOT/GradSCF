@@ -27,7 +27,8 @@ from gradscf import integrals, scf
 from gradscf._memory import tree_storage_bytes, workspace_bytes
 from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
 from gradscf.scf.core import _build_density_from_occ, _diagonalize_fock, _orthogonalizer
-from gradscf.scf.rks import RKSConfig, _build_jk, _run_scf_iterations_lax_core
+from gradscf.scf.rks import RKSConfig, _build_jk
+from gradscf.scf.iteration import run_restricted_scf
 
 
 def make_experiment(*, steps=12, bond=.74, basis="3-21g", max_memory=64.):
@@ -81,7 +82,7 @@ def make_experiment(*, steps=12, bond=.74, basis="3-21g", max_memory=64.):
         initial_energy, _, fock, j, k = energy_and_fock(density)
         # A fixed trajectory makes every E_k comparable under FD perturbations:
         # no coefficient-dependent early stopping or extra finalization cycle.
-        outputs = _run_scf_iterations_lax_core(
+        outputs = run_restricted_scf(
             h=h, s=s, x=x, energy_and_fock_builder=energy_and_fock,
             cfg=RKSConfig(xc_spec="hf", max_cycle=steps, conv_tol=0., damping=0., level_shift=0.),
             mo_occ_fixed=occ, diis_basis=coeff, skip_first_fock_damping=False,

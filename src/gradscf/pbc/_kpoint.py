@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 from ..integrals.periodic.fft import get_kpoint_jk,_kpoint_exchange
 from ..solvers.nonlinear.diis import diis_extrapolate,DIIS_SPACE
-from ..scf.convergence import convergence_reached
+from ..solvers.scf.metrics import convergence_reached
 from ..scf.autodiff import SCFDifferentiationConfig,attach_scf_backward
 from ..dft.xc import parse_recipe
 from ..dft.xc.evaluate import grid_value_and_grad

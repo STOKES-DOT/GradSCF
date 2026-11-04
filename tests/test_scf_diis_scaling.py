@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.scf.rks import _PYSCF_LIKE_DIIS_SPACE, _diis_solve
+from gradscf.solvers.nonlinear.diis import DIIS_SPACE as _PYSCF_LIKE_DIIS_SPACE, diis_solve as _diis_solve
 
 
 @pytest.mark.parametrize("scale", [1., 1e-6, 1e-9])

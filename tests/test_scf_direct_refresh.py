@@ -3,7 +3,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from gradscf.scf.rks import RKSConfig, _run_scf_iterations_lax_core
+from gradscf.scf.rks import RKSConfig
+from gradscf.scf.iteration import run_restricted_scf
 
 
 def run(kind, *, backend="direct", fallback=False):
@@ -21,7 +22,7 @@ def run(kind, *, backend="direct", fallback=False):
                 energy = jnp.asarray(jnp.nan)
         return energy, jnp.asarray(0.), fock, zero, zero
     options = dict(refresh_on_convergence=True) if fallback else {}
-    return _run_scf_iterations_lax_core(
+    return run_restricted_scf(
         h=h, s=eye, x=eye, energy_and_fock_builder=builder,
         cfg=RKSConfig(xc_spec="hf", jk_backend=backend, max_cycle=3,
             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10),

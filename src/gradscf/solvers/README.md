@@ -22,12 +22,68 @@ historical solver forwarding modules have been removed.
 | Scalar-bordered Schur solve | `linear/schur.py` | scGW charge-constrained response |
 | Fixed-point/root implicit differentiation | `nonlinear/` | SCF and scGW |
 | DIIS and callback-based orbital minimization | `nonlinear/` | SCF families |
+| Shared bounded SCF iteration and occupation-weighted residual | `scf/` | Molecular RHF/RKS, UHF/UKS, GHF/GKS and neural R/U SCF |
 | Moment-anchored causal matrix realization | `poles.py` | Periodic scGW spectral continuation |
 
 `tddft/eigensolvers.py`, `tddft/eigenvector_differentiation.py`, `scf/implicit.py`,
 `scf/diis.py`, `scf/_orbital_solver.py`, and `ci/response.py` have been removed.
 Architecture tests prevent their return and reject imports of those paths.
 The shared layer has no dependency on CI, TDDFT, SCF, GW or PBC modules.
+
+## Shared SCF execution
+
+`SCFState`, `SCFConfig`, `SCFResult` and `solve_scf` are available directly
+from `gradscf.solvers`. The six molecular methods retain their public facades;
+their physical Fock builders feed the same bounded `lax.scan`. The adapters in
+`gradscf.scf.iteration` translate restricted, separate-spin and auxiliary J/K
+conventions without implementing another loop. DIIS remains owned by
+`solvers.nonlinear.diis`, including real/imaginary packing for complex errors.
+
+The solver receives callbacks for energy/raw Fock, diagonalization, density,
+DIIS error, orbital residual and an optional level shift. Arrays and auxiliary
+PyTrees are dynamic inputs, not numerical cache entries. After convergence the
+scan freezes without repeating the Fock calculation. A direct/incremental J/K
+candidate is rebuilt and certified with a fresh Fock before acceptance.
+Scalar histories are always available; dense density/orbital histories require
+`store_iterates=True`. Best-state selection is streamed rather than retaining
+all matrix iterates. Nonfinite energy or state arrays cannot pass convergence;
+failed histories never silently substitute the initial seed.
+
+The common stationary residual is the occupation-weighted MO commutator,
+
+\[
+g=\frac{1}{\sqrt 2}\left\|(n_q-n_p)(C^\dagger F C)_{pq}\right\|_F.
+\]
+
+It sums over spin blocks, retains unequal fractional occupations and gives
+`2*norm(F_vo)` for restricted integer occupations and the joint `norm(F_vo)`
+for separate-spin or single-occupation spinor states. Energy, density RMS and
+orbital-gradient thresholds must all pass, with finite metrics. Zero energy
+tolerance retains fixed-cycle execution. An optional `energy_change` callback
+must compute the actual energy difference; no quadratic or grid-local form is
+assumed for an external functional.
+
+The scan supports explicit JVP/VJP and higher derivatives. Existing implicit
+SCF training attaches `implicit_fixed_point_solution` to the physical density
+fixed point; DIIS history is not part of that adjoint equation. Fixed-density
+training continues to bypass the SCF solve. This does not add neural spinor GKS
+support to the physical functional API.
+
+`orbital_orthogonalizer(S, eps)` supplies a Cholesky orbital frame when
+`S > eps*I`; otherwise it keeps the existing clipped symmetric factor.
+The separate `eigen.spectral.inverse_sqrt` matrix-function contract is unchanged.
+Callers requiring the original symmetric orbital frame, including existing
+neural SCF adapters, retain it. Individual MO phases and degenerate-space gauges
+are not invariants; compare physical densities, projectors and observables.
+
+Molecular facades also accept optional `init_guess="atom"`, a bounded
+superposition of libcint/GradSCF isolated-UHF atomic densities. The default
+remains hcore. This unspherical guess currently supports fixed named STO-3G,
+3-21G, 6-31G*, cc-pVDZ, def2-SVP and def2-TZVP all-electron bases for H--Ar.
+Raw/trainable/ECP bases are explicitly rejected for this option; their existing
+hcore or explicit-density paths are unchanged. Atomic constants are cached as
+read-only host arrays by actual basis data and native-library fingerprint,
+without caching a molecular geometry, model parameters or a converged state.
 
 Import migration:
 

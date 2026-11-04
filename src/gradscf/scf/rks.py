@@ -30,7 +30,6 @@ from ..dft.xc import (
     xc_type,
 )
 from ..dft.xc.evaluate import grid_value_and_grad
-from .convergence import convergence_reached
 from .core import (
     _build_density_from_occ,
     _diagonalize_fock,
@@ -40,21 +39,12 @@ from .core import (
 from ._pytree import pytree_dataclass
 from .rsh import local_xc_spec, validate_rsh_inputs
 from .energy import XCContribution, restricted_energy, restricted_fock
+from .iteration import run_restricted_scf
+from ..solvers.scf import orbital_gradient_norm, orbital_orthogonalizer
 
-from ..solvers.nonlinear.diis import (
-    DIIS_START_CYCLE as _PYSCF_LIKE_DIIS_START_CYCLE,
-    DIIS_SPACE as _PYSCF_LIKE_DIIS_SPACE,
-    diis_solve as _diis_solve,
-    diis_push as _diis_push,
-    diis_extrapolate as _shared_diis_extrapolate,
-)
 JKBuilder = Callable[
     [Array, Array | None, Array | None, Array | None, Array | None, Array | None],
     tuple[Array, Array],
-]
-SCFEnergyFockBuilder = Callable[
-    [Array, Array, Array, Array, Array | None, Array | None, Array | None],
-    tuple[Array, Array, Array, Array, Array],
 ]
 
 
@@ -119,26 +109,6 @@ class RKSResult:
 TraceableRKSResult = RKSResult
 
 
-@pytree_dataclass
-@dataclass(frozen=True)
-class RKSIterationCarry:
-    cycle: Array
-    converged: Array
-    density: Array
-    mo_coeff: Array
-    mo_energy: Array
-    energy: Array
-    xc_energy: Array
-    raw_fock: Array
-    j_mat: Array
-    k_mat: Array
-    fock_last: Array
-    fock_hist: Array
-    err_hist: Array
-    hist_head: Array
-    hist_count: Array
-
-
 def _closed_shell_mo_occ(nao: int, nocc: int, dtype: Array) -> Array:
     return jnp.zeros((nao,), dtype=dtype).at[:nocc].set(2.0)
 
@@ -157,98 +127,8 @@ def _build_jk(eri: Array, density: Array, *, with_j=True, with_k=True) -> tuple[
     return j_mat, k_mat
 
 
-def _commutator_error(fock: Array, density: Array, overlap: Array) -> Array:
-    return fock @ density @ overlap - overlap @ density @ fock
-
-
-def _orthonormal_diis_error(fock: Array, density: Array, overlap: Array, corth: Array) -> Array:
-    error = _commutator_error(fock, density, overlap)
-    if jnp.finfo(fock.dtype).bits < 64:
-        return error
-    return corth.T @ error @ corth
-
-
 def _mo_residual_norm(fock: Array, mo_coeff: Array, mo_occ: Array) -> Array:
-    occ = jnp.asarray(mo_occ) > jnp.asarray(1e-12, dtype=mo_occ.dtype)
-    vir = jnp.logical_not(occ)
-    c_occ = jnp.where(occ[None, :], mo_coeff, jnp.zeros_like(mo_coeff))
-    c_vir = jnp.where(vir[None, :], mo_coeff, jnp.zeros_like(mo_coeff))
-    grad = 2.0 * (c_vir.T @ fock @ c_occ)
-    return jnp.linalg.norm(grad)
-
-
-def _apply_fock_damping(fock: Array, fock_prev: Array, factor: Array) -> Array:
-    return fock * (1.0 - factor) + fock_prev * factor
-
-
-def _optional_scalar_factor(active: Any, value: Any, dtype: Any) -> Array:
-    return jnp.where(
-        jnp.asarray(active),
-        jnp.asarray(value, dtype=dtype),
-        jnp.asarray(0.0, dtype=dtype),
-    )
-
-
-def _apply_optional_fock_damping(
-    fock: Array,
-    fock_prev: Array,
-    *,
-    damping: Any,
-    active: Any,
-) -> Array:
-    return _apply_fock_damping(
-        fock,
-        fock_prev,
-        _optional_scalar_factor(active, damping, fock.dtype),
-    )
-
-
-def _apply_level_shift(fock: Array, overlap: Array, density: Array, factor: Array) -> Array:
-    dm_occ = 0.5 * density
-    dm_vir = overlap - overlap @ dm_occ @ overlap
-    return fock + dm_vir * factor
-
-
-def _apply_optional_level_shift(
-    fock: Array,
-    overlap: Array,
-    density: Array,
-    *,
-    level_shift: Any,
-    active: Any,
-) -> Array:
-    return _apply_level_shift(
-        fock,
-        overlap,
-        density,
-        _optional_scalar_factor(active, level_shift, fock.dtype),
-    )
-
-
-def _mix_density_if_active(
-    density_new: Array,
-    density_old: Array,
-    *,
-    damping: Any,
-    active: Any,
-) -> Array:
-    factor = _optional_scalar_factor(active, damping, density_new.dtype)
-    return (1.0 - factor) * density_new + factor * density_old
-
-
-def _diis_extrapolate(
-    fock: Array,
-    error: Array,
-    fock_hist: Array,
-    err_hist: Array,
-    hist_head: Array,
-    hist_count: Array,
-) -> tuple[Array, Array, Array, Array, Array]:
-    """Compatibility boundary retaining the RKS DIIS instrumentation hooks."""
-    return _shared_diis_extrapolate(
-        fock, error, fock_hist, err_hist, hist_head, hist_count,
-        solve=_diis_solve, push=_diis_push,
-    )
+    return orbital_gradient_norm(fock, mo_coeff, mo_occ)
 
 
 @partial(jax.custom_jvp, nondiff_argnums=(4,))
@@ -731,314 +611,6 @@ def _maybe_run_extra_final_cycle(
     return density, mo_coeff, mo_energy, energy, xc_energy, raw_fock, converged
 
 
-def _advance_scf_iteration_with_fock_builder(
-    *,
-    fock_eff: Array,
-    density: Array,
-    energy: Array,
-    x: Array,
-    s: Array,
-    energy_and_fock_builder: SCFEnergyFockBuilder,
-    mo_occ: Array,
-    mo_occ_fixed: Array,
-    j_mat: Array,
-    k_mat: Array,
-    damping: Any,
-    use_density_damping: Any,
-    tol_e: Any,
-    grad_tol: Any,
-    density_tol: Any = 1e-8,
-    energy_only_convergence: Any = False,
-    eigenvalue_jitter: float = 0.0,
-    refresh_on_convergence: bool = False,
-) -> tuple[Array, Array, Array, Array, Array, Array, Array, Array, Array]:
-    mo_energy_new, mo_coeff_new = _diagonalize_fock(
-        fock_eff,
-        x,
-        eigenvalue_jitter=eigenvalue_jitter,
-    )
-    density_new = _build_density_from_occ(mo_coeff_new, mo_occ_fixed)
-    density_new = _mix_density_if_active(
-        density_new,
-        density,
-        damping=damping,
-        active=use_density_damping,
-    )
-    total_new, xc_energy_new, raw_fock_new, j_new, k_new = energy_and_fock_builder(
-        density_new,
-        mo_coeff_new,
-        mo_occ,
-        mo_energy_new,
-        density,
-        j_mat,
-        k_mat,
-    )
-    density_rms = jnp.sqrt(jnp.mean(jnp.abs(density_new-density)**2))
-    def check(values):
-        return convergence_reached(values[0]-energy, density_rms,
-            _mo_residual_norm(values[2], mo_coeff_new, mo_occ_fixed),
-            conv_tol=tol_e, conv_tol_density=density_tol, conv_tol_grad=grad_tol,
-            energy_only=energy_only_convergence)
-    values = total_new, xc_energy_new, raw_fock_new, j_new, k_new
-    converged_step = check(values)
-    if refresh_on_convergence:
-        # Accumulated delta-J/K roundoff can pass a strict orbital gate while
-        # the same density's fresh Fock fails it. Preserve the selected state;
-        # failed checks continue the original DIIS loop with rebuilt matrices.
-        values = jax.lax.cond(converged_step, lambda _: energy_and_fock_builder(
-            density_new, mo_coeff_new, mo_occ, mo_energy_new, None, None, None),
-            lambda _: values, operand=None)
-        converged_step = check(values)
-    total_new, xc_energy_new, raw_fock_new, j_new, k_new = values
-    return (
-        converged_step,
-        density_new,
-        mo_coeff_new,
-        mo_energy_new,
-        total_new,
-        xc_energy_new,
-        raw_fock_new,
-        j_new,
-        k_new,
-    )
-
-
-def _run_scf_iterations_lax_core(
-    *,
-    h: Array,
-    s: Array,
-    x: Array,
-    energy_and_fock_builder: SCFEnergyFockBuilder,
-    cfg: RKSConfig,
-    mo_occ_fixed: Array,
-    diis_basis: Array,
-    skip_first_fock_damping: bool,
-    density: Array,
-    mo_coeff: Array,
-    mo_occ: Array,
-    mo_energy: Array,
-    raw_fock: Array,
-    j_mat: Array,
-    k_mat: Array,
-    force_density_damping: bool = False,
-    density_convergence_tol: float | None = None,
-    eigenvalue_jitter: float = 0.0,
-    refresh_on_convergence: bool = False,
-) -> tuple[
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-    Array,
-]:
-    """Array-valued SCF loop shared by RKS and differentiable SCF execution."""
-
-    tol_e = jnp.asarray(cfg.conv_tol, dtype=h.dtype)
-    grad_tol = jnp.asarray(cfg.conv_tol_grad, dtype=h.dtype)
-    density_tol = cfg.conv_tol_density if density_convergence_tol is None else density_convergence_tol
-    damping = jnp.asarray(cfg.damping, dtype=h.dtype)
-    has_damping = cfg.damping != 0.0
-    use_pyscf_like_damping = jnp.finfo(h.dtype).bits >= 64 and not bool(force_density_damping)
-    level_shift = jnp.asarray(cfg.level_shift, dtype=h.dtype)
-    has_level_shift = cfg.level_shift != 0.0
-    energy_only_convergence = cfg.convergence_metric == "energy"
-
-    def body_fn(carry: RKSIterationCarry) -> RKSIterationCarry:
-        cycle = carry.cycle
-        converged = carry.converged
-        density_i = carry.density
-        energy_i = carry.energy
-        raw_fock_i = carry.raw_fock
-        j_i = carry.j_mat
-        k_i = carry.k_mat
-        fock_last = carry.fock_last
-        fock_hist = carry.fock_hist
-        err_hist = carry.err_hist
-        hist_head = carry.hist_head
-        hist_count = carry.hist_count
-
-        use_fock_damping = jnp.logical_and(
-            jnp.asarray(has_damping and use_pyscf_like_damping),
-            jnp.logical_and(
-                jnp.logical_or(
-                    jnp.asarray(not skip_first_fock_damping),
-                    cycle > jnp.asarray(0, dtype=cycle.dtype),
-                ),
-                cycle < jnp.asarray(_PYSCF_LIKE_DIIS_START_CYCLE - 1, dtype=cycle.dtype),
-            ),
-        )
-        fock_pre_diis = _apply_optional_fock_damping(
-            raw_fock_i,
-            fock_last,
-            damping=damping,
-            active=use_fock_damping,
-        )
-        diis_active = cycle >= jnp.asarray(1, dtype=cycle.dtype)
-        fock_eff, fock_hist, err_hist, hist_head, hist_count = jax.lax.cond(
-            diis_active,
-            lambda operand: _diis_extrapolate(
-                operand[0],
-                _orthonormal_diis_error(operand[0], operand[1], operand[2], operand[3]),
-                operand[4],
-                operand[5],
-                operand[6],
-                operand[7],
-            ),
-            lambda operand: (
-                operand[0],
-                operand[4],
-                operand[5],
-                operand[6],
-                operand[7],
-            ),
-            operand=(fock_pre_diis, density_i, s, diis_basis, fock_hist, err_hist, hist_head, hist_count),
-        )
-        fock_eff = _apply_optional_level_shift(
-            fock_eff,
-            s,
-            density_i,
-            level_shift=level_shift,
-            active=has_level_shift,
-        )
-
-        use_density_damping = jnp.logical_or(
-            jnp.asarray(has_damping and bool(force_density_damping)),
-            jnp.logical_and(
-                jnp.asarray(has_damping and (not use_pyscf_like_damping)),
-                hist_count < jnp.asarray(_PYSCF_LIKE_DIIS_START_CYCLE, dtype=hist_count.dtype),
-            ),
-        )
-        (
-            converged_step,
-            density_new,
-            mo_coeff_new,
-            mo_energy_new,
-            total_new,
-            xc_energy_new,
-            raw_fock_new,
-            j_new,
-            k_new,
-        ) = _advance_scf_iteration_with_fock_builder(
-            fock_eff=fock_eff,
-            density=density_i,
-            energy=energy_i,
-            x=x,
-            s=s,
-            energy_and_fock_builder=energy_and_fock_builder,
-            mo_occ=mo_occ,
-            mo_occ_fixed=mo_occ_fixed,
-            j_mat=j_i,
-            k_mat=k_i,
-            damping=damping,
-            use_density_damping=use_density_damping,
-            tol_e=tol_e,
-            grad_tol=grad_tol,
-            density_tol=density_tol,
-            energy_only_convergence=energy_only_convergence,
-            eigenvalue_jitter=eigenvalue_jitter,
-            refresh_on_convergence=refresh_on_convergence or cfg.jk_backend == "direct",
-        )
-        converged_step = jnp.logical_and(
-            converged_step,
-            cycle > jnp.asarray(0, dtype=cycle.dtype),
-        )
-
-        converged_new = jnp.logical_or(
-            converged,
-            converged_step,
-        )
-        return RKSIterationCarry(
-            cycle=cycle + 1,
-            converged=converged_new,
-            density=density_new,
-            mo_coeff=mo_coeff_new,
-            mo_energy=mo_energy_new,
-            energy=total_new,
-            xc_energy=xc_energy_new,
-            raw_fock=raw_fock_new,
-            j_mat=j_new,
-            k_mat=k_new,
-            fock_last=fock_eff,
-            fock_hist=fock_hist,
-            err_hist=err_hist,
-            hist_head=hist_head,
-            hist_count=hist_count,
-        )
-
-    nao = h.shape[0]
-    init = RKSIterationCarry(
-        cycle=jnp.asarray(0, dtype=jnp.int32),
-        converged=jnp.asarray(False),
-        density=density,
-        mo_coeff=mo_coeff,
-        mo_energy=mo_energy,
-        energy=jnp.asarray(0.0, dtype=h.dtype),
-        xc_energy=jnp.asarray(0.0, dtype=h.dtype),
-        raw_fock=raw_fock,
-        j_mat=j_mat,
-        k_mat=k_mat,
-        fock_last=h,
-        fock_hist=jnp.zeros((_PYSCF_LIKE_DIIS_SPACE, nao, nao), dtype=h.dtype),
-        err_hist=jnp.zeros((_PYSCF_LIKE_DIIS_SPACE, nao * nao), dtype=h.dtype),
-        hist_head=jnp.asarray(0, dtype=jnp.int32),
-        hist_count=jnp.asarray(0, dtype=jnp.int32),
-    )
-
-    def scan_step(carry: RKSIterationCarry, _):
-        converged = carry.converged
-        next_carry = jax.lax.cond(
-            converged,
-            lambda current: current,
-            body_fn,
-            carry,
-        )
-        density_delta = next_carry.density - carry.density
-        density_rms = jnp.sqrt(jnp.mean(density_delta**2))
-        return next_carry, (
-            next_carry.density,
-            next_carry.mo_coeff,
-            next_carry.mo_energy,
-            density_rms,
-        )
-
-    final_carry, (
-        density_history,
-        mo_coeff_history,
-        mo_energy_history,
-        density_rms_history,
-    ) = jax.lax.scan(
-        scan_step,
-        init,
-        xs=None,
-        length=int(cfg.max_cycle),
-    )
-    return (
-        final_carry.converged,
-        final_carry.cycle,
-        final_carry.density,
-        final_carry.mo_coeff,
-        final_carry.mo_energy,
-        final_carry.energy,
-        final_carry.xc_energy,
-        final_carry.raw_fock,
-        final_carry.j_mat,
-        final_carry.k_mat,
-        density_history,
-        mo_coeff_history,
-        mo_energy_history,
-        density_rms_history,
-    )
-
-
 @partial(jax.jit, static_argnames=(
     "cfg", "xc_kind", "nocc", "with_k", "skip_first_fock_damping",
 ))
@@ -1068,7 +640,7 @@ def _run_rks_iterations(
             alpha=alpha, cfg=cfg, xc_kind=xc_kind, grid_ao=grid_ao,
         )
 
-    return _run_scf_iterations_lax_core(
+    return run_restricted_scf(
         h=h, s=s, x=x, energy_and_fock_builder=energy_and_fock_builder,
         cfg=cfg, mo_occ_fixed=mo_occ, diis_basis=mo_coeff,
         skip_first_fock_damping=skip_first_fock_damping,
@@ -1076,6 +648,7 @@ def _run_rks_iterations(
         mo_energy=mo_energy, raw_fock=raw_fock, j_mat=j_mat, k_mat=k_mat,
         refresh_on_convergence=(direct_basis is not None and eri is None
                                 and eri_pair_matrix is None and df_factors is None),
+        store_iterates=False,
     )
 
 
@@ -1118,7 +691,7 @@ def _run_rks_from_integrals_shared(
     enuc = jnp.asarray(nuclear_repulsion, dtype=h.dtype)
     nao = int(s.shape[0])
 
-    x = _orthogonalizer(s, cfg.orthogonalization_eps)
+    x = orbital_orthogonalizer(s, cfg.orthogonalization_eps)
     if init_mo_coeff is None:
         mo_energy, mo_coeff = _diagonalize_fock(h, x)
     else:

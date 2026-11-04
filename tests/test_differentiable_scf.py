@@ -1222,7 +1222,7 @@ def test_energy_only_scf_does_not_converge_on_first_cycle():
             zero_mat,
         )
 
-    converged, cycles, *_ = scf_rks._run_scf_iterations_lax_core(
+    converged, cycles, *_ = scf_differentiable.run_restricted_scf(
         h=h,
         s=s,
         x=x,
@@ -1245,45 +1245,12 @@ def test_energy_only_scf_does_not_converge_on_first_cycle():
 
 
 def test_energy_and_residual_convergence_uses_pyscf_orbital_gradient_scale():
-    h = jnp.diag(jnp.asarray([-1.0, 0.5], dtype=jnp.float64))
-    s = jnp.eye(2, dtype=jnp.float64)
-    x = jnp.eye(2, dtype=jnp.float64)
-    density0 = jnp.diag(jnp.asarray([2.0, 0.0], dtype=jnp.float64))
-    mo_occ = jnp.asarray([2.0, 0.0], dtype=jnp.float64)
-    zero_mat = jnp.zeros((2, 2), dtype=jnp.float64)
-    raw_fock = jnp.asarray(
-        [[-1.0, 4.0e-5], [4.0e-5, 0.5]],
-        dtype=jnp.float64,
-    )
-
-    def small_orbital_gradient_builder(density, mo_coeff, mo_occ, mo_energy, old_density, j_mat, k_mat):
-        return (
-            jnp.asarray(0.0, dtype=jnp.float64),
-            jnp.asarray(0.0, dtype=jnp.float64),
-            raw_fock,
-            zero_mat,
-            zero_mat,
-        )
-
-    converged_step, *_ = scf_rks._advance_scf_iteration_with_fock_builder(
-        fock_eff=h,
-        density=density0,
-        energy=jnp.asarray(0.0, dtype=jnp.float64),
-        x=x,
-        s=s,
-        energy_and_fock_builder=small_orbital_gradient_builder,
-        mo_occ=mo_occ,
-        mo_occ_fixed=mo_occ,
-        j_mat=zero_mat,
-        k_mat=zero_mat,
-        damping=jnp.asarray(0.0, dtype=jnp.float64),
-        use_density_damping=False,
-        tol_e=jnp.asarray(1.0e-8, dtype=jnp.float64),
-        grad_tol=jnp.asarray(1.0e-4, dtype=jnp.float64),
-        energy_only_convergence=False,
-    )
-
-    assert bool(converged_step)
+    from gradscf.solvers.scf import convergence_reached, orbital_gradient_norm
+    fock = jnp.array([[-1., 4e-5], [4e-5, .5]], dtype=jnp.float64)
+    gradient = orbital_gradient_norm(fock, jnp.eye(2), jnp.array([2., 0.]))
+    np.testing.assert_allclose(gradient, 8e-5, atol=1e-14, rtol=0.)
+    assert bool(convergence_reached(0., 0., gradient,
+        conv_tol=1e-8, conv_tol_density=1e-8, conv_tol_grad=1e-4))
 
 
 def test_expl_gradient_mode_produces_finite_energy():
@@ -1308,7 +1275,7 @@ def test_expl_gradient_mode_produces_finite_energy():
     assert np.isfinite(float(info.final_rms_density))
 
 
-def test_expl_restricted_scf_uses_shared_rks_diis_loop(monkeypatch):
+def test_explicit_restricted_scf_uses_shared_diis_solver(monkeypatch):
     molecule = _make_toy_restricted_reference()
 
     class _ToyRestrictedFunctional:
@@ -1320,13 +1287,14 @@ def test_expl_restricted_scf_uses_shared_rks_diis_loop(monkeypatch):
                     "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
 
     diis_calls = []
-    original_diis = scf_rks._diis_extrapolate
+    from gradscf.solvers.scf import iterate
+    original_diis = iterate.diis_extrapolate
 
     def _recording_diis(*args, **kwargs):
         diis_calls.append(True)
         return original_diis(*args, **kwargs)
 
-    monkeypatch.setattr(scf_rks, "_diis_extrapolate", _recording_diis)
+    monkeypatch.setattr(iterate, "diis_extrapolate", _recording_diis)
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(
@@ -1381,13 +1349,13 @@ def test_expl_unrestricted_scf_passes_level_shift_to_fixed_cycle_loop(monkeypatc
             return _Bound()
 
     level_shift_calls = []
-    original_scan = scf_differentiable.run_unrestricted_scf_scan
+    original_scan = scf_differentiable.run_unrestricted_scf
 
     def _recording_scan(*args, **kwargs):
         level_shift_calls.append(float(kwargs["level_shift"]))
         return original_scan(*args, **kwargs)
 
-    monkeypatch.setattr(scf_differentiable, "run_unrestricted_scf_scan", _recording_scan)
+    monkeypatch.setattr(scf_differentiable, "run_unrestricted_scf", _recording_scan)
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(
@@ -1600,8 +1568,8 @@ def test_expl_and_implicit_gradients_are_consistent():
 
 
 def test_config_rejects_invalid_gradient_mode():
-    with pytest.raises(ValueError, match="gradient_mode must be one of"):
-        DifferentiableSCFConfig(gradient_mode="explicit")
+    with pytest.raises(ValueError, match="gradient_mode must be"):
+        DifferentiableSCFConfig(gradient_mode="unknown")
 
 
 def test_config_has_no_implicit_forward_mode_switch():

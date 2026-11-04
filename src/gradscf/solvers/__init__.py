@@ -16,6 +16,7 @@ from .eigen.structured_rpa import solve_rpa
 
 from .types import NonHermitianSolverConfig, NonHermitianResult, NonHermitianSubspaceResult
 from .eigen.nonhermitian import solve_nonhermitian
+from .scf import SCFConfig, SCFState, SCFResult, solve_scf
 
 __all__ = [
     "EigenResponseConfig",
@@ -36,4 +37,8 @@ __all__ = [
     "NonHermitianResult",
     "NonHermitianSubspaceResult",
     "solve_nonhermitian",
+    "SCFConfig",
+    "SCFState",
+    "SCFResult",
+    "solve_scf",
 ]

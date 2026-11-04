@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from gradscf.scf.convergence import convergence_reached
+from gradscf.solvers.scf.metrics import convergence_reached
 
 
 def check(de=0., dd=0., grad=0., **kwargs):
@@ -32,7 +32,8 @@ def test_energy_only_and_fixed_cycle_contract_under_jit():
 
 
 def _rks_toy_run(density_tol, *, conv_tol=1., override=None, grad_tol=10.):
-    from gradscf.scf.rks import RKSConfig, _run_scf_iterations_lax_core
+    from gradscf.scf.rks import RKSConfig
+    from gradscf.scf.iteration import run_restricted_scf
     h = jnp.diag(jnp.array([-1., 1.]))
     eye = jnp.eye(2)
     zero = jnp.zeros((2, 2))
@@ -42,7 +43,7 @@ def _rks_toy_run(density_tol, *, conv_tol=1., override=None, grad_tol=10.):
         off = .1 + .2 * dm[0, 0]
         fock = h + jnp.array([[0., off], [off, 0.]])
         return jnp.array(0.), jnp.array(0.), fock, zero, zero
-    return _run_scf_iterations_lax_core(
+    return run_restricted_scf(
         h=h, s=eye, x=eye, energy_and_fock_builder=builder,
         cfg=RKSConfig(max_cycle=2, conv_tol=conv_tol, conv_tol_density=density_tol,
                       conv_tol_grad=grad_tol),

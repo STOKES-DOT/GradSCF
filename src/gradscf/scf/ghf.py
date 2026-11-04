@@ -70,6 +70,6 @@ class GHF(GKS):
     def _config(self) -> GHFConfig:
         if self.xc != "hf":
             raise ValueError("GHF requires xc='hf'; use GKS for DFT.")
-        return GHFConfig(max_cycle=self.max_cycle, conv_tol=self.conv_tol,
-                         conv_tol_density=self.conv_tol_density, conv_tol_grad=self.conv_tol_grad,
-                         damping=self.damp, level_shift=self.level_shift)
+        config = super()._config()
+        return GHFConfig(**{item.name: getattr(config, item.name)
+                            for item in fields(GHFConfig) if item.init})

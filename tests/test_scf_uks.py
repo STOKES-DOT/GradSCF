@@ -7,8 +7,8 @@ from gradscf.scf import UKSConfig, run_uks_from_integrals
 from gradscf.scf.inputs.assembly import build_uks_integral_inputs
 from gradscf.scf.uks import (
     _point_unrestricted_xc_value_and_grad_kernel,
-    run_unrestricted_scf_scan,
 )
+from gradscf.scf.iteration import run_unrestricted_scf
 
 
 def _toy_grid():
@@ -64,7 +64,7 @@ def test_unrestricted_scan_honors_energy_convergence_metric():
         _best_cycle,
         _selected_rms,
         _best_rms,
-    ) = run_unrestricted_scf_scan(
+    ) = run_unrestricted_scf(
         fock_builder=fock_builder,
         density_spin=jnp.zeros((2, 2, 2), dtype=jnp.float64),
         mo_coeff_spin=jnp.stack([jnp.eye(2, dtype=jnp.float64), jnp.eye(2, dtype=jnp.float64)]),
@@ -245,7 +245,7 @@ def _run_two_orbital_scan(builder, *, max_cycle=4, **controls):
     defaults = dict(conv_tol=1e-12, conv_tol_density=1e-9,
                     convergence_metric="energy_and_residual", level_shift=0.0)
     defaults.update(controls)
-    return run_unrestricted_scf_scan(
+    return run_unrestricted_scf(
         fock_builder=builder,
         density_spin=jnp.asarray([[[1., 0.], [0., 0.]], [[0., 0.], [0., 0.]]]),
         mo_coeff_spin=jnp.stack([jnp.eye(2), jnp.eye(2)]),
