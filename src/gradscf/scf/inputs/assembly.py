@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gradscf._memory import DEFAULT_MAX_MEMORY_MB, workspace_bytes
+from gradscf._memory import DEFAULT_MAX_MEMORY_MB, tree_storage_bytes, workspace_bytes
 from gradscf.integrals.basis import basis_from_molecule_spec, prepare_basis
 from gradscf.integrals.plan import make_plan
 from gradscf.integrals.grids import build_molecular_grid_from_spec
@@ -222,7 +222,10 @@ def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
         chkfile=chkfile,sap_basis=init_guess_sap_basis,chkfile_project=init_guess_chkfile_project,
         mol_kwargs=mol_kwargs)
     spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode,eri_lr,dispersion_energy=values
-    initial = restricted_initial_guess(init_guess=init_guess,dtype=h.dtype)
+    guess_resident = (tree_storage_bytes(spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,eri_lr,dispersion_energy)
+        if isinstance(init_guess,str) and init_guess.lower() == "atom" else 0)
+    initial = restricted_initial_guess(init_guess=init_guess,dtype=h.dtype,
+        spec=spec,basis=basis,max_memory=cfg.max_memory,resident_bytes=guess_resident)
     nelectron = int(np.asarray(spec.charges).sum())-int(spec.charge)
     direct=None
     if cfg.jk_backend=='direct':
@@ -252,7 +255,10 @@ def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
         chkfile_project=init_guess_chkfile_project,mol_kwargs=mol_kwargs,
         scf_history_matrices=6)
     spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode,eri_lr,dispersion_energy=values
-    initial=unrestricted_initial_guess(init_guess=init_guess,dtype=h.dtype)
+    guess_resident = (tree_storage_bytes(spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,eri_lr,dispersion_energy)
+        if isinstance(init_guess,str) and init_guess.lower() == "atom" else 0)
+    initial=unrestricted_initial_guess(init_guess=init_guess,dtype=h.dtype,
+        spec=spec,basis=basis,max_memory=cfg.max_memory,resident_bytes=guess_resident)
     total=int(np.asarray(spec.charges).sum())-int(spec.charge)
     nalpha,nbeta=_unrestricted_spin_electron_counts(total,int(spec.spin))
     direct=None
