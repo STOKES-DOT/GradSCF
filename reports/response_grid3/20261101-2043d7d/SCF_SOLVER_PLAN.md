@@ -124,3 +124,14 @@ records without rerunning calculations. Correction-overlay metadata:8 PASS0.11s.
 Initial43 attempts conservatively excluded from timing ratios due to overlap
 with small diagnostics, but their scientific results remain usable. Formal
 matrix still running; S5 and final resource cleanup remain open.
+
+2026-11-04 GPU follow-up: reused allocation115856's RTX5090 after the active
+CPU worker completed. CPU libcint preparation, one explicit upload, then the
+unchanged production GKS numerical solver onGPU passed the312AO/PBE0/grid3 case
+in25cycles; energy difference fromCPU1.86446e-11Ha, orbitalgradient8.26932e-8.
+Script entry throughSCF certification194.524702s; GPUsolver compile-inclusive
+110.489307s. Eight small public packed-array GPU JVP/VJP cases passed; no claim
+of fullgeometry/NN/SCF reverse acceptance. See the dedicated scf_gpu_probe report.
+The main matrix resumed automatically. One CPU case overlapped only the earlier
+tiny GPU health check and has an additional explicit timing exclusion; raw
+scientific outputs are unchanged. S4/S5 remain open until broad acceptance ends.
