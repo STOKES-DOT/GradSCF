@@ -7,13 +7,17 @@ from pathlib import Path
 import pytest
 
 
-def finish():
+def campaign_module():
     path = Path(os.getenv("SCF_HARNESS_PATH", str(Path(__file__).parents[1]/
         "benchmarks/probes/scf_solver/campaign.py")))
     spec = importlib.util.spec_from_file_location("scf_campaign_records",path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.finish_attempt
+    return module
+
+
+def finish():
+    return campaign_module().finish_attempt
 
 
 def attempt(tmp_path, *, terminal="ok", count=4, process_status="ok", code=0, with_process=True):
@@ -63,3 +67,57 @@ def test_cross_allocation_resume_keeps_original_worker_identity(tmp_path):
     assert result["allocation"] == "111"
     assert result["source_snapshot"] == "original-source"
     assert result["derived_under_allocation"] == "222"
+
+
+@pytest.mark.parametrize("failure_kind", ["returncode", "exception"])
+def test_launch_failure_preserves_logical_cwd_and_stops_campaign(tmp_path, monkeypatch, failure_kind):
+    campaign = campaign_module()
+    storage = tmp_path/"physical-campaign"
+    storage.mkdir()
+    logical = tmp_path/"logical-campaign"
+    logical.symlink_to(storage, target_is_directory=True)
+    (storage/"source").mkdir()
+    plan = storage/"plan"
+    (plan/"configs").mkdir(parents=True)
+    cases = ["first", "second"]
+    (plan/"run_plan.json").write_text(json.dumps(dict(run_order=cases, rss_guard_bytes=1024)))
+    for case in cases:
+        (plan/"configs"/(case+".json")).write_text(
+            json.dumps(dict(repeats=1, threads=8, process_limit_seconds=60)))
+    monkeypatch.chdir(storage)
+    monkeypatch.setenv("PWD", str(tmp_path/"wrong-directory"))
+    monkeypatch.setattr("sys.argv", [str(campaign.__file__), str(logical),
+        str(logical/"source"), str(logical/"plan"), "123"])
+    end = campaign.datetime.datetime.now()+campaign.datetime.timedelta(days=1)
+    launches = []
+
+    def fake_squeue(command, **kwargs):
+        assert command[0] == "squeue"
+        return end.isoformat()+"\n"
+
+    def fake_srun(command, *, env, **kwargs):
+        assert command[0] == "srun"
+        launches.append(dict(command=command, env=env,
+            cwd=Path(kwargs.get("cwd", os.getcwd())).resolve()))
+        if failure_kind == "exception":
+            raise OSError("synthetic srun launch failure")
+        return campaign.subprocess.CompletedProcess(command, 1)
+
+    monkeypatch.setattr(campaign.subprocess, "check_output", fake_squeue)
+    monkeypatch.setattr(campaign.subprocess, "run", fake_srun)
+    if failure_kind == "exception":
+        with pytest.raises(OSError, match="synthetic srun launch failure"):
+            campaign.main()
+    else:
+        campaign.main()
+
+    assert launches[0]["env"]["PWD"] == str(logical)
+    assert launches[0]["cwd"] == storage.resolve()
+    assert len(launches) == 1
+    output = storage/"results/final-matrix"
+    if failure_kind == "returncode":
+        assert json.loads((output/"uncertain_attempts.json").read_text()) == [cases[0]]
+    assert not (storage/"release.123").exists()
+    assert (output/(cases[0]+".log")).exists()
+    assert not (output/(cases[0]+".process.json")).exists()
+    assert not (output/(cases[1]+".log")).exists()

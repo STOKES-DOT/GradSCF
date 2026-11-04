@@ -72,9 +72,15 @@ def main():
               source/"benchmarks/probes/scf_solver/runner.py")
     output = root/"results"/args.output_name
     output.mkdir(parents=True,exist_ok=True)
+    # The site's CLI filter checks logical PWD under ~/private/homefile;
+    # resolving the storage symlink produces an /opt path it will reject.
+    submission_root = args.campaign.expanduser().absolute()
+    os.chdir(submission_root)
+    os.environ["PWD"] = str(submission_root)
     completed = 0
     deferred = []
     uncertain_attempts = []
+    normal_completion = False
     try:
         for case in order:
             if args.limit is not None and completed >= args.limit:
@@ -96,7 +102,7 @@ def main():
             if remaining < cfg["process_limit_seconds"]+90:
                 deferred.append(case)
                 continue
-            env = dict(os.environ,PYTHONPATH=str(source/"src")+":"+str(source),
+            env = dict(os.environ,PWD=str(submission_root),PYTHONPATH=str(source/"src")+":"+str(source),
                 JAX_PLATFORMS="cpu",JAX_ENABLE_X64="1",JAX_ENABLE_COMPILATION_CACHE="false",
                 OMP_NUM_THREADS="1",OPENBLAS_NUM_THREADS="1",MKL_NUM_THREADS="1",PYTHONUNBUFFERED="1",
                 GRADSCF_NATIVE_THREADS=str(cfg["threads"]),GRADSCF_SOURCE_SNAPSHOT=source.name)
@@ -108,12 +114,18 @@ def main():
             with (output/(case+".log")).open("x") as log:
                 returncode = subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT).returncode
             result = finish_attempt(output,case,cfg,args.allocation,source,returncode)
+            if returncode != 0 and not process_path.exists():
+                uncertain_attempts.append(case)
+                print(json.dumps(dict(case_id=case,status="unconfirmed_launch",
+                    returncode=returncode,action="stop and retain allocation")),flush=True)
+                break
             completed += 1
             print(json.dumps(dict(completed_this_session=completed,case_id=case,status=result["status"])),flush=True)
         (output/"deferred.json").write_text(json.dumps(deferred,indent=2)+"\n")
         (output/"uncertain_attempts.json").write_text(json.dumps(uncertain_attempts,indent=2)+"\n")
+        normal_completion = True
     finally:
-        if not uncertain_attempts and not args.keep_allocation:
+        if normal_completion and not uncertain_attempts and not args.keep_allocation:
             (root/("release."+args.allocation)).touch()
 
 
