@@ -304,6 +304,20 @@ def run_gks_from_integrals(
     x = _spin_diagonal(orbital_orthogonalizer(s, cfg.orthogonalization_eps))
     s2 = _spin_diagonal(s)
     occ = jnp.zeros((2*n,), dtype=real_dtype).at[:nelectron].set(1.)
+    if grid_ao is not None and _validate_mode(cfg) in {"LDA", "GGA"}:
+        from gradscf._memory import tree_storage_bytes
+        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+
+        resident = tree_storage_bytes(s, h, eri, eri_lr, df_factors, ao, deriv, init_density)
+        resident += 32 * h.size * h.dtype.itemsize
+        exchange = parse_recipe(cfg.xc_spec).exact_exchange
+        operator = scf_operator_workspace_bytes(df_factors, direct_basis,
+            with_k=exchange.omega is not None or float(hybrid_coeff(cfg.xc_spec)) != 0.,
+            only_dfj=cfg.only_dfj, density_dtype=h.dtype,
+            workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
+        if operator is not None:
+            grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
+                resident_bytes=resident + operator, deriv=0 if xc_type(cfg.xc_spec) == "LDA" else 1)
 
     def diagonalize(fock):
         values, c = jnp.linalg.eigh(_hermitian(x.conj().T @ fock @ x))

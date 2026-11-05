@@ -99,3 +99,27 @@ unknown effective rank remains null. No additional integrals are computed.
 
 These controls were tested with stdlib fakes before the new reference run.
 All sixty physical configuration hashes and numerical gates remain unchanged.
+
+## 2026-11-05: T2.3 production AO reuse contract
+
+Seven narrow tests confirmed three execution REDs before the new production
+path: no funded call-local preparation, no repeated-Fock reuse, and no run
+entry-point connection. Four pre-existing fallback/AD guards passed. Six
+additional metadata-sized REDs covered known native/RI workspace reservations.
+These tests instantiate T2.3/T3.2 without adding systems, changing quadrature,
+or relaxing accuracy gates.
+
+The derived AO reducer is local to builtin SCF. Raw providers, reference
+objects and global caches are not mutated. Native/RI workspace is charged
+before optional retention; UKS reserves two possible RI exchange products.
+Unknown operators/devices retain streaming. This is a forward-array estimate,
+not a hard bound on arbitrary AD tapes.
+
+The AD guard was strengthened with two-step FD and a dense HVP. Instrumented
+tests clear only the private materializer JIT cache between monkeypatched
+observers; numerical gates and production compilation reuse are unchanged.
+
+After the 880-AO prototype showed 106.7 s cache preparation, the same feature
+was refactored to stable JIT and an exact output with disjoint block/tail writes.
+Old prototypes and measurements remain archived. The refactor passed all 13
+cache/budget/AD tests before optimized complete-workflow execution.

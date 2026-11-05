@@ -634,6 +634,23 @@ def run_uks_from_integrals(
         alpha = None
         alpha_scalar = float(jnp.asarray(getattr(bound_xc, "exact_exchange_fraction", 0.0)))
 
+    if bound_xc is None and grid_ao is not None and xc_kind in {"LDA", "GGA"}:
+        from gradscf._memory import tree_storage_bytes
+        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+
+        resident = tree_storage_bytes(s, h, eri, eri_lr, df_factors_arr,
+            ao, ao_deriv1, density_a, density_b, mo_coeff_a, mo_coeff_b)
+        resident += 64 * s.size * max(8, h.dtype.itemsize)
+        operator = scf_operator_workspace_bytes(df_factors_arr, direct_basis,
+            with_k=rsh is not None or abs(alpha_scalar) > 1e-14, only_dfj=cfg.only_dfj,
+            density_dtype=density_a.dtype, workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
+        if operator is not None:
+            if df_factors_arr is not None and not cfg.only_dfj and abs(alpha_scalar) > 1e-14:
+                # Independent spin contractions may keep both QNN products live.
+                operator += df_factors_arr.size * jnp.result_type(df_factors_arr, density_a).itemsize
+            grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
+                resident_bytes=resident + operator, deriv=0 if xc_kind == "LDA" else 1)
+
     def eval_state(
         density_a_arg: Array,
         density_b_arg: Array,

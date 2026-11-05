@@ -756,6 +756,20 @@ def _run_rks_from_integrals_shared(
         # The existing rank-selecting spectral compression is a host step.
         # Pass its factors to both Fock builders, outside the compiled loop.
         df_factors = eri_to_df_factors(eri_arr, tol=cfg.df_tol, max_rank=cfg.df_max_rank)
+    if grid_ao is not None and xc_kind in {"LDA", "GGA"}:
+        from gradscf._memory import tree_storage_bytes
+        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+
+        resident = tree_storage_bytes(s, h, eri_arr, eri_pair_arr, eri_lr,
+                                      df_factors, ao, ao_deriv1, density, mo_coeff)
+        # Built-in forward SCF keeps DIIS/state matrices, not max_cycle copies.
+        resident += 32 * s.size * max(8, h.dtype.itemsize)
+        operator = scf_operator_workspace_bytes(df_factors, direct_basis,
+            with_k=abs(alpha_scalar) > 1e-14, only_dfj=cfg.only_dfj,
+            density_dtype=density.dtype, workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
+        if operator is not None:
+            grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
+                resident_bytes=resident + operator, deriv=0 if xc_kind == "LDA" else 1)
     jk_builder = _make_jk_builder(
         eri_arr,
         cfg,

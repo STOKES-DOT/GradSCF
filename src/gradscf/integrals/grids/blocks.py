@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable
 
 import jax
@@ -158,3 +159,71 @@ class AOGrid:
         return jax.tree_util.tree_map(
             lambda value: value.reshape((-1,) + value.shape[2:])[:self.ngrids], features,
         )
+
+
+@jax.tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class _CachedAOGrid:
+    """Call-local derived AO data; never attached to a raw provider or result."""
+    coords: Any
+    weights: Any
+    values: Any  # (grid, value/derivative component, AO), no duplicate AO plane
+    block_size: int
+    adaptive = False
+
+    def tree_flatten(self):
+        return (self.coords, self.weights, self.values), (self.block_size,)
+
+    @classmethod
+    def tree_unflatten(cls, metadata, children):
+        return cls(*children, *metadata)
+
+    @property
+    def nao(self):
+        return self.values.shape[-1]
+
+    @property
+    def ngrids(self):
+        return self.values.shape[0]
+
+    def block(self, start, size, *, deriv=0):
+        components = (1, 4, 5)
+        if size <= 0 or deriv not in (0, 1, 2) or components[deriv] > self.values.shape[1]:
+            raise ValueError("Cached AO block request exceeds its prepared derivative order.")
+        indices = start + jnp.arange(size)
+        valid = (indices >= 0) & (indices < self.ngrids)
+        indices = jnp.clip(indices, 0, self.ngrids - 1)
+        # Gather only this tile; padding the full cached grid would duplicate GBs
+        # of data on every SCF block and defeat the preparation memory bound.
+        values = jnp.where(valid[:, None, None], jnp.take(self.values, indices, axis=0), 0.)
+        coords = jnp.where(valid[:, None], jnp.take(self.coords, indices, axis=0), 0.)
+        weights = jnp.where(valid, jnp.take(self.weights, indices), 0.)
+        derivative = values[:, :4].transpose(1, 0, 2) if deriv else None
+        laplacian = values[:, 4] if deriv == 2 else None
+        return values[:, 0], derivative, laplacian, coords, weights
+
+    reduce = AOGrid.reduce
+    map = AOGrid.map
+
+
+@partial(jax.jit, static_argnames=("block_size", "deriv"))
+def _materialize_scf_grid(raw, *, block_size, deriv):
+    """Fill an exact-size derived AO buffer with bounded, differentiable tiles."""
+    components = (1, 4, 5)[deriv]
+    values = jnp.zeros((raw.ngrids, components, raw.nao),
+                       dtype=jnp.result_type(raw.coords, raw.exponents, raw.coefficients))
+
+    @partial(jax.checkpoint, static_argnums=(2,))
+    def produce(index, output, width):
+        start = index * block_size
+        ao, derivative, laplacian, _, _ = raw.block(start, width, deriv=deriv)
+        tile = ao[:, None, :] if deriv == 0 else derivative.transpose(1, 0, 2)
+        if deriv == 2:
+            tile = jnp.concatenate([tile, laplacian[:, None, :]], axis=1)
+        return jax.lax.dynamic_update_slice(output, tile, (start, 0, 0))
+
+    full, tail = divmod(raw.ngrids, block_size)
+    values = jax.lax.fori_loop(0, full, lambda index, output: produce(index, output, block_size), values)
+    if tail:
+        values = produce(full, values, tail)
+    return _CachedAOGrid(raw.coords, raw.weights, values, block_size)

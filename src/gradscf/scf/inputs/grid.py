@@ -14,7 +14,9 @@ from gradscf._memory import (
 )
 from gradscf.integrals.basis import CartesianBasis
 from gradscf.data.molecule import MoleculeSpec
-from gradscf.integrals.grids.blocks import AOGrid, ao_block_size, ao_point_bytes
+from gradscf.integrals.grids.blocks import (
+    AOGrid, ao_block_size, ao_point_bytes, _materialize_scf_grid,
+)
 
 _GRID_AO_INPUT_CACHE_MAXSIZE = 32
 _GRID_AO_INPUT_CACHE_MAXBYTES = 256_000_000
@@ -143,6 +145,74 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
         block = min(block, int(coords.shape[0]))
     return AOGrid.from_basis(basis, coords, weights, block_size=block,
         adaptive=grid_block_size == 0 and grid_max_memory is None)
+
+
+def scf_operator_workspace_bytes(df_factors=None, direct_basis=None, with_k=False,
+                                 only_dfj=False, density_dtype=None, workers=1, cutoff=0):
+    """Bound known RI/direct products from metadata; None disables AO reuse.
+
+    RI exchange may fall back to a full-density QNN product. Native estimates
+    retain assembly's three-call allowance. No integral values are inspected;
+    opaque/projected providers retain their original streamed execution.
+    """
+    reserve = 0
+    if df_factors is not None:
+        try:
+            shape = tuple(int(n) for n in df_factors.shape)
+            item = np.dtype(np.result_type(df_factors.dtype,
+                df_factors.dtype if density_dtype is None else density_dtype)).itemsize
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if len(shape) != 3 or shape[1] != shape[2] or min(shape) < 0:
+            return None
+        reserve = 2 * shape[0] * item  # Auxiliary contraction/solve vectors.
+        if with_k and not only_dfj:
+            return int(reserve + shape[0] * shape[1] * shape[2] * item)
+        if not with_k or not only_dfj:
+            return int(reserve)
+    elif only_dfj:
+        return None
+    if direct_basis is None:
+        return None if only_dfj and with_k else reserve
+    from gradscf.integrals.backends.native.jk import NativeDirectBasis, native_jk_workspace_bytes
+    if type(direct_basis) is not NativeDirectBasis:
+        return None
+    try:
+        estimate = native_jk_workspace_bytes(direct_basis, workers, cutoff)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None if estimate is None else int(reserve + 3 * estimate)
+
+
+def prepare_scf_grid(raw, *, max_memory, resident_bytes=0, deriv=1):
+    """Return call-local AO reuse when outputs, one copy and scratch fit.
+
+    The raw provider stays unchanged. Caller reservations cover other SCF
+    arrays; the provider's own leaves are additionally charged conservatively.
+    Unknown traced devices and explicit streaming retain the original path.
+    """
+    if not isinstance(raw, AOGrid) or not raw.adaptive or not raw.ngrids or not raw.nao:
+        return raw
+    if deriv not in (0, 1, 2):
+        raise ValueError("SCF AO preparation requires deriv in (0, 1, 2).")
+    device = _grid_device(raw.coords)
+    if device is None:
+        return raw
+    owned = array_storage_bytes(*jax.tree_util.tree_leaves(raw))
+    try:
+        available = workspace_bytes(max_memory, resident_bytes=resident_bytes + owned, device=device)
+    except ValueError:
+        return raw  # An optional cache must not displace an already streamed calculation.
+    itemsize = max(8, np.dtype(jnp.result_type(raw.coords, raw.exponents, raw.coefficients)).itemsize)
+    point = raw.nao * (1, 4, 5)[deriv] * itemsize
+    scratch = ao_point_bytes(raw, deriv=deriv) * itemsize // max(8, np.dtype(raw.exponents.dtype).itemsize)
+    # scan's padded output and the trimmed result may coexist. Reserving a
+    # full extra tile for both makes the bound independent of tail divisibility.
+    block = min(raw.block_size, raw.ngrids,
+                (available - 2 * raw.ngrids * point) // (scratch + 2 * point))
+    if block < 1:
+        return raw
+    return _materialize_scf_grid(raw, block_size=int(block), deriv=deriv)
 
 
 def _build_grid_ao_input_bundle(
