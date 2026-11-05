@@ -73,8 +73,13 @@ def run_unrestricted_scf(
     overlap, max_cycle, damping, conv_tol=None, conv_tol_density,
     conv_tol_grad=1e-7, orthogonalization_eps, convergence_metric="energy_and_residual",
     level_shift=0., eigenvalue_jitter=0., iterate_selection="final", orthogonalizer=None,
+    state_evaluator=None, initial_aux=(), refresh_on_convergence=False,
 ):
-    """Adapt fixed spin occupations; retain the historical eleven-value result."""
+    """Adapt fixed spin occupations; retain the historical eleven-value result.
+
+    Optional state_evaluator(D,C,eps,previous) returns energy/raw Fock/aux.
+    A None previous requests a fresh physical build before convergence.
+    """
     # DifferentiableSCF retains its symmetric frame by default; built-in
     # forward producers can supply their already prepared orbital factor.
     x = (_orthogonalizer(overlap, orthogonalization_eps) if orthogonalizer is None
@@ -83,6 +88,8 @@ def run_unrestricted_scf(
     occupations = jnp.asarray(mo_occ_spin, dtype=dtype)
 
     def evaluate(dm, coeff, energies, previous):
+        if state_evaluator is not None:
+            return state_evaluator(dm, coeff, energies, previous)
         values = fock_builder(dm, coeff, energies)
         energy = values[2] if len(values) == 3 else jnp.asarray(jnp.nan, dtype=dtype)
         return energy, values[1], ()
@@ -92,8 +99,9 @@ def run_unrestricted_scf(
     config = SCFConfig(max_cycle=int(max_cycle),
         conv_tol=float(conv_tol_density**2 if conv_tol is None else conv_tol),
         conv_tol_density=float(conv_tol_density), conv_tol_grad=float(conv_tol_grad),
-        damping=float(damping), energy_only=convergence_metric == "energy")
-    initial = SCFState(density_spin, mo_coeff_spin, mo_energy_spin, energy, raw)
+        damping=float(damping), energy_only=convergence_metric == "energy",
+        refresh_on_convergence=bool(refresh_on_convergence))
+    initial = SCFState(density_spin, mo_coeff_spin, mo_energy_spin, energy, raw, initial_aux)
     result = solve_scf(initial, evaluate=evaluate,
         diagonalize=jax.vmap(lambda f: _diagonalize_fock(f, x, eigenvalue_jitter=eigenvalue_jitter)),
         density_from_coeff=lambda c: jax.vmap(_build_density_from_occ)(c, occupations),
