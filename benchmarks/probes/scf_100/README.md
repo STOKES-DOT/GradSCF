@@ -106,6 +106,15 @@ packed-layout candidate and AD limits are recorded in
 unsupported when optional `threadpoolctl` is unavailable; the remaining probes
 still run. Use the external process/RSS guard for every scientific payload.
 
+Conventional coverage is recorded separately in
+`reports/scf_100/20261105-40a569bf/CONVENTIONAL.md`:
+`profile_conventional.py` retains the real no-RI HF/DFT entry and adds shared
+J/K snapshot diagnostics; `probe_direct_delta.py` varies only density amplitude.
+`reference_fresh_jk.py` is an explicitly labelled PyRHF control retaining its
+optimizer while forcing full-density products. It is not a replacement for an
+unaccepted original reference. `--direct-first` prioritizes the existing thirty
+conventional rows without changing the sixty scientific configurations.
+
 For invasive stage profiling, use `benchmarks/probes/scf_solver/profile_stages.py`
 in a separate process with the same input. Its instrumentation timing is not a
 clean speed measurement; it predates this protocol and must be checked for the

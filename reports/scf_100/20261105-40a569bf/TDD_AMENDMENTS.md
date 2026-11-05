@@ -123,3 +123,52 @@ After the 880-AO prototype showed 106.7 s cache preparation, the same feature
 was refactored to stable JIT and an exact output with disjoint block/tail writes.
 Old prototypes and measurements remain archived. The refactor passed all 13
 cache/budget/AD tests before optimized complete-workflow execution.
+
+## 2026-11-05: prioritize conventional HF/DFT coverage
+
+The user explicitly requested normal non-RI HF/DFT tests in addition to RI.
+The existing sixty configurations, physical inputs and accuracy gates are
+unchanged. A `--direct-first` execution overlay stably prioritizes the thirty
+conventional rows while preserving each representation group's original order.
+The default controller order is unchanged. Two metadata-only tests were RED
+before adding the flag and then GREEN; they check all sixty hashes, ordering,
+process caps and prior-attempt handling. Revision 7 of the lock is retained.
+
+The priority complete workflows use the already registered RHF/direct inputs
+for GradSCF and independent PySCF. Separate fixed-five RHF, SVWN, PBE0 and
+CAM-B3LYP diagnostics use the same 96-atom basis and level-3 KS grid, followed
+by J-only/K-only/combined products at one shared snapshot. Their comparison
+tolerance is declared in `conventional_execution_overlay.json` before those
+kernel measurements. These snapshots are deliberately unconverged and do not
+replace the original complete-workflow convergence gates or warm repetitions.
+
+The running conventional-PBE scientific process was allowed to finish. Only
+its waiting controller was paused, and the idle matrix controller was replaced
+under the same output lock. All heavy work stays serial in allocation 115927;
+the priority controller restores the original pair and starts the direct-first
+matrix after its bounded tests. No additional allocation or production change
+is introduced. Compiler AO-buffer estimates remain distinct from measured RSS.
+
+## 2026-11-05: explicit fresh-density RHF reference control
+
+The original conventional PySCF RHF attempt exhausted its unchanged 200-main-
+cycle budget. Its last energy changes stayed near 2.34e-9 Ha, while density
+RMS and orbital gradient passed. It remains a failed reference and has no
+accepted speed ratio. A separate control was specified in the task messages
+and adapter before launch and documented in `reference_fresh_jk_plan.json`:
+pass only `dm_last=0` and
+`vhf_last=0` to the original bound `get_veff`, retaining `direct_scf=True`, its
+screening optimizer, 1e-12 screening, initial guess and every stopping gate.
+
+This tests incremental-product accumulation rather than simultaneously
+disabling the optimizer. It neither overwrites the original attempt nor
+increases the main-cycle budget. Three fake-object metadata tests were RED
+before the adapter and then GREEN, including exception restoration and raw
+record protection. The current diagnostic step continues uninterrupted; only
+its waiting parent is paused until this single control finishes, then restored.
+
+Chronology audit: the plan JSON's local timestamp is 18:04:45.915 +08:00,
+while the remote controller logged launch at 18:04:39 +08:00. Therefore this
+written file is not claimed as a pre-execution registration. The hypothesis,
+adapter and unchanged gates were already specified; the initial JSON and
+revision-9 lock are retained, and the corrected record states both timestamps.

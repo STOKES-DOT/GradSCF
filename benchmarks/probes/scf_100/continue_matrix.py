@@ -82,9 +82,12 @@ def main():
     parser.add_argument('--job', required=True)
     parser.add_argument('--wait-pid', type=int, default=1884391)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--direct-first', action='store_true', help='2026-11-05 user execution-order overlay; frozen inputs and within-group order unchanged')
     args = parser.parse_args()
     root = args.root.expanduser().absolute()  # Preserve logical homefile/PWD; never resolve symlinks.
     rows = configurations(root)
+    if args.direct_first:
+        rows.sort(key=lambda row: row[1]['representation'] != 'direct')
     harness = root/'harness-reference-v1'
     worker, guard = (harness/'benchmarks/probes/scf_100/worker.py',
                      harness/'benchmarks/probes/response_grid3/guard.py')

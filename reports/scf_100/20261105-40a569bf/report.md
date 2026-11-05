@@ -107,8 +107,12 @@ differences remain explicit; no cross-engine implementation acceleration is clai
 The original-source RKS/PBE conventional-direct baseline completed all four
 calls with 22 cycles each: cold 795.437445 s and warm median 754.542832 s.
 [baseline_rks_pbe_direct.json](baseline_rks_pbe_direct.json) retains the exact
-samples and raw hashes. Candidate direct repetitions are running; the matched
-direct pair and certified direct reference are not complete.
+samples and raw hashes. Candidate direct repetitions also passed 4/4, with
+warm median 544.734456 s and peak RSS 37.304 GB versus the parent's 5.085 GB.
+The independent conventional PySCF PBE attempt did not converge under the
+registered energy-change gate; it is not an accepted timing denominator.
+[CONVENTIONAL.md](CONVENTIONAL.md) records the complete HF/DFT follow-up,
+the separately labelled RHF fresh-density reference, and direct J/K evidence.
 The 30-configuration matrix per engine remains incomplete. The TDD contract is
 [TDD_PLAN.md](TDD_PLAN.md); the full matrix and final delivery remain open.
 
