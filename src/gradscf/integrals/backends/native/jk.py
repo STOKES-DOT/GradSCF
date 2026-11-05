@@ -12,7 +12,7 @@ from ..._native import register_integrals
 
 
 _DIRECT_JK_PRIVATE_MAX_BYTES = 64 * 1024**2
-_DIRECT_JK_PRIVATE_MAX_BATCH = 4
+_DIRECT_JK_PRIVATE_MAX_BATCH = 8
 
 
 def _private_output_limit(value):
@@ -30,9 +30,10 @@ def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes
     The pinned native ABI uses float64, int32 and 64-bit pointers. Return
     None for dimension-only placeholders without a complete shell topology.
     SCF and response share this estimate; no integrals are evaluated here.
-    Small native batches admit at most four densities and a private-output
-    quota (64 MiB when unbound), reducing active workers to fit. With no
-    batch/selection arguments, reserve both J and K at that batch limit;
+    Small native batches admit at most eight real payload matrices (four
+    complex densities) and a private-output quota (64 MiB when unbound),
+    reducing active workers to fit. With no batch/selection arguments,
+    reserve both J and K at that batch limit;
     larger batches keep the original output-row ownership and worker count.
     """
     topology = provider.plan.topology

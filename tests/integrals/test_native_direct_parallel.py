@@ -187,7 +187,7 @@ def test_native_direct_worker_outputs_obey_quota_and_keep_row_fallback():
     from gradscf.integrals.backends.native.jk import _private_output_limit
     assert _private_output_limit(None) == 64*1024**2
     assert 'private_output_bytes<0' in source
-    assert re.search(r"kPrivateBatchLimit\s*=\s*4", source)
+    assert re.search(r"kPrivateBatchLimit\s*=\s*8", source)
     assert "nb<=kPrivateBatchLimit" in source
     assert "size_t(row_workers),size_t(private_output_bytes)/sizeof(double)/size" in source
     assert "private_workers>=2" in source
@@ -212,7 +212,7 @@ def test_native_workspace_charges_bounded_small_batch_worker_outputs(monkeypatch
     monkeypatch.setattr(jk, "_DIRECT_JK_PRIVATE_MAX_BYTES", 0)
     assert jk.native_jk_workspace_bytes(provider, 1, 0.) == one
     base = jk.native_jk_workspace_bytes(provider, 4, 0.)
-    expected = min(64*1024**2, 4*2*4*(4*contractions)**2*8)
+    expected = min(64*1024**2, 4*2*8*(4*contractions)**2*8)
     assert four-base == expected
 
 

@@ -197,3 +197,27 @@ def test_projected_direct_geometry_and_transform_mixed_hvp(monkeypatch):
     for result, reference, a, b in zip(observed, expected, plus, minus):
         np.testing.assert_allclose(result, reference, atol=2e-9, rtol=2e-9)
         np.testing.assert_allclose(result, (a-b)/(2*step), atol=2e-7, rtol=3e-7)
+
+
+def test_zero_density_retains_nonzero_geometry_density_mixed_response(problem, monkeypatch):
+    _, _, coords, density, direction, _, actual, oracle = problem
+    zero = jnp.zeros_like(density)
+    density_direction = .13*jnp.sin(density)
+    expected = jax.jvp(lambda r: oracle(r, density_direction), (coords,), (direction,))[1]
+    _forbid_eri(monkeypatch)
+    def mixed(r, d):
+        slope = lambda q: jax.jvp(lambda dm: actual(q, dm), (d,), (density_direction,))[1]
+        return jax.jvp(slope, (r,), (direction,))[1]
+    observed = jax.jit(mixed)(coords, zero)
+    assert all(np.linalg.norm(np.asarray(x)) > 1e-8 for x in observed)
+    for result, reference in zip(observed, expected):
+        np.testing.assert_allclose(result, reference, atol=2e-9, rtol=2e-9)
+    # A central mixed difference at (coordinates, D=0), with both original steps.
+    for step in (1e-4, 3e-5):
+        pp = actual(coords+step*direction, step*density_direction)
+        pm = actual(coords+step*direction, -step*density_direction)
+        mp = actual(coords-step*direction, step*density_direction)
+        mm = actual(coords-step*direction, -step*density_direction)
+        fd = jax.tree.map(lambda a, b, c, d: (a-b-c+d)/(4*step**2), pp, pm, mp, mm)
+        for result, reference in zip(observed, fd):
+            np.testing.assert_allclose(result, reference, atol=2e-7, rtol=3e-7)

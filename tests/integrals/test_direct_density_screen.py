@@ -6,6 +6,7 @@ cutoff below tests mask algebra, not molecular accuracy or a total Fock bound.
 """
 from dataclasses import replace
 from types import SimpleNamespace
+import os
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -221,3 +222,115 @@ def test_single_density_private_workers_matches_canonical_oracle(cart):
     action = lambda x, reference: provider.get_jk(x, screen_density=reference,
         screening_threshold=CUTOFF, workers=2)
     compare(jax.jit(action)(d, jnp.asarray(screen)), oracle(context, screen, 0.)(d))
+
+
+@pytest.mark.parametrize('screened', [False, True], ids=['basis-only', 'fixed-reference'])
+def test_zero_payload_preserves_nonzero_density_jvp_vjp_and_fd(system, screened):
+    zero = jnp.zeros_like(system.density[0, 0])
+    direction = system.density[0, 0]
+    screen, cutoff = (system.screen, CUTOFF) if screened else (None, 0.)
+    tensor = jnp.asarray(system.eri[0.])
+    expected = (oracle(system, screen, 0.) if screened else lambda d:
+        (jnp.einsum('pqrs,rs->pq', tensor, d), jnp.einsum('prqs,rs->pq', tensor, d)))
+    action = lambda d: system.provider.get_jk(d, screen_density=screen,
+        screening_threshold=cutoff, workers=2)
+    value, tangent = jax.jit(lambda d, v: jax.jvp(action, (d,), (v,)))(zero, direction)
+    compare(value, (zero, zero), 0.)
+    compare(tangent, expected(direction), 1e-9)
+    assert all(np.linalg.norm(np.asarray(x)) > 1e-8 for x in tangent)
+    rng = np.random.default_rng(810)
+    weights = tuple(jnp.asarray(rng.normal(size=zero.shape)+1j*rng.normal(size=zero.shape)) for _ in value)
+    pullback = jax.jit(lambda cot: jax.vjp(action, zero)[1](cot)[0])(weights)
+    compare(pullback, jax.vjp(expected, zero)[1](weights)[0], 1e-9)
+    assert np.linalg.norm(np.asarray(pullback)) > 1e-8
+    for step in (1e-4, 3e-5):
+        fd = jax.tree.map(lambda a, b: (a-b)/(2*step), action(step*direction), action(-step*direction))
+        compare(tangent, fd, 1e-9)
+
+
+@pytest.mark.parametrize('invalid', ['environment', 'density-shape', 'negative-cutoff',
+                                    'nonfinite-cutoff', 'screen-reference', 'screen-shape'])
+def test_zero_payload_still_rejects_invalid_native_inputs(system, invalid):
+    from gradscf.integrals.backends.native.jk import direct_jk
+    atoms, basis, env = system.plan.pack(system.parameters)
+    n = system.top.nao
+    density, screen, cutoff = jnp.zeros((n, n)), None, 0.
+    if invalid == 'environment': env = env.at[0].set(jnp.nan)
+    elif invalid == 'density-shape': density = jnp.zeros((n+1, n+1))
+    elif invalid == 'negative-cutoff': cutoff = -1.
+    elif invalid == 'nonfinite-cutoff': cutoff = float('nan')
+    elif invalid == 'screen-reference': screen, cutoff = jnp.full((n, n), jnp.nan), CUTOFF
+    else: screen, cutoff = jnp.zeros((n+1, n+1)), CUTOFF
+    with pytest.raises((ValueError, RuntimeError), match='(?i)(finite|cutoff|reference|shape|screen_density)'):
+        jax.block_until_ready(jax.jit(lambda d: direct_jk(atoms, basis, env, d,
+            cart=True, cutoff=cutoff, workers=2, screen_density=screen))(density))
+
+
+def test_eight_batch_private_cap_matches_native_and_workspace_estimate():
+    import re
+    from pathlib import Path
+    from gradscf.integrals.backends.native import jk
+    source = (Path(__file__).parents[2]/'src/gradscf/integrals/_native/csrc/direct_jk.cc').read_text()
+    assert jk._DIRECT_JK_PRIVATE_MAX_BATCH == 8
+    assert re.search(r'kPrivateBatchLimit\s*=\s*8', source)
+    top = SimpleNamespace(angular_momenta=(0,)*4, primitive_counts=(1,)*4,
+        contraction_counts=(1,)*4, nuclear_charges=(1,), cart=True)
+    provider = SimpleNamespace(plan=SimpleNamespace(topology=top))
+    quota = 8*1024**2
+    admitted = jk.native_jk_workspace_bytes(provider, 4, 0., private_output_bytes=quota)
+    excluded = jk.native_jk_workspace_bytes(provider, 4, 0., private_output_bytes=0)
+    assert admitted-excluded == 4*2*8*(4**2)*8
+
+
+@pytest.mark.parametrize('payload', ['real8', 'complex4'])
+@pytest.mark.parametrize('workers', [1, 4])
+def test_eight_real_batch_private_values_and_density_ad(system, payload, workers):
+    n = system.top.nao
+    rng = np.random.default_rng(814)
+    shape = (8 if payload == 'real8' else 4, n, n)
+    density, direction = rng.normal(size=(2, *shape))
+    if payload == 'complex4':
+        density, direction = density+1j*rng.normal(size=shape), direction+1j*rng.normal(size=shape)
+    density, direction = jnp.asarray(density), jnp.asarray(direction)
+    # One fixed-reference sample exercises the screened ABI/private strategy;
+    # the remaining samples retain the original generic linear operator.
+    screen = system.screen if payload == 'complex4' and workers == 4 else None
+    tensor = jnp.asarray(system.eri[0.])
+    expected = (oracle(system, screen, 0.) if screen is not None else lambda d:
+        (jnp.einsum('pqrs,...rs->...pq', tensor, d), jnp.einsum('prqs,...rs->...pq', tensor, d)))
+    action = lambda d: system.provider.get_jk(d, screen_density=screen, workers=workers,
+        screening_threshold=CUTOFF if screen is not None else 0.)
+    value, tangent = jax.jit(lambda d, v: jax.jvp(action, (d,), (v,)))(density, direction)
+    compare(value, expected(density), 1e-9)
+    compare(tangent, expected(direction), 1e-9)
+    weights = tuple(jnp.asarray(rng.normal(size=x.shape)) for x in value)
+    if payload == 'complex4':
+        weights = tuple(w+1j*jnp.asarray(rng.normal(size=w.shape)) for w in weights)
+    gradient = jax.jit(lambda cot: jax.vjp(action, density)[1](cot)[0])(weights)
+    compare(gradient, jax.vjp(expected, density)[1](weights)[0], 1e-9)
+
+
+@pytest.mark.skipif(os.environ.get('GRADSCF_EXPECT_DIAGNOSTICS') != '1',
+                    reason='requires a separate --diagnostics library; counts are not clean timing')
+def test_eight_real_batch_workers_evaluate_each_eri_quartet_once(system, record_property):
+    from gradscf.integrals._native.diagnostics import get_counts, reset_counts
+    # Four complex spin blocks become eight real FFI payload matrices.
+    density = jnp.asarray(np.random.default_rng(815).normal(size=(4, system.top.nao, system.top.nao)), dtype=jnp.complex128)
+    density = density+1j*jnp.sin(density.real)
+    actions = {workers: jax.jit(lambda d, workers=workers: system.provider.get_jk(d, workers=workers))
+               for workers in (1, 4)}
+    for action in actions.values():
+        jax.block_until_ready(action(density))
+    values, counts = {}, {}
+    for workers, action in actions.items():
+        reset_counts()
+        values[workers] = jax.block_until_ready(action(density))
+        report = get_counts()
+        counts[workers] = report['families']['eri4c']
+        record_property('native_library_sha256', report['library_sha256'])
+        for field, value in counts[workers].items():
+            record_property(f'workers_{workers}_eri4c_{field}', value)
+    compare(values[4], values[1], 1e-9)
+    assert counts[1]['evaluations'] > 0
+    # Worker-local scratch caches may issue different numbers of queries.
+    assert counts[4]['evaluations'] == counts[1]['evaluations'], counts

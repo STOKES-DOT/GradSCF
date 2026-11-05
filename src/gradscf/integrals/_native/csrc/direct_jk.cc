@@ -50,7 +50,7 @@ static ffi::Future DirectJKImpl(ffi::ThreadPool pool,
     const size_t size=result->element_count();
     const int row_workers=int(std::max<int64_t>(1,std::min<int64_t>(
         requested_workers,std::min<int64_t>(pool.num_threads(),tables->nbas))));
-    constexpr int kPrivateBatchLimit=4;
+    constexpr int kPrivateBatchLimit=8;
     // Divide before multiplying: admitted worker outputs cannot overflow size_t
     // or exceed the caller's quota, regardless of incoming batch dimensions.
     const int private_workers=size>0 ? int(std::min<size_t>(
