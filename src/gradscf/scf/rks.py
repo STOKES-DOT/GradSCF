@@ -438,22 +438,19 @@ def _vxc_matrix_from_grid_potential(
     vxc_lapl: Array,
     xc_kind: str,
 ) -> Array:
-    vxc_matrix = jnp.einsum(
-        "r,rp,rq->pq",
-        weights * vxc_rho,
-        ao,
-        ao,
-        precision=Precision.HIGHEST,
-    )
     if xc_kind in {"GGA", "MGGA", "MGGA_LAPL"}:
-        grad_term = jnp.einsum(
-            "rx,xrp,rq->pq",
-            weights[:, None] * vxc_grad,
-            ao_deriv1[1:4],
-            ao,
+        weighted_ao = .5 * (weights * vxc_rho)[:, None] * ao
+        weighted_ao = weighted_ao + jnp.einsum(
+            "rx,xrp->rp", weights[:, None] * vxc_grad, ao_deriv1[1:4],
             precision=Precision.HIGHEST,
         )
-        vxc_matrix = vxc_matrix + grad_term + grad_term.T
+        gram = jnp.einsum("rp,rq->pq", weighted_ao, ao, precision=Precision.HIGHEST)
+        vxc_matrix = gram + gram.T
+    else:
+        vxc_matrix = jnp.einsum(
+            "r,rp,rq->pq", weights * vxc_rho, ao, ao,
+            precision=Precision.HIGHEST,
+        )
     if xc_kind in {"MGGA", "MGGA_LAPL"}:
         tau_term = 0.5 * jnp.einsum(
             "r,xrp,xrq->pq",

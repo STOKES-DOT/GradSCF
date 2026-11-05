@@ -226,18 +226,14 @@ def _spin_density_and_gradient(
     ao_deriv1: Array,
     dm_spin: Array,
 ) -> tuple[Array, Array]:
-    rho = jnp.einsum(
-        "rp,pq,rq->r",
-        ao,
-        dm_spin,
-        ao,
-        precision=Precision.HIGHEST,
-    )
+    # Preserve the nonsymmetric/complex bilinear convention: transpose, not
+    # conjugate-transpose. Both contractions need this same density product.
+    projected = jnp.matmul(ao, dm_spin.T, precision=Precision.HIGHEST)
+    rho = jnp.sum(ao * projected, axis=1)
     grad = 2.0 * jnp.einsum(
-        "xrp,pq,rq->rx",
+        "xrp,rp->rx",
         ao_deriv1[1:4],
-        dm_spin,
-        ao,
+        projected,
         precision=Precision.HIGHEST,
     )
     return rho, grad
