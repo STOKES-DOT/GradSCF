@@ -126,3 +126,127 @@ def test_measurement_uses_observed_grid_size_without_hf_relabeling():
                    and isinstance(call.func, ast.Name) and call.func.id == 'dict'
                    for keyword in call.keywords if keyword.arg == 'ngrid']
     assert grid_fields and all(isinstance(value, ast.Name) and value.id == 'ngrid' for value in grid_fields)
+
+
+def test_pure_ri_j_metadata_never_builds_missing_df_factors():
+    from types import SimpleNamespace
+    module = worker_module()
+
+    class DirectJDF:
+        _cderi = None
+        auxmol = SimpleNamespace(nao_nr=lambda: 37)
+
+        def get_naoaux(self):
+            raise AssertionError('get_naoaux would call build() after the timed SCF')
+
+        def build(self):
+            raise AssertionError('Observing dimensions must not build integrals')
+
+    # This is the old worker expression until the bounded collector is added.
+    collect = getattr(module, 'pyscf_auxiliary_dimensions', lambda df: (int(df.get_naoaux()), None))
+    assert collect(DirectJDF()) == (37, None)
+    import ast
+    tree = ast.parse(Path(__file__).with_name('worker.py').read_text())
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == 'get_naoaux' for node in ast.walk(tree))
+
+
+def test_existing_df_shape_is_metadata_not_a_build_request():
+    from types import SimpleNamespace
+    module = worker_module()
+    assert callable(getattr(module, 'pyscf_auxiliary_dimensions', None))
+    df = SimpleNamespace(_cderi=SimpleNamespace(shape=(31, 15)),
+                         auxmol=SimpleNamespace(nao_nr=lambda: 37))
+    assert module.pyscf_auxiliary_dimensions(df) == (37, 31)
+    df._cderi = 'existing-factors.h5'
+    assert module.pyscf_auxiliary_dimensions(df) == (37, None)
+
+
+class FakeReferenceMF:
+    """Kernel-control fixture; no arrays or electronic-structure imports."""
+    def __init__(self, history, attempts, max_cycle=5):
+        self.history, self.attempts = history, iter(attempts)
+        self.max_cycle, self.init_guess, self.conv_check = max_cycle, 'atom', True
+        self.calls, self.densities = [], []
+        self.converged, self.cycles, self.finite = False, 0, True
+
+    def _execute(self, kind, dm0):
+        self.calls.append((kind, self, dm0, self.max_cycle))
+        main, extra, self.converged, self.finite = next(self.attempts)
+        assert main <= self.max_cycle
+        self.cycles = main
+        for index in range(main + extra):
+            passed = self.converged if index >= main else bool(extra and index == main - 1)
+            self.history.append(dict(energy_change=1e-12, density_rms=1e-10,
+                                     gradient=5e-8 if passed else 2e-7, passed=passed))
+        self.densities.append(object())
+        return self
+
+    def run(self):
+        return self._execute('run', None)
+
+    def kernel(self, *, dm0):
+        return self._execute('kernel', dm0)
+
+    def make_rdm1(self):
+        return self.densities[-1]
+
+
+def reference_control(module, mf, history, continuation=False):
+    helper = getattr(module, 'run_reference', None)
+    assert callable(helper), 'The explicit bounded reference policy is missing'
+    return helper(mf, history, max_cycle=5, continuation=continuation,
+                  finite_state=lambda current: current.finite)
+
+
+def test_reference_continuation_reuses_mf_current_density_and_main_budget():
+    history = []
+    mf = FakeReferenceMF(history, [(2, 1, False, True), (3, 1, True, True)])
+    result = reference_control(worker_module(), mf, history, continuation=True)
+    assert len(mf.calls) == 2 and all(call[1] is mf for call in mf.calls)
+    assert mf.calls[0][0] == 'run' and mf.calls[0][2] is None and mf.init_guess == 'atom'
+    assert mf.calls[1][0] == 'kernel' and mf.calls[1][2] is mf.densities[0]
+    assert [call[3] for call in mf.calls] == [5, 3]
+    assert mf.max_cycle == 5 and mf.conv_check is True
+    assert result['kernel_calls'] == 2 and result['total_main_cycles'] == 5
+    assert result['total_extra_checks'] == 2 and result['total_density_updates'] == 7
+    assert result['terminal_kernel_cycles'] == 3 and result['reference_accepted']
+    assert result['reference_policy'] == 'bounded_final_check_restart_v1'
+    assert [row['phase'] for row in history] == ['main', 'main', 'extra', 'main', 'main', 'main', 'extra']
+
+
+def test_reference_default_keeps_original_single_kernel_policy():
+    history = []
+    mf = FakeReferenceMF(history, [(2, 1, False, True), (3, 1, True, True)])
+    result = reference_control(worker_module(), mf, history)
+    assert len(mf.calls) == 1 and not result['reference_accepted']
+    assert result['reference_policy'] == 'original_single_kernel'
+    assert result['total_main_cycles'] == 2 and result['total_extra_checks'] == 1
+    assert mf.max_cycle == 5
+
+
+def test_reference_nonfinite_terminal_state_is_not_restarted():
+    history = []
+    mf = FakeReferenceMF(history, [(2, 1, False, False)])
+    result = reference_control(worker_module(), mf, history, continuation=True)
+    assert len(mf.calls) == 1 and not result['reference_accepted']
+    assert not result['reference_finite_terminal'] and mf.max_cycle == 5
+
+
+def test_reference_main_budget_exhaustion_stops_without_reset():
+    history = []
+    mf = FakeReferenceMF(history, [(5, 1, False, True)])
+    result = reference_control(worker_module(), mf, history, continuation=True)
+    assert len(mf.calls) == 1 and result['total_main_cycles'] == 5
+    assert result['total_extra_checks'] == 1 and result['total_density_updates'] == 6
+    assert not result['reference_accepted'] and mf.max_cycle == 5
+
+
+def test_reference_no_extra_or_no_progress_cannot_trigger_restart():
+    module = worker_module()
+    for attempt in [(2, 0, False, True), (0, 1, False, True)]:
+        history = []
+        mf = FakeReferenceMF(history, [attempt])
+        result = reference_control(module, mf, history, continuation=True)
+        assert len(mf.calls) == 1 and not result['reference_accepted']
+        assert mf.max_cycle == 5

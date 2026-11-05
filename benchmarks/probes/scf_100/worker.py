@@ -10,6 +10,7 @@ import argparse
 import gc
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -80,13 +81,75 @@ def strategy_matches(cfg, strategy):
     return strategy == (cfg['ri_strategy'] or 'shell_direct')
 
 
+def pyscf_auxiliary_dimensions(df):
+    """Read nominal basis size and an existing factor's row count, without build.
+
+    PySCF 2.13 DF.get_naoaux() builds full factors when _cderi is absent,
+    although the pure-J solver may never need them. Disk rank stays unknown;
+    this observer neither opens factor files nor requests missing integrals.
+    """
+    auxmol = getattr(df, 'auxmol', None)
+    nominal = None if auxmol is None else int(auxmol.nao_nr())
+    shape = getattr(getattr(df, '_cderi', None), 'shape', None)
+    rank = None if shape is None else int(shape[0])
+    return nominal, rank
+
+
+def run_reference(mf, history, *, max_cycle, continuation=False, finite_state):
+    """Bound main iterations across explicit final-check restarts; extra checks are separate.
+
+    Reentering kernel keeps this mf and its prepared data, but default PySCF
+    creates a new local DIIS history. The caller owns the one logical-call timer.
+    """
+    original_limit = mf.max_cycle
+    calls = main_total = extra_total = 0
+    begin = len(history)
+    try:
+        mf.max_cycle = max_cycle
+        mf.run()  # Original atom initialization and single-kernel default.
+        while True:
+            calls += 1
+            main = int(mf.cycles)
+            checks = history[begin:]
+            extra = max(0, len(checks) - main)
+            valid_checks = main > 0 and len(checks) in (main, main + 1)
+            for index, gate in enumerate(checks):
+                gate.update(kernel_call=calls, phase='main' if index < main else 'extra',
+                            logical_main_cycle=main_total + min(index + 1, main))
+            main_total += main
+            extra_total += extra
+            terminal = checks[-1] if checks else {}
+            finite = bool(finite_state(mf)) and all(math.isfinite(float(terminal.get(key, float('nan'))))
+                for key in ('energy_change', 'density_rms', 'gradient'))
+            final_passed = bool(terminal.get('passed', False))
+            accepted = bool(mf.converged and finite and valid_checks and final_passed)
+            if not (continuation and not mf.converged and valid_checks and extra == 1
+                    and checks[main - 1].get('passed', False) and not final_passed
+                    and finite and main_total < max_cycle):
+                break
+            mf.max_cycle = max_cycle - main_total
+            begin = len(history)
+            mf.kernel(dm0=mf.make_rdm1())
+    finally:
+        mf.max_cycle = original_limit
+    return dict(reference_policy='bounded_final_check_restart_v1' if continuation else 'original_single_kernel',
+        kernel_calls=calls, total_main_cycles=main_total, total_extra_checks=extra_total,
+        total_density_updates=main_total + extra_total, terminal_kernel_cycles=int(mf.cycles),
+        reference_finite_terminal=finite, reference_final_gate_passed=final_passed,
+        reference_accepted=accepted)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('config', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--reference-continuation', action='store_true',
+                        help='PySCF only: bounded restart after a rejected strict final check')
     args = parser.parse_args()
     cfg = json.loads(args.config.read_text())
     validate_config(cfg)
+    if args.reference_continuation and cfg['engine'] != 'pyscf':
+        parser.error('--reference-continuation is only valid for PySCF')
     if not os.getenv('SLURM_JOB_ID'):
         parser.error('Scientific runs require an allocated Slurm step')
     cpus = sorted(os.sched_getaffinity(0))
@@ -102,6 +165,11 @@ def main():
     runtime = dict(python=sys.executable, host=platform.node(), job=os.environ['SLURM_JOB_ID'],
         step=os.getenv('SLURM_STEP_ID'), affinity=sorted(os.sched_getaffinity(0)),
         probe_sha256=digest(__file__), input_sha256=digest(args.config), device='cpu', dtype='float64',
+        observer_policy='metadata_only_no_df_build',
+        reference_continuation=args.reference_continuation,
+        reference_policy=('bounded_final_check_restart_v1' if args.reference_continuation else 'original_single_kernel')
+            if cfg['engine'] == 'pyscf' else None,
+        reference_cycle_budget='200 registered main cycles; extra checks counted separately',
         source_snapshot=os.getenv('GRADSCF_SOURCE_SNAPSHOT'), source_commit=os.getenv('GRADSCF_SOURCE_COMMIT'),
         units='seconds, bytes, Hartree; max_memory in decimal MB',
         initial_guess_note='Both use atom, but GradSCF native atomic UHF and PySCF atomic HF densities differ.')
@@ -112,7 +180,8 @@ def main():
     def failure(status, note):
         save('summary.json', dict(case_id=cfg['case_id'], engine=cfg['engine'], method=cfg['method'],
             representation=cfg['representation'], ri_strategy=cfg['ri_strategy'],
-            status=status, scientific_pass=False, accepted_for_comparison=False, notes=note))
+            status=status, scientific_pass=False, accepted_for_comparison=False, notes=note,
+            reference_policy=runtime['reference_policy'], reference_continuation=args.reference_continuation))
         save('runtime.json', runtime)
         return 0
 
@@ -171,7 +240,7 @@ def main():
             start = time.perf_counter()
             mol = gto.M(**mol_options)
             factory = getattr(scf if cfg['method'].endswith('HF') else dft, cfg['method'])
-            gates = []
+            gates, reference = [], {}
             if cfg['engine'] == 'gradscf':
                 options = dict(max_cycle=cfg['max_cycle'], conv_tol=cfg['conv_tol'],
                     conv_tol_density=cfg['density_tol'], conv_tol_grad=cfg['gradient_tol'],
@@ -199,25 +268,33 @@ def main():
                     de = float(abs(env['e_tot']-env['last_hf_e']))
                     dd = float(np.sqrt(np.mean(np.abs(env['dm']-env['dm_last'])**2)))
                     g = float(env['norm_gorb'])
-                    gates.append(dict(energy_change=de, density_rms=dd, gradient=g))
-                    return (np.isfinite(de+dd+g) and de < cfg['conv_tol']
-                            and dd < cfg['density_tol'] and g < cfg['gradient_tol'])
+                    passed = bool(np.isfinite(de+dd+g) and de < cfg['conv_tol']
+                                  and dd < cfg['density_tol'] and g < cfg['gradient_tol'])
+                    gates.append(dict(energy_change=de, density_rms=dd, gradient=g, passed=passed))
+                    return passed
                 mf.check_convergence = check
-                mf.run()
+                reference = run_reference(mf, gates, max_cycle=cfg['max_cycle'],
+                    continuation=args.reference_continuation,
+                    finite_state=lambda current: all(np.isfinite(np.asarray(value)).all() for value in
+                        (current.e_tot, current.mo_coeff, current.mo_occ, current.mo_energy)))
             elapsed = time.perf_counter()-start
             timer.cancel()
             coeff, occ = np.asarray(mf.mo_coeff), np.asarray(mf.mo_occ)
             naux, ngrid, eri_bytes = None, None, None
+            effective_df_rank, naux_kind = None, None
             if cfg['engine'] == 'gradscf':
                 state = mf.scf_result if mf.scf_result is not None else mf.reference
                 overlap = np.asarray(state.overlap_matrix)
                 gradient = float(orbital_gradient_norm(state.fock_matrix, mf.mo_coeff, mf.mo_occ))
                 naux, ngrid = gradscf_dimensions(mf, state)
+                naux_kind = 'factor_rows' if naux is not None else None
                 strategy = cfg['ri_strategy'] or 'shell_direct'
             else:
                 overlap = np.asarray(mf.get_ovlp())
                 gradient = gates[-1]['gradient'] if gates else float('nan')
-                if cfg['representation'] == 'df': naux = int(mf.with_df.get_naoaux())
+                if cfg['representation'] == 'df':
+                    naux, effective_df_rank = pyscf_auxiliary_dimensions(mf.with_df)
+                    naux_kind = 'nominal_auxiliary_basis' if naux is not None else None
                 if hasattr(mf, 'grids') and mf.grids.weights is not None: ngrid = int(mf.grids.weights.size)
                 stored = getattr(mf, '_eri', None)
                 eri_bytes = None if stored is None else int(stored.nbytes)
@@ -226,25 +303,28 @@ def main():
                 zero = np.zeros_like(overlap)
                 overlap = np.block([[overlap, zero], [zero, overlap]])
             finite = bool(np.isfinite(mf.e_tot) and np.isfinite(gradient) and np.isfinite(coeff).all())
-            scientific_pass = bool(mf.converged and finite and gradient < cfg['gradient_tol'])
+            scientific_pass = bool(mf.converged and finite and gradient < cfg['gradient_tol']
+                                   and reference.get('reference_accepted', True))
             strategy_matched = strategy_matches(cfg, strategy)
             status = 'nonconverged' if not scientific_pass else 'ok' if strategy_matched else 'not_comparable'
             row = dict(case_id=cfg['case_id'], engine=cfg['engine'], method=cfg['method'],
                 basis=cfg['basis'], xc=cfg['xc'], xc_family=cfg['xc_family'], natom=cfg['natom'], nao=int(nao),
                 nocc=np.count_nonzero(occ, axis=-1).tolist(), nvir=(occ.shape[-1]-np.count_nonzero(occ, axis=-1)).tolist(),
-                naux=naux, ngrid=ngrid,
+                naux=naux, ngrid=ngrid, naux_kind=naux_kind, effective_df_rank=effective_df_rank,
                 representation=cfg['representation'], execution_strategy_actual=strategy, ri_strategy=cfg['ri_strategy'],
                 only_dfj=cfg['only_dfj'], auxbasis=cfg['auxbasis'], df_tol=cfg['df_tol'], direct_scf_tol=cfg['direct_scf_tol'],
                 approximation=cfg['ri_strategy'] or 'conventional Coulomb and direct exchange, no auxiliary RI',
                 grid_level=cfg['grid_level'], init_guess=cfg['init_guess'], dtype='float64', device='cpu', threads=cfg['threads'],
                 repeat=repeat, cache_state='cold' if repeat == 0 else 'new-object warm; no converged-state reuse',
                 scf_facade_seconds=elapsed, energy_hartree=float(mf.e_tot), gradient_norm=gradient,
-                converged=bool(mf.converged), cycles=int(mf.cycles), scientific_pass=scientific_pass,
+                converged=bool(mf.converged), cycles=reference.get('total_main_cycles', int(mf.cycles)),
+                scientific_pass=scientific_pass, reference_continuation=args.reference_continuation,
+                reference_gate_history=gates if cfg['engine'] == 'pyscf' else None, **reference,
                 accepted_for_comparison=scientific_pass and strategy_matched, status=status, retained_eri_bytes=eri_bytes,
                 orthogonality_error=float(np.linalg.norm(coeff.conj().swapaxes(-1,-2)@overlap@coeff-np.eye(coeff.shape[-1]))),
                 ru_maxrss_bytes=peak_rss_bytes(),
                 final_gate=gates[-1] if gates else None, geometry_sha256=cfg['geometry_sha256'],
-                protocol_sha256=cfg['protocol_sha256'], notes='Facade includes preparation; certificates/imports excluded. RSS is cumulative process peak, not a per-repeat peak. See guarded process record for full cost.')
+                protocol_sha256=cfg['protocol_sha256'], notes='Facade includes preparation; certificates/imports excluded. RSS is cumulative process peak, not a per-repeat peak. Auxiliary metadata never builds missing DF factors; nominal naux and existing factor rank are distinct. See guarded process record for full cost.')
             with (args.output/'measurements.jsonl').open('a') as stream:
                 stream.write(json.dumps(plain(row), allow_nan=False)+'\n')
             save('summary.json', row)

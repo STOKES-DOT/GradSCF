@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from functools import wraps
 import hashlib
 import importlib
+import inspect
 import json
 import math
 import os
@@ -92,11 +93,81 @@ def array_metadata(value):
             if hasattr(item := getattr(value, field.name), "shape")}
 
 
-def effective_config(original, fixed_cycles=None):
+def effective_config(original, fixed_cycles=None, grid_block_size=None):
     cfg = dict(original)
     if fixed_cycles is not None:
         cfg.update(max_cycle=fixed_cycles, conv_tol=0.)
+    if grid_block_size is not None:
+        cfg["grid_block_size"] = grid_block_size
     return cfg
+
+
+def facade_options(cfg, grid_block_size=None):
+    """Historical defaults are unchanged; an explicit zero selects auto grids."""
+    options = dict(max_cycle=cfg["max_cycle"], conv_tol=cfg["conv_tol"],
+        conv_tol_density=cfg["density_tol"], conv_tol_grad=cfg["gradient_tol"],
+        max_memory=cfg["max_memory"], grids_level=3, execution_device="cpu",
+        init_guess=cfg.get("init_guess", "hcore"),
+        grid_block_size=(-1 if cfg["method"].startswith("G") else 4096)
+                        if grid_block_size is None else grid_block_size)
+    if cfg["method"].endswith("KS"):
+        options["xc"] = cfg["xc"]
+    return options
+
+
+def configure_facade(mf, cfg, representation):
+    """Use explicit public capabilities and verify the numerical controls."""
+    only_dfj = bool(cfg.get("only_dfj", False))
+    if only_dfj and representation != "df":
+        raise ValueError("only_dfj requires the explicit DF representation")
+    mf.direct_scf_tol = cfg.get("direct_scf_tol", getattr(mf, "direct_scf_tol", 0.))
+    mf.direct_scf_workers = cfg["threads"]
+    if representation == "df":
+        options = dict(auxbasis=cfg["auxbasis"])
+        if only_dfj:
+            options["only_dfj"] = True
+        try:
+            inspect.signature(mf.density_fit).bind(**options)
+        except TypeError as error:
+            raise NotImplementedError(f"Explicit RI capability unavailable: {options}") from error
+        threshold = cfg.get("df_tol", getattr(mf, "df_tol", 1e-10))
+        mf.df_tol = threshold
+        mf = mf.density_fit(**options)
+        actual = mf._config()
+        if getattr(actual, "df_tol", None) != threshold:
+            raise NotImplementedError("The facade does not forward the requested df_tol")
+        if only_dfj and not getattr(actual, "only_dfj", False):
+            raise NotImplementedError("The facade does not preserve only_dfj=True")
+    elif representation == "direct":
+        mf = mf.direct_scf()
+    if representation == "direct" or only_dfj:
+        actual = mf._config()
+        expected = cfg.get("direct_scf_tol", mf.direct_scf_tol)
+        if getattr(actual, "direct_scf_tol", None) != expected:
+            raise NotImplementedError("The facade does not forward the requested direct_scf_tol")
+    return mf
+
+
+def history_capture_status(method, nao, shared, metadata=None):
+    """Do not label an eager atomic guess as the molecular SCF trajectory."""
+    status = dict(status="skipped", method=method)
+    if method in {"RHF", "RKS"}:
+        return dict(status, reason="RHF/RKS molecular loop is JIT-only; eager capture may be an atomic initial-guess solve.")
+    if shared is None:
+        return dict(status, reason="No eager molecular solve_scf result was captured.")
+    expected = (2*nao, 2*nao) if method in {"GHF", "GKS"} else (2, nao, nao)
+    observed = tuple(getattr(getattr(getattr(shared, "state", None), "fock", None), "shape", ()))
+    ancestors = tuple((metadata or {}).get("ancestor_stages", ()))
+    status.update(expected_fock_shape=list(expected), observed_fock_shape=list(observed),
+                  ancestor_stages=list(ancestors))
+    if observed != expected:
+        return dict(status, reason="Captured Fock shape does not match the molecular spin/AO dimensions.")
+    owner = "solver.run_gks_from_integrals" if method in {"GHF", "GKS"} else "solver.run_uks_from_integrals"
+    if owner not in ancestors or any(stage.startswith("inputs.") for stage in ancestors):
+        return dict(status, reason="Capture origin is unverified or belongs to atomic input preparation.")
+    if getattr(shared, "history", None) is None:
+        return dict(status, reason="The verified molecular result retains no history.")
+    return dict(status, status="ok", reason="Molecular solver origin and Fock dimensions verified.")
 
 
 class Stages:
@@ -105,7 +176,7 @@ class Stages:
     def __init__(self, jax, event, trace=False):
         self.jax, self.event, self.trace = jax, event, trace
         self.stack, self.rows, self.patches = [], [], []
-        self.captured = {}
+        self.captured, self.captured_metadata, self.stage_names = {}, {}, {}
         self.next_id = 0
 
     def wrapper(self, original, label, capture=None):
@@ -114,6 +185,7 @@ class Stages:
             name = label(args, kwargs) if callable(label) else label
             call_id, parent_id = self.next_id, self.stack[-1] if self.stack else None
             self.next_id += 1
+            self.stage_names[call_id] = name
             traced = any(isinstance(x, self.jax.core.Tracer) for x in leaves((args, kwargs)))
             row = dict(call_id=call_id, parent_id=parent_id, stage=name,
                        depth=len(self.stack), tracing=traced)
@@ -136,6 +208,8 @@ class Stages:
                         synchronize(result, self.jax)
                         if capture:
                             self.captured[capture] = result
+                            self.captured_metadata[capture] = dict(stage=name, call_id=call_id,
+                                ancestor_stages=[self.stage_names[index] for index in self.stack[:-1]])
                 row.update(status="ok", tracing=traced)
                 return result
             except BaseException as error:
@@ -234,6 +308,8 @@ def main(argv=None):
     parser.add_argument("--jax-trace", action="store_true", help="Optional potentially large, one-SCF JAX trace")
     parser.add_argument("--fixed-cycles", type=int,
                         help="Diagnostic only: fixed N-cycle snapshot with early convergence disabled")
+    parser.add_argument("--grid-block-size", type=int, default=None,
+                        help="Explicit grid block; 0 uses auto, omitted keeps historical G=-1/R,U=4096")
     args = parser.parse_args(argv)
     original_cfg = json.loads(args.config.read_text())
     if not 0 < args.budget_seconds <= 1800:
@@ -242,7 +318,9 @@ def main(argv=None):
         parser.error("--jax-trace requires --mode diagnostic")
     if args.fixed_cycles is not None and (args.mode != "diagnostic" or args.fixed_cycles < 1):
         parser.error("--fixed-cycles requires diagnostic mode and a positive cycle count")
-    cfg = effective_config(original_cfg, args.fixed_cycles)
+    if args.grid_block_size is not None and args.grid_block_size < -1:
+        parser.error("--grid-block-size must be -1, 0, or positive")
+    cfg = effective_config(original_cfg, args.fixed_cycles, args.grid_block_size)
     if not os.environ.get("SLURM_JOB_ID"):
         parser.error("Scientific runs require Slurm")
     if cfg.get("engine") != "gradscf":
@@ -259,7 +337,7 @@ def main(argv=None):
     args.output.mkdir(parents=True, exist_ok=False)
     args.output = args.output.resolve()
     (args.output / "input.json").write_text(json.dumps(cfg, indent=2) + "\n")
-    if args.fixed_cycles is not None:
+    if args.fixed_cycles is not None or args.grid_block_size is not None:
         (args.output / "original_input.json").write_text(args.config.read_text())
     # FD redirection includes native stderr/stdout. Python writes are line-buffered.
     sys.stdout.flush()
@@ -290,6 +368,7 @@ def main(argv=None):
         probe_sha256=digest(__file__), input_sha256=digest(args.config),
         effective_input_sha256=digest(args.output / "input.json"),
         fixed_cycle_probe=args.fixed_cycles is not None, fixed_cycles=args.fixed_cycles,
+        requested_grid_block_size=args.grid_block_size,
         original_max_cycle=original_cfg["max_cycle"], original_conv_tol=original_cfg["conv_tol"],
         source_snapshot=os.getenv("GRADSCF_SOURCE_SNAPSHOT"),
         environment={key: value for key, value in os.environ.items() if key.startswith((
@@ -368,13 +447,7 @@ def main(argv=None):
                     event("jax_trace_started")
                 except Exception as error:
                     event("jax_trace_unavailable", error=f"{type(error).__name__}: {error}")
-        options = dict(max_cycle=cfg["max_cycle"], conv_tol=cfg["conv_tol"],
-            conv_tol_density=cfg["density_tol"], conv_tol_grad=cfg["gradient_tol"],
-            max_memory=cfg["max_memory"], grids_level=3, execution_device="cpu",
-            init_guess=cfg.get("init_guess", "hcore"),
-            grid_block_size=-1 if cfg["method"].startswith("G") else 4096)
-        if cfg["method"].endswith("KS"):
-            options["xc"] = cfg["xc"]
+        options = facade_options(cfg, args.grid_block_size)
         factory = getattr(scf if cfg["method"].endswith("HF") else dft, cfg["method"])
         call_limit = min(float(cfg.get("single_call_limit_seconds", args.budget_seconds)),
                          deadline - time.perf_counter())
@@ -390,11 +463,12 @@ def main(argv=None):
         mol = gto.M(atom=cfg["atom"], basis=cfg["basis"], charge=cfg["charge"],
                     spin=cfg["spin"], unit=cfg["unit"], cart=True)
         mf = factory(mol, **options)
-        if representation == "df":
-            mf.density_fit(cfg["auxbasis"])
-        elif representation == "direct":
-            mf.direct_scf_workers, mf.direct_scf_tol = cfg["threads"], 0.
-            mf.direct_scf()
+        mf = configure_facade(mf, cfg, representation)
+        actual = mf._config()
+        runtime["actual_scf_controls"] = {name: getattr(actual, name, None) for name in (
+            "jk_backend", "auxbasis", "only_dfj", "df_tol", "direct_scf_tol",
+            "direct_scf_workers", "grid_block_size", "max_cycle", "conv_tol")}
+        save("runtime.json", runtime)
         mf.run()
         # Synchronize every retained result array without copying it to host.
         result = mf.scf_result if mf.scf_result is not None else mf.reference
@@ -415,10 +489,15 @@ def main(argv=None):
             inputs = stages.captured.get("inputs")
             result = stages.captured.get("result", result)
             shared = stages.captured.get("shared_result")
-            if shared is not None:
+            history_status = history_capture_status(cfg["method"], int(nao), shared,
+                stages.captured_metadata.get("shared_result"))
+            save("scf_history_status.json", history_status)
+            if history_status["status"] == "ok":
                 history = shared.history
                 save("scf_history.json", {name: np.asarray(getattr(history, name)).tolist()
                     for name in ("density_rms", "energy_change", "gradient", "converged")})
+            else:
+                event("scf_history_skipped", **history_status)
         else:
             inputs = getattr(mf, "_scf_inputs", None)
         if hasattr(result, "orbital_gradient_norm"):

@@ -72,3 +72,30 @@ The complete manifest SHA256 is
 Every one of the sixty configuration files still matches its initial lock,
 and the physical protocol and geometry fingerprints are unchanged. The lock
 is corrected to include the stronger manifest, retaining its previous revision.
+
+## 2026-11-05: independent reference certification and observer repair
+
+The original PySCF single-kernel attempt remains immutable and unaccepted.
+Its 24 main iterations passed the registered checks, but a subsequent extra
+diagonalization returned a gradient of 2.217132e-7 Ha and revoked convergence.
+PySCF 2.13 then returns rather than continuing the main loop. This is not
+failure to converge within 200 main iterations.
+
+An optional, explicitly labelled `--reference-continuation` policy uses the
+same object and current density only after this specific final-check failure.
+The initial guess, all three thresholds, conv_check and the physical inputs
+remain unchanged. The total main-iteration budget remains 200; extra checks
+are separately counted. A repeated kernel starts a new local DIIS history.
+The original logical-call wall timer and 6000-s budget cover every restart.
+This policy is a new reference variant, not a relabelled original baseline.
+
+The original observer also called `DF.get_naoaux()` after the timed solver.
+For pure RI-J, PySCF may not retain factors, and that query calls build(),
+creating full three-center factors only for metadata. Thus the original
+249-s whole-process time and RSS are contaminated, while the 174-s timed
+facade remains a failed single-kernel measurement. The repaired observer
+reads existing auxiliary-basis dimensions and existing factor shape only;
+unknown effective rank remains null. No additional integrals are computed.
+
+These controls were tested with stdlib fakes before the new reference run.
+All sixty physical configuration hashes and numerical gates remain unchanged.
