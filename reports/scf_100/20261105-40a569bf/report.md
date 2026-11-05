@@ -92,3 +92,22 @@ RI-J/direct-K response export is explicitly rejected until a matching dual
 provider response contract exists. Existing RI-JK/direct response modes are
 retained. Full native auxiliary-geometry AD and noncollinear GGA remain outside
 the capabilities established by this checkpoint. No merge or push is performed.
+
+## 2026-11-05: first original large baseline completed
+
+The RKS/PBE/RI-J configuration completed all four registered calls with 23
+cycles each and the same energy, -1554.7036403036154 Ha. Cold facade time was
+792.491512 s; warm samples were 750.493826, 750.598513 and 750.109793 s
+(median 750.493826 s, sample standard deviation 0.257322 s). Every call passed
+the original convergence gates; final MO gradient norm was 3.928512e-8 Ha.
+
+Whole-worker wall time was 3047.910375 s. The 0.2-s process-group RSS sampler
+recorded a peak of 70,485,155,840 bytes across the complete process. Facade
+time includes integrals, grid preparation and SCF; neither iteration costs
+nor compilation are inferred by dividing or subtracting these totals.
+
+The basis has 880 AO, 148 occupied and 732 virtual orbitals, 3112 auxiliary
+functions and 1,113,968 grid points. [baseline_rks_pbe_ri.json](baseline_rks_pbe_ri.json)
+preserves samples and raw evidence hashes. The independent same-configuration
+PySCF counterpart has started serially; no cross-engine or candidate speed
+ratio is available at this update.
