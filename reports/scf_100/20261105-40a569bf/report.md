@@ -18,6 +18,10 @@ and RI representation. It is not an implementation-only speedup denominator.
 Sources: [parent](baseline_rks_pbe_ri.json), [candidate](candidate_rks_pbe_ri.json)
 and [certified reference](reference_certified.json).
 
+The subsequent preparation/XC diagnostics and local algebra experiments are
+in [FOLLOWUP.md](FOLLOWUP.md). Their kernel timings are separate from the
+accepted complete-workflow measurements above.
+
 ## Measurement scope
 
 The fixed input is the existing C40H56 conformer: 96 atoms, 296 electrons,
@@ -100,9 +104,11 @@ differences remain explicit; no cross-engine implementation acceleration is clai
 
 ## Remaining acceptance
 
-The original-source RKS/PBE conventional-direct comparison started at
-2026-11-05 15:39:32 +08:00 (step `115927.20914`); candidate and certified-reference
-direct runs follow serially. No accepted direct timing pair is available yet.
+The original-source RKS/PBE conventional-direct baseline completed all four
+calls with 22 cycles each: cold 795.437445 s and warm median 754.542832 s.
+[baseline_rks_pbe_direct.json](baseline_rks_pbe_direct.json) retains the exact
+samples and raw hashes. Candidate direct repetitions are running; the matched
+direct pair and certified direct reference are not complete.
 The 30-configuration matrix per engine remains incomplete. The TDD contract is
 [TDD_PLAN.md](TDD_PLAN.md); the full matrix and final delivery remain open.
 

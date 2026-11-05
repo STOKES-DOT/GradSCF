@@ -97,6 +97,15 @@ python benchmarks/probes/scf_100/continue_matrix.py \
 Those job/PID values belong to the 2026-11-05 run. Use live values when
 resuming later; omit `--dry-run` only within the authorized allocation.
 
+The bounded follow-up uses `profile_followup.py` for current GradSCF spans,
+`profile_pyscf.py` for an independent reference trajectory and saved density,
+and `probe_ri_j.py` / `probe_xc_algebra.py` for shared-input array experiments.
+They do not modify production kernels. Their measured scopes, unsuccessful
+packed-layout candidate and AD limits are recorded in
+`reports/scf_100/20261105-40a569bf/FOLLOWUP.md`. Host BLAS8 control is explicitly
+unsupported when optional `threadpoolctl` is unavailable; the remaining probes
+still run. Use the external process/RSS guard for every scientific payload.
+
 For invasive stage profiling, use `benchmarks/probes/scf_solver/profile_stages.py`
 in a separate process with the same input. Its instrumentation timing is not a
 clean speed measurement; it predates this protocol and must be checked for the
