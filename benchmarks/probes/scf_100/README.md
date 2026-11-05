@@ -80,6 +80,23 @@ exercised by the same worker. The outer guard's successful process status does n
 imply convergence. Require all requested repeats, finite outputs and the registered
 E/D/MO-gradient gates, then apply the paired energy gate of 1e-7 Ha.
 
+`continue_matrix.py` resumes the frozen matrix inside an existing allocation,
+after the registered direct-pair controller exits. It verifies configuration
+hashes, waits for other steps, skips existing attempts and refuses rows whose
+original process cap cannot fit the remaining lease. It never requests a new
+allocation, changes the scientific budget, retries failures or computes speed
+ratios. The Linux `/proc` PID check applies only to this recorded continuation.
+Check the queue without launching scientific work first:
+
+```bash
+python benchmarks/probes/scf_100/continue_matrix.py \
+  --root "$HOME/private/homefile/gradscf-scf-100-20261105" \
+  --job 115927 --wait-pid 1884391 --dry-run
+```
+
+Those job/PID values belong to the 2026-11-05 run. Use live values when
+resuming later; omit `--dry-run` only within the authorized allocation.
+
 For invasive stage profiling, use `benchmarks/probes/scf_solver/profile_stages.py`
 in a separate process with the same input. Its instrumentation timing is not a
 clean speed measurement; it predates this protocol and must be checked for the
