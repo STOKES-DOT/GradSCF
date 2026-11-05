@@ -60,3 +60,15 @@ The benchmark worker was audited before large execution: old repeat payloads
 are released, actual grid size is reported, and RI-J/packed-K is distinguished
 from RI-J/direct-K. These harness corrections do not change the physical
 protocol or the sixty configuration hashes.
+
+## 2026-11-05: manifest fingerprint audit
+
+The final lock audit detected that the initial manifest file hash preceded
+addition of its `config_file_sha256` map. Removing only that map reconstructs
+the exact earlier bytes and SHA256
+`9a00ff87fa6fd1d345c76b1ff897cc3a2a8d53baed78b61eae8628999a4a6ce5`.
+The complete manifest SHA256 is
+`3f11abf0e92247203444cbcabe89f81c1ccddbc2f0b3e4c01ec54901b74c5089`.
+Every one of the sixty configuration files still matches its initial lock,
+and the physical protocol and geometry fingerprints are unchanged. The lock
+is corrected to include the stronger manifest, retaining its previous revision.
