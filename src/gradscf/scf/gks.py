@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from numbers import Integral
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -60,8 +60,6 @@ def _validate_hermitian(a: Array, shape: tuple[int, int], name: str) -> None:
 def _validate_mode(config: GKSConfig) -> str:
     recipe = parse_recipe(config.xc_spec)
     recipe.require_complete_support()
-    if recipe.exact_exchange.omega is not None:
-        raise NotImplementedError("GKS range-separated exchange operators are not implemented.")
     if config.collinear not in {"col", "ncol"}:
         raise NotImplementedError("GKS supports col and ncol; mcol is not implemented.")
     kind = xc_type(config.xc_spec)
@@ -69,39 +67,94 @@ def _validate_mode(config: GKSConfig) -> str:
         raise NotImplementedError("GKS supports LDA/GGA/global hybrids; meta-GGA is not implemented.")
     if config.collinear == "ncol" and kind not in {"HF", "LDA"}:
         raise NotImplementedError("Noncollinear GKS currently supports LDA (and HF) only.")
-    if config.jk_backend != "full":
-        raise NotImplementedError("Generalized SCF currently requires full real AO integrals.")
+    if config.jk_backend not in {"full", "df", "direct"}:
+        raise ValueError("Generalized SCF requires full, df, or direct J/K.")
+    if config.only_dfj and config.jk_backend != "df":
+        raise ValueError("only_dfj requires jk_backend='df'.")
+    if recipe.exact_exchange.omega is not None and config.jk_backend == "df" and not config.only_dfj:
+        raise NotImplementedError("Generalized RSH supports RI-J/direct-K, not RI exchange.")
     return kind
 
 
-def generalized_jk(eri: Array, density: Array, *, with_k=True) -> tuple[Array, Array]:
-    """Build spin-diagonal Coulomb and all four complex exchange blocks.
+def generalized_jk(eri: Array | None, density: Array, *, with_k=True,
+                   df_factors: Array | None = None, direct_basis: Any | None = None,
+                   only_dfj: bool = False, direct_scf_tol: float = 0.,
+                   direct_scf_workers: int = 1, eri_lr: Array | None = None,
+                   range_separated_coefficients=None) -> tuple[Array, Array]:
+    """Spin-diagonal J and four complex K blocks from one spatial operator.
 
-    Spatial AO ERIs use chemists' notation. The spatial AOs and ERIs are real;
-    the spinor density may be complex Hermitian, including nonzero ab blocks.
+    DF consumes explicit spatial factors. ``only_dfj`` uses them only for J,
+    retaining native direct K. RSH K includes its complete SR/LR coefficients.
+    No individual spin block is symmetrized or replaced by a collinear density.
     """
+    from gradscf.integrals.molecular.jk import build_jk_from_packed, exchange_matrix
+    from gradscf.integrals.backends.native.jk import _selected_jk
 
-    eri, density = jnp.asarray(eri), jnp.asarray(density)
+    density = jnp.asarray(density)
+    if density.ndim != 2 or density.shape[0] != density.shape[1] or density.shape[0] % 2:
+        raise ValueError("Generalized density must be a square even-dimensional spinor matrix.")
     n = density.shape[0]//2
     total = density[:n, :n] + density[n:, n:]
-    if eri.ndim in (1,2):
-        from gradscf.integrals.molecular.jk import build_jk_from_packed
-        coulomb,_=build_jk_from_packed(eri,total.T,with_k=False)
-        if not with_k:
-            return _hermitian(_spin_diagonal(coulomb)), jnp.zeros_like(density)
-        _,exchange=build_jk_from_packed(eri,density.reshape(2,n,2,n).transpose(0,2,1,3),with_j=False)
-        exchange=exchange.transpose(0,2,1,3).reshape(2*n,2*n)
-        return _hermitian(_spin_diagonal(coulomb)),_hermitian(exchange)
-    coulomb = jnp.einsum("pqrs,sr->pq", eri, total, precision=Precision.HIGHEST)
+    blocks = density.reshape(2, n, 2, n).transpose(0, 2, 1, 3)
+    source = None if eri is None else jnp.asarray(eri)
+    factors = None if df_factors is None else jnp.asarray(df_factors)
+    controls = dict(screening_threshold=direct_scf_tol, workers=direct_scf_workers)
+    if factors is not None:
+        if factors.ndim != 3 or factors.shape[1:] != (n, n) or jnp.iscomplexobj(factors):
+            raise ValueError("Generalized RI requires real factors of shape (naux, nao, nao).")
+        auxiliary_density = jnp.einsum("Qpq,qp->Q", factors, total, precision=Precision.HIGHEST)
+        coulomb = jnp.einsum("Q,Qpq->pq", auxiliary_density, factors, precision=Precision.HIGHEST)
+    elif direct_basis is not None:
+        coulomb, _ = _selected_jk(direct_basis, total, with_j=True, with_k=False, **controls)
+    elif source is not None and source.ndim in (1, 2):
+        coulomb, _ = build_jk_from_packed(source, total.T, with_k=False)
+    elif source is not None and source.shape == (n, n, n, n):
+        coulomb = jnp.einsum("pqrs,sr->pq", source, total, precision=Precision.HIGHEST)
+    else:
+        raise ValueError("Generalized J/K requires full/packed ERIs, RI factors, or a direct provider.")
+    j = _hermitian(_spin_diagonal(coulomb))
     if not with_k:
-        return _hermitian(_spin_diagonal(coulomb)), jnp.zeros_like(density)
-    blocks = density.reshape(2, n, 2, n)
-    from gradscf.integrals.molecular.jk import exchange_matrix
-    exchange = exchange_matrix(eri, blocks.transpose(0,2,1,3)).transpose(0,2,1,3)
-    return _hermitian(_spin_diagonal(coulomb)), _hermitian(exchange.reshape(2*n, 2*n))
+        return j, jnp.zeros_like(density)
+    if only_dfj and (factors is None or direct_basis is None):
+        raise ValueError("RI-J/direct-K requires both df_factors and direct_basis.")
+    if range_separated_coefficients is not None:
+        if factors is not None and not only_dfj:
+            raise NotImplementedError("Generalized RSH does not implement RI exchange.")
+        if direct_basis is not None:
+            from .rsh import _direct_rsh_jk
+            _, exchange = _direct_rsh_jk(direct_basis, blocks, range_separated_coefficients,
+                                        with_j=False, with_k=True, **controls)
+        else:
+            if source is None or source.ndim != 4 or eri_lr is None or jnp.shape(eri_lr) != source.shape:
+                raise ValueError("Full generalized RSH requires matching four-index eri and eri_lr.")
+            _, long_range, short_range = range_separated_coefficients
+            exchange = short_range*exchange_matrix(source, blocks)
+            exchange += (long_range-short_range)*exchange_matrix(jnp.asarray(eri_lr), blocks)
+    elif direct_basis is not None and (factors is None or only_dfj):
+        _, exchange = _selected_jk(direct_basis, blocks, with_j=False, with_k=True, **controls)
+    elif factors is not None:
+        def exchange_block(block):
+            projected = jnp.matmul(factors, block, precision=Precision.HIGHEST)
+            return jnp.einsum("Qps,Qqs->pq", projected, factors, precision=Precision.HIGHEST)
+        exchange = jax.lax.map(jax.checkpoint(exchange_block), blocks.reshape(4, n, n)).reshape(2, 2, n, n)
+    elif source.ndim in (1, 2):
+        _, exchange = build_jk_from_packed(source, blocks, with_j=False)
+    else:
+        exchange = exchange_matrix(source, blocks)
+    exchange = exchange.transpose(0, 2, 1, 3).reshape(2*n, 2*n)
+    return j, _hermitian(exchange)
 
 
-def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential=True):
+def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential=True, grid_ao=None):
+    if grid_ao is not None and kind != "HF":
+        initial = (jnp.asarray(0., dtype=density.real.dtype), jnp.zeros_like(density))
+        def contribution(carry, block_ao, derivative, laplacian, coords, block_weights):
+            del laplacian, coords
+            energy, potential = _generalized_xc(density, block_ao, derivative,
+                block_weights, cfg, kind, compute_potential=compute_potential)
+            return carry[0]+energy, carry[1] if potential is None else carry[1]+potential
+        energy, potential = grid_ao.reduce(contribution, initial, deriv=0 if kind == "LDA" else 1)
+        return energy, potential if compute_potential else None
     n = ao.shape[1]
     if kind == "HF":
         return jnp.asarray(0., dtype=density.real.dtype), jnp.zeros_like(density)
@@ -154,9 +207,11 @@ def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential
 
 
 def generalized_energy_and_fock(
-    *, density: Array, hcore: Array, eri: Array, nuclear_repulsion: float | Array,
+    *, density: Array, hcore: Array, eri: Array | None, nuclear_repulsion: float | Array,
     ao: Array, ao_deriv1: Array, grid_weights: Array, config: GKSConfig,
-    compute_potential: bool = True,
+    compute_potential: bool = True, df_factors: Array | None = None,
+    direct_basis: Any | None = None, grid_ao: Any | None = None,
+    eri_lr: Array | None = None, dispersion_energy: Array | float | None = None,
 ) -> tuple[Array, Array, Array | None]:
     """Return energy/XC/Fock; energy-only requests return None for the Fock."""
 
@@ -164,23 +219,36 @@ def generalized_energy_and_fock(
     density, h = jnp.asarray(density), jnp.asarray(hcore)
     if h.shape[0] == density.shape[0] // 2:
         h = _spin_diagonal(h)
-    alpha = hybrid_coeff(config.xc_spec)
-    j, k = generalized_jk(eri, density, with_k=alpha != 0.)
+    from .rsh import validate_rsh_inputs
+    preset = validate_rsh_inputs(config.xc_spec, eri=eri, eri_lr=eri_lr,
+        dispersion_energy=dispersion_energy,
+        jk_backend="direct" if config.only_dfj else config.jk_backend,
+        direct_basis=direct_basis)
+    coefficients = None if preset is None else preset.to_range_separated_hybrid_coefficients()
+    alpha = hybrid_coeff(config.xc_spec) if preset is None else 1.
+    j, k = generalized_jk(eri, density, with_k=alpha != 0., df_factors=df_factors,
+        direct_basis=direct_basis, only_dfj=config.only_dfj,
+        direct_scf_tol=config.direct_scf_tol, direct_scf_workers=config.direct_scf_workers,
+        eri_lr=eri_lr, range_separated_coefficients=coefficients)
     exc, vxc = _generalized_xc(density, jnp.asarray(ao), jnp.asarray(ao_deriv1),
                              jnp.asarray(grid_weights), config, kind,
-                             compute_potential=compute_potential)
+                             compute_potential=compute_potential, grid_ao=grid_ao)
     potential = j - alpha * k
     energy = (jnp.einsum("pq,qp->", density, h + .5 * potential,
-                        precision=Precision.HIGHEST).real + exc + nuclear_repulsion)
+                        precision=Precision.HIGHEST).real + exc + nuclear_repulsion
+              + (0. if dispersion_energy is None else dispersion_energy))
     if not compute_potential:
         return energy, exc, None
     return energy, exc, _hermitian(h + potential + vxc)
 
 
 def run_gks_from_integrals(
-    *, overlap: Array, hcore: Array, eri: Array, nelectron: int,
+    *, overlap: Array, hcore: Array, eri: Array | None, nelectron: int,
     nuclear_repulsion: float | Array, ao: Array, ao_deriv1: Array, grid_weights: Array,
     init_density: Array | None = None, config: GKSConfig | None = None,
+    df_factors: Array | None = None, direct_basis: Any | None = None,
+    grid_ao: Any | None = None, eri_lr: Array | None = None,
+    dispersion_energy: Array | float | None = None,
 ) -> GKSResult:
     """Generalized SCF: spatial overlap/ERIs, spatial or 2*nao spinor hcore.
 
@@ -190,12 +258,21 @@ def run_gks_from_integrals(
 
     cfg = GKSConfig() if config is None else config
     _validate_mode(cfg)
-    s, h, eri = map(jnp.asarray, (overlap, hcore, eri))
+    s, h = map(jnp.asarray, (overlap, hcore))
+    eri = None if eri is None else jnp.asarray(eri)
+    df_factors = None if df_factors is None else jnp.asarray(df_factors)
     n = s.shape[0]
     from gradscf.integrals.molecular.eri import packed_eri_shape
-    if s.shape != (n,n) or eri.shape not in {(n,n,n,n),packed_eri_shape(n,1),packed_eri_shape(n,2)}:
-        raise ValueError("Generalized SCF requires spatial overlap and full/s4/s8 ERIs.")
-    if jnp.iscomplexobj(s) or jnp.iscomplexobj(eri) or jnp.iscomplexobj(ao) or jnp.iscomplexobj(ao_deriv1):
+    if s.shape != (n, n):
+        raise ValueError("Generalized SCF requires square spatial overlap.")
+    if cfg.jk_backend == "full" and (eri is None or eri.shape not in {
+            (n,n,n,n), packed_eri_shape(n,1), packed_eri_shape(n,2)}):
+        raise ValueError("Generalized full SCF requires full/s4/s8 ERIs.")
+    if cfg.jk_backend == "df" and (df_factors is None or df_factors.size == 0):
+        raise ValueError("Generalized RI requires nonempty df_factors.")
+    if (cfg.jk_backend == "direct" or cfg.only_dfj) and direct_basis is None:
+        raise ValueError("Generalized direct exchange requires direct_basis.")
+    if any(jnp.iscomplexobj(a) for a in (s, eri, df_factors, eri_lr, ao, ao_deriv1) if a is not None):
         raise ValueError("Generalized SCF currently requires real spatial AOs and integrals.")
     if not isinstance(nelectron, Integral) or not 0 < nelectron <= 2*n:
         raise ValueError("Invalid total electron count for generalized SCF.")
@@ -204,17 +281,22 @@ def run_gks_from_integrals(
     if cfg.convergence_metric not in ("energy_and_residual", "energy"):
         raise ValueError("Generalized SCF requires energy_and_residual or energy convergence.")
     ao, deriv, weights = map(jnp.asarray, (ao, ao_deriv1, grid_weights))
-    real_dtype = jnp.result_type(s, h.real, eri, ao, deriv, weights, nuclear_repulsion, jnp.float32)
+    real_dtype = jnp.result_type(s, h.real, ao, deriv, weights, nuclear_repulsion,
+        *(a for a in (eri, df_factors, eri_lr) if a is not None), jnp.float32)
     if init_density is not None:
         real_dtype = jnp.result_type(real_dtype, jnp.asarray(init_density).real)
     complex_dtype = jnp.result_type(real_dtype, jnp.complex64)
     s, h = s.astype(real_dtype), h.astype(complex_dtype)
-    eri, ao, deriv, weights = (a.astype(real_dtype) for a in (eri, ao, deriv, weights))
+    eri = None if eri is None else eri.astype(real_dtype)
+    df_factors = None if df_factors is None else df_factors.astype(real_dtype)
+    eri_lr = None if eri_lr is None else jnp.asarray(eri_lr, dtype=real_dtype)
+    ao, deriv, weights = (a.astype(real_dtype) for a in (ao, deriv, weights))
     _validate_hermitian(s, (n, n), "overlap")
     if h.shape == (n, n):
         h = _spin_diagonal(h)
     _validate_hermitian(h, (2*n, 2*n), "hcore")
-    if ao.shape != (weights.size, n) or deriv.shape != (4, weights.size, n):
+    expected_grid = weights.size if grid_ao is None else 0
+    if ao.shape != (expected_grid, n) or deriv.shape != (4, expected_grid, n):
         raise ValueError("AO values/first derivatives must match the grid and spatial AO dimensions.")
     eig = jnp.linalg.eigvalsh(s)
     if not _contains_jax_tracer(eig) and bool(jnp.any(eig <= 0)):
@@ -234,6 +316,8 @@ def run_gks_from_integrals(
         energy, exc, fock = generalized_energy_and_fock(
             density=dm, hcore=h, eri=eri, nuclear_repulsion=nuclear_repulsion,
             ao=ao, ao_deriv1=deriv, grid_weights=weights, config=cfg,
+            df_factors=df_factors, direct_basis=direct_basis, grid_ao=grid_ao,
+            eri_lr=eri_lr, dispersion_energy=dispersion_energy,
         )
         return energy, fock, exc
 
@@ -266,6 +350,8 @@ def run_gks_from_integrals(
         mo_coeff=final.mo_coeff, mo_occ=occ, density_matrix=final.density,
         fock_matrix=final.fock, overlap_matrix=s2, hcore_matrix=h,
         orbital_gradient_norm=_host_float_unless_traced(result.metrics.gradient),
+        range_separated_coefficients=parse_recipe(cfg.xc_spec).to_range_separated_hybrid_coefficients(),
+        dispersion_energy=dispersion_energy,
     )
 
 
@@ -275,24 +361,32 @@ class GKS(_BaseKS):
 
     collinear: str = "col"
     conv_tol_grad: float = 1e-7
+    jk_backend: Literal["full", "df", "direct"] = "full"
+    auxbasis: str | None = None
+    only_dfj: bool = False
+    df_tol: float = 1e-10
+    df_max_rank: int | None = None
+    direct_scf_tol: float = 0.
+    direct_scf_workers: int = 1
     scf_result: GKSResult | None = None
 
     def _config(self) -> GKSConfig:
         return GKSConfig(xc_spec=self.xc, collinear=self.collinear, max_cycle=self.max_cycle,
                          conv_tol=self.conv_tol, conv_tol_density=self.conv_tol_density,
                          conv_tol_grad=self.conv_tol_grad, damping=self.damp, level_shift=self.level_shift,
-                         max_memory=self.max_memory,
+                         max_memory=self.max_memory, jk_backend=self.jk_backend,
+                         auxbasis=self.auxbasis, only_dfj=self.only_dfj, df_tol=self.df_tol,
+                         df_max_rank=self.df_max_rank, direct_scf_tol=self.direct_scf_tol,
+                         direct_scf_workers=self.direct_scf_workers,
                          grid_block_size=self.grid_block_size, grid_max_memory=self.grid_max_memory)
 
     def kernel(self, dm0: Array | None = None) -> Any:
         cfg = self._config()
         _validate_mode(cfg)
-        if cfg.grid_block_size > 0:
-            raise NotImplementedError('Generalized SCF does not support streamed grid AO data; use grid_block_size=-1.')
         self._configure_jax_cache()
         supplied = dm0 if dm0 is not None else (None if isinstance(self.init_guess, str) else self.init_guess)
         inputs = build_uks_integral_inputs(
-            atom=self._spec(), basis=self.mol.basis, config=replace(cfg, grid_block_size=-1),
+            atom=self._spec(), basis=self.mol.basis, config=cfg,
             xc_spec=self.xc, unit=self.mol.unit, charge=self.mol.charge, spin=self.mol.spin,
             cart=self.mol.cart, grids_level=self.grids_level, max_l=self.max_l,
             integral_backend=self.integral_backend, grid_ao_backend=self.grid_ao_backend,
@@ -300,6 +394,7 @@ class GKS(_BaseKS):
             init_guess=self.init_guess if supplied is None else "hcore", chkfile=self.chkfile,
             init_guess_sap_basis=self.sap_basis,
             init_guess_chkfile_project=self.init_guess_chkfile_project, verbose=self.mol.verbose,
+            scf_history_matrices=48,
         )
         if supplied is None and inputs.init_density_alpha is not None:
             a, b = inputs.init_density_alpha, inputs.init_density_beta
@@ -307,12 +402,15 @@ class GKS(_BaseKS):
             supplied = jnp.block([[a, zero], [zero, b]])
         kwargs = dict(overlap=inputs.overlap, hcore=inputs.hcore, eri=inputs.eri,
                       nuclear_repulsion=inputs.nuclear_repulsion, ao=inputs.ao,
-                      ao_deriv1=inputs.ao_deriv1, grid_weights=inputs.grid_weights, init_density=supplied)
+                      ao_deriv1=inputs.ao_deriv1, grid_weights=inputs.grid_weights, init_density=supplied,
+                      df_factors=inputs.df_factors, direct_basis=inputs.direct_basis,
+                      grid_ao=inputs.grid_ao, eri_lr=inputs.eri_lr, dispersion_energy=inputs.dispersion_energy)
         if self.execution_device != "auto":
             from ..tools.device import resolve_execution_device
             device = resolve_execution_device(self.execution_device)
             kwargs = jax.tree_util.tree_map(lambda a: jax.device_put(a, device), kwargs)
         result = run_gks_from_integrals(**kwargs, nelectron=self.mol.nelectron, config=cfg)
+        self._scf_inputs = inputs
         self.scf_result = result
         self._sync_from_scf_result(result)
         self._cached_scf_key = self._scf_signature()
@@ -336,8 +434,13 @@ class GKS(_BaseKS):
     def TDDFT(self, **kwargs: Any) -> Any:
         return self._ensure_reference()
 
-    def density_fit(self) -> "GKS":
-        raise NotImplementedError("Generalized density fitting is not implemented.")
+    def density_fit(self, auxbasis: str | None = None, *, only_dfj: bool = False) -> "GKS":
+        self.jk_backend = "df"
+        self.auxbasis = auxbasis or "def2-universal-jkfit"
+        self.only_dfj = bool(only_dfj)
+        return self
 
     def direct_scf(self) -> "GKS":
-        raise NotImplementedError("Generalized direct SCF is not implemented.")
+        self.jk_backend = "direct"
+        self.only_dfj = False
+        return self

@@ -9,7 +9,7 @@ import numpy as np
 
 from gradscf.scf.inputs.types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
-from ..dft.xc import hybrid_coeff, parse_xc
+from ..dft.xc import hybrid_coeff, parse_xc, xc_type
 from gradscf.dft.hfx import _local_hfx_features_from_basis_dm
 from gradscf.dft.pt2 import (
     _local_pt2_feature_and_fock_response_from_restricted_orbitals,
@@ -64,8 +64,35 @@ def _empty_rep_tensor_like(overlap: Any) -> np.ndarray:
     return np.zeros((0, 0, 0, 0), dtype=np.asarray(overlap).dtype)
 
 
-def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True):
-    """Add a missing dipole tensor without recomputing S/H/ERI/grid or SCF."""
+def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
+        require_grid=False, config=None, grids_level=0, max_l=3):
+    """Lazily complete reference data without replacing spatial SCF inputs.
+
+    Ordinary HF energies need no quadrature. Reference/feature consumers can
+    request the existing dense/streamed grid representation after SCF, retaining
+    S/H/ERI, RI factors, direct providers and the solved orbital state.
+    """
+    if require_grid and inputs.grid_weights.shape[0] == 0 and inputs.grid_ao is None:
+        from .inputs import assembly
+        from .._memory import tree_storage_bytes
+
+        cfg = RKSConfig(xc_spec="hf") if config is None else config
+        names = ("overlap", "hcore", "eri", "eri_pair_matrix", "df_factors",
+                 "direct_basis", "dipole_integrals", "init_density",
+                 "init_density_alpha", "init_density_beta", "init_mo_coeff",
+                 "init_mo_coeff_alpha", "init_mo_coeff_beta")
+        resident = tree_storage_bytes(*(getattr(inputs, name, None) for name in names))
+        laplacian = xc_type(local_xc_spec(cfg.xc_spec)) == "MGGA"
+        context = assembly._prepare_basis_grid_context(
+            spec=spec, basis=basis, max_l=max_l, grids_level=grids_level,
+            needs_ao_laplacian=laplacian, needs_grid=True,
+            grid_block_size=cfg.grid_block_size, grid_max_memory=cfg.grid_max_memory,
+            max_memory=cfg.max_memory, scf_max_cycle=cfg.max_cycle,
+            scf_history_matrices=6 if hasattr(inputs, "nalpha") else 2,
+            fixed_workspace_bytes=resident)
+        ao, derivative, lap = assembly._grid_ao_payload(context, needs_ao_laplacian=laplacian)
+        inputs = replace(inputs, coords=context.coords, grid_weights=context.grid_weights,
+            ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao)
     if inputs.dipole_integrals is not None:
         return inputs
     from ..integrals import prepare_basis, make_plan
@@ -142,9 +169,9 @@ def _build_restricted_reference(
             verbose=verbose,
             **mol_kwargs,
         )
-    if include_dipole_integrals and scf_inputs.dipole_integrals is None:
-        spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
-        scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis)
+    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "
@@ -470,6 +497,9 @@ def _build_unrestricted_reference(
         verbose=verbose,
         **mol_kwargs,
     )
+    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "

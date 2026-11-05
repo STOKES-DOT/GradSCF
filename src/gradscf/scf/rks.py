@@ -66,6 +66,7 @@ class RKSConfig:
     df_tol: float = 1e-10
     df_max_rank: int | None = None
     auxbasis: str | None = None
+    only_dfj: bool = False
     direct_scf_tol: float = 0.0
     direct_scf_workers: int = 1
     grid_block_size: int = 0
@@ -168,7 +169,7 @@ def _make_jk_builder(
     from .rsh import rsh_preset
     rsh = rsh_preset(cfg.xc_spec)
     if rsh is not None:
-        if cfg.jk_backend == "direct":
+        if cfg.jk_backend == "direct" or (cfg.jk_backend == "df" and cfg.only_dfj):
             from .rsh import _require_direct_rsh_provider
             _require_direct_rsh_provider(direct_basis)
         elif cfg.jk_backend == "full":
@@ -178,7 +179,7 @@ def _make_jk_builder(
                             + (rsh.default_lr_hf_fraction-rsh.default_sr_hf_fraction) * jnp.asarray(eri_lr))
         else:
             raise NotImplementedError("Range-separated XC requires full ERIs or canonical native direct J/K.")
-    def _direct_builder() -> JKBuilder:
+    def _direct_builder(*, with_j=True) -> JKBuilder:
         if direct_basis is None:
             raise ValueError("jk_backend='direct' requires direct_basis.")
 
@@ -191,11 +192,14 @@ def _make_jk_builder(
                 if rsh is not None:
                     from .rsh import _direct_rsh_jk
                     j,k=_direct_rsh_jk(direct_basis,delta,rsh.to_range_separated_hybrid_coefficients(),
-                        screening_threshold=threshold,workers=cfg.direct_scf_workers,with_k=with_k)
+                        screening_threshold=threshold,workers=cfg.direct_scf_workers,
+                        with_j=with_j,with_k=with_k)
                 else:
                     j,k=direct_basis.get_jk(delta,screening_threshold=threshold,
-                                          workers=cfg.direct_scf_workers,with_k=with_k)
-                if density_last is not None:j,k=j+j_last,k+k_last
+                        workers=cfg.direct_scf_workers,with_j=with_j,with_k=with_k)
+                if density_last is not None:
+                    if with_j:j=j+j_last
+                    if with_k:k=k+k_last
                 return j,k if with_k else jnp.zeros_like(density)
             return _native_direct
         raise TypeError('Direct SCF requires a libcint AO provider; use the molecular direct() interface.')
@@ -260,6 +264,16 @@ def _make_jk_builder(
                 max_rank=cfg.df_max_rank,
             )
         factors = jnp.asarray(df_factors)
+        if cfg.only_dfj and with_k:
+            exact_exchange = _direct_builder(with_j=False)
+
+            def _df_j_direct_k(density, mo_coeff=None, mo_occ=None,
+                               density_last=None, j_last=None, k_last=None):
+                _, exchange = exact_exchange(density, mo_coeff, mo_occ,
+                    density_last, j_last, k_last)
+                return build_j_from_df(factors, density), exchange
+
+            return _df_j_direct_k
         if not with_k:
             def _df_j(
                 density: Array,
@@ -647,7 +661,7 @@ def _run_rks_iterations(
         density=density, mo_coeff=mo_coeff, mo_occ=mo_occ,
         mo_energy=mo_energy, raw_fock=raw_fock, j_mat=j_mat, k_mat=k_mat,
         refresh_on_convergence=(direct_basis is not None and eri is None
-                                and eri_pair_matrix is None and df_factors is None),
+                                and eri_pair_matrix is None),
         store_iterates=False,
     )
 
@@ -677,7 +691,8 @@ def _run_rks_from_integrals_shared(
 ) -> RKSResult:
     cfg = RKSConfig() if config is None else config
     rsh = validate_rsh_inputs(cfg.xc_spec, eri, eri_lr, dispersion_energy,
-                              jk_backend=cfg.jk_backend, direct_basis=direct_basis)
+        jk_backend="direct" if cfg.only_dfj and cfg.jk_backend == "df" else cfg.jk_backend,
+        direct_basis=direct_basis)
     parse_xc(local_xc_spec(cfg.xc_spec))
     xc_kind = xc_type(local_xc_spec(cfg.xc_spec))
 
@@ -785,7 +800,7 @@ def _run_rks_from_integrals_shared(
     ) = _run_rks_iterations(
         h=h, s=s, x=x, eri=eri_arr, eri_pair_matrix=eri_pair_arr,
         df_factors=df_factors,
-        direct_basis=(direct_basis if cfg.jk_backend == "direct" or
+        direct_basis=(direct_basis if cfg.jk_backend == "direct" or cfg.only_dfj or
                       (cfg.jk_backend == "full" and eri_arr is None and eri_pair_arr is None)
                       else None),
         ao=ao, ao_deriv1=ao_deriv1, weights=weights, grid_ao=grid_ao,

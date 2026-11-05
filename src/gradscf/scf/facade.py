@@ -386,6 +386,7 @@ class RKS(_BaseKS):
     df_tol: float = 1e-10
     df_max_rank: int | None = None
     auxbasis: str | None = None
+    only_dfj: bool = False
     direct_scf_tol: float = 0.0
     direct_scf_workers: int = 1
     compute_local_hfx_features: bool = False
@@ -406,6 +407,7 @@ class RKS(_BaseKS):
             df_tol=self.df_tol,
             df_max_rank=self.df_max_rank,
             auxbasis=self.auxbasis,
+            only_dfj=self.only_dfj,
             direct_scf_tol=self.direct_scf_tol,
             direct_scf_workers=self.direct_scf_workers,
             max_memory=self.max_memory,
@@ -414,9 +416,13 @@ class RKS(_BaseKS):
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
+        if self.only_dfj:
+            raise NotImplementedError("RI-J/direct-K response export is not implemented; SCF energies remain available.")
         with self._preparation_inputs(spec) as (spec, mol, init_guess):
             if self._scf_inputs is not None:
-                self._scf_inputs = complete_restricted_response_inputs(self._scf_inputs,spec,mol.basis)
+                self._scf_inputs = complete_restricted_response_inputs(
+                    self._scf_inputs, spec, mol.basis, require_grid=True,
+                    config=self._config(), grids_level=self.grids_level, max_l=self.max_l)
             reference = build_restricted_reference_from_facade(
                 spec,
                 **self._build_options(spec, mol, init_guess),
@@ -490,14 +496,16 @@ class RKS(_BaseKS):
 
         return stabilize_scf(self, **kwargs)
 
-    def density_fit(self, auxbasis: str | None = None) -> "RKS":
+    def density_fit(self, auxbasis: str | None = None, *, only_dfj: bool = False) -> "RKS":
         """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend = "df"
         self.auxbasis = auxbasis or 'def2-universal-jkfit'
+        self.only_dfj = bool(only_dfj)
         return self
 
     def direct_scf(self) -> "RKS":
         self.jk_backend = "direct"
+        self.only_dfj = False
         return self
 
 
@@ -522,6 +530,8 @@ class UKS(_BaseKS):
     conv_tol_grad: float = 1e-7
     jk_backend: Literal['full','df','direct'] = 'full'
     auxbasis: str | None = None
+    df_tol: float = 1e-10
+    only_dfj: bool = False
     direct_scf_tol: float = 0.0
     direct_scf_workers: int = 1
 
@@ -531,6 +541,8 @@ class UKS(_BaseKS):
         return _cache_signature((self.execution_device,self._response_device()))
 
     def _ensure_reference(self) -> Any:
+        if self.only_dfj:
+            raise NotImplementedError("RI-J/direct-K response export is not implemented; SCF energies remain available.")
         self._check_reference_source()
         if self.reference is None:
             raise RuntimeError('Solved UKS reference is missing; run kernel() again.')
@@ -551,6 +563,8 @@ class UKS(_BaseKS):
             level_shift=self.level_shift,
             jk_backend=self.jk_backend,
             auxbasis=self.auxbasis,
+            df_tol=self.df_tol,
+            only_dfj=self.only_dfj,
             direct_scf_tol=self.direct_scf_tol,
             direct_scf_workers=self.direct_scf_workers,
             max_memory=self.max_memory,
@@ -599,14 +613,16 @@ class UKS(_BaseKS):
 
         return stabilize_scf(self, **kwargs)
 
-    def density_fit(self, auxbasis: str | None = None) -> "UKS":
+    def density_fit(self, auxbasis: str | None = None, *, only_dfj: bool = False) -> "UKS":
         """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend='df'
         self.auxbasis=auxbasis or 'def2-universal-jkfit'
+        self.only_dfj = bool(only_dfj)
         return self
 
     def direct_scf(self) -> "UKS":
         self.jk_backend = "direct"
+        self.only_dfj = False
         return self
 
 
