@@ -4,11 +4,12 @@
 #include <memory>
 #include <string>
 
-static ffi::Future DirectJK(ffi::ThreadPool pool,
+static ffi::Future DirectJKImpl(ffi::ThreadPool pool,
     ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
     ffi::BufferR1<ffi::F64> env,ffi::BufferR3<ffi::F64> density,
     ffi::ResultBufferR4<ffi::F64> result,int32_t cart,double cutoff,int32_t requested_workers,
-    int32_t with_j,int32_t with_k,int64_t private_output_bytes) {
+    int32_t with_j,int32_t with_k,int64_t private_output_bytes,
+    const ffi::BufferR3<ffi::F64>* screen_density) {
   ffi::Promise promise;
   ffi::Future future(promise);
   try {
@@ -23,6 +24,29 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
       throw std::invalid_argument("Direct J/K shape mismatch");
     const double* d=density.typed_data();double* out=result->typed_data();const size_t nn=size_t(n)*n;
     for (size_t i=0;i<density.element_count();++i) if (!std::isfinite(d[i])) throw std::invalid_argument("Nonfinite density");
+    std::shared_ptr<std::vector<double>> density_bounds;
+    if (screen_density && cutoff>0) {
+      if (screen_density->dimensions()[0]<1 || screen_density->dimensions()[1]!=n || screen_density->dimensions()[2]!=n)
+        throw std::invalid_argument("Direct J/K screen reference shape mismatch");
+      const double* s=screen_density->typed_data();
+      for (size_t a=0;a<screen_density->element_count();++a)
+        if (!std::isfinite(s[a]) || s[a]<0) throw std::invalid_argument("Invalid screen reference magnitude");
+      density_bounds=std::make_shared<std::vector<double>>(size_t(tables->nbas)*tables->nbas,0.);
+      // Reference batches are independent of the payload batches (including
+      // real/imaginary splitting and density-transpose concatenation).
+      for (int i=0;i<tables->nbas;++i) for (int j=0;j<tables->nbas;++j)
+        for (int batch=0;batch<screen_density->dimensions()[0];++batch) {
+          double sum=0.;
+          for (int a=tables->ao[i];a<tables->ao[i+1];++a)
+            for (int b=tables->ao[j];b<tables->ao[j+1];++b) sum+=s[size_t(batch)*nn+size_t(a)*n+b];
+          double& bound=(*density_bounds)[size_t(i)*tables->nbas+j];
+          bound=std::max(bound,sum);
+        }
+      for (int i=0;i<tables->nbas;++i) for (int j=0;j<i;++j) {
+        double bound=std::max((*density_bounds)[size_t(i)*tables->nbas+j],(*density_bounds)[size_t(j)*tables->nbas+i]);
+        (*density_bounds)[size_t(i)*tables->nbas+j]=(*density_bounds)[size_t(j)*tables->nbas+i]=bound;
+      }
+    }
     const size_t size=result->element_count();
     const int row_workers=int(std::max<int64_t>(1,std::min<int64_t>(
         requested_workers,std::min<int64_t>(pool.num_threads(),tables->nbas))));
@@ -86,7 +110,7 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
               }
             }
           },shell_begin,shell_end,bounds.get(),optimizer->value,
-            private_outputs ? worker : 0,private_outputs ? workers : 1);
+            private_outputs ? worker : 0,private_outputs ? workers : 1,density_bounds.get());
         } catch(const std::exception& e) {
           (*errors)[worker]=e.what();
         }
@@ -112,9 +136,34 @@ static ffi::Future DirectJK(ffi::ThreadPool pool,
   return future;
 }
 
+static ffi::Future DirectJK(ffi::ThreadPool pool,
+    ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
+    ffi::BufferR1<ffi::F64> env,ffi::BufferR3<ffi::F64> density,
+    ffi::ResultBufferR4<ffi::F64> result,int32_t cart,double cutoff,int32_t workers,
+    int32_t with_j,int32_t with_k,int64_t private_output_bytes) {
+  return DirectJKImpl(pool,atoms,basis,env,density,result,cart,cutoff,workers,with_j,with_k,private_output_bytes,nullptr);
+}
+
+static ffi::Future DirectJKScreened(ffi::ThreadPool pool,
+    ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
+    ffi::BufferR1<ffi::F64> env,ffi::BufferR3<ffi::F64> density,ffi::BufferR3<ffi::F64> screen_density,
+    ffi::ResultBufferR4<ffi::F64> result,int32_t cart,double cutoff,int32_t workers,
+    int32_t with_j,int32_t with_k,int64_t private_output_bytes) {
+  return DirectJKImpl(pool,atoms,basis,env,density,result,cart,cutoff,workers,with_j,with_k,private_output_bytes,&screen_density);
+}
+
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKBudget(XLA_FFI_CallFrame*);
 XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKBudget,DirectJK,
     ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().Arg<ffi::BufferR2<ffi::S32>>().Arg<ffi::BufferR2<ffi::S32>>()
       .Arg<ffi::BufferR1<ffi::F64>>().Arg<ffi::BufferR3<ffi::F64>>().Ret<ffi::BufferR4<ffi::F64>>()
+      .Attr<int32_t>("cart").Attr<double>("cutoff").Attr<int32_t>("workers")
+      .Attr<int32_t>("with_j").Attr<int32_t>("with_k").Attr<int64_t>("private_output_bytes"));
+
+
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKScreened(XLA_FFI_CallFrame*);
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKScreened,DirectJKScreened,
+    ffi::Ffi::Bind().Ctx<ffi::ThreadPool>().Arg<ffi::BufferR2<ffi::S32>>().Arg<ffi::BufferR2<ffi::S32>>()
+      .Arg<ffi::BufferR1<ffi::F64>>().Arg<ffi::BufferR3<ffi::F64>>().Arg<ffi::BufferR3<ffi::F64>>()
+      .Ret<ffi::BufferR4<ffi::F64>>()
       .Attr<int32_t>("cart").Attr<double>("cutoff").Attr<int32_t>("workers")
       .Attr<int32_t>("with_j").Attr<int32_t>("with_k").Attr<int64_t>("private_output_bytes"));

@@ -79,7 +79,7 @@ def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes
     atoms = len(topology.nuclear_charges) + shells
     tables = (4*(6*atoms + 8*shells + shells+1)
               + 8*(20 + 3*atoms + total_primitive + total_coefficients))
-    bounds = 8*shells**2 if cutoff > 0 else 0
+    bounds = 16*shells**2 if cutoff > 0 else 0  # Schwarz plus optional density bounds
     # Coordinate VJPs reduce one ENV-sized vector per worker. Private value
     # outputs have a separate native cap and are absent for one worker.
     nao = sum(c*(f if topology.cart else 2*l+1)
@@ -124,11 +124,13 @@ class NativeDirectBasis:
         return self.plan.topology.nao
 
     def get_jk(self, density, *, screening_threshold=0.0, workers=1,
-               with_j=True, with_k=True, omega=0.):
+               with_j=True, with_k=True, omega=0., screen_density=None):
         from ...plan import _validate_omega
 
         omega = _validate_omega(omega)
         range_options = {"omega": omega} if omega else {}
+        if screen_density is not None:
+            range_options["screen_density"] = screen_density
         return self.plan.get_jk(
             self.parameters, density, screening_threshold=screening_threshold,
             workers=workers, with_j=with_j, with_k=with_k,
@@ -216,7 +218,7 @@ class ProjectedNativeDirectBasis:
         return self.transform.shape[1]
 
     def get_jk(self, density, *, screening_threshold=0.0, workers=1,
-               with_j=True, with_k=True, omega=0.):
+               with_j=True, with_k=True, omega=0., screen_density=None):
         from ...plan import _validate_omega
 
         omega = _validate_omega(omega)
@@ -227,6 +229,9 @@ class ProjectedNativeDirectBasis:
         primitive_density = jnp.einsum(
             "pi,...ij,qj->...pq", transform, density, transform
         )
+        if screen_density is not None:
+            range_options["screen_density"] = jnp.einsum(
+                "pi,...ij,qj->...pq", transform, screen_density, transform)
         primitive_j, primitive_k = self.primitive_basis.get_jk(
             primitive_density,
             screening_threshold=screening_threshold,
@@ -279,7 +284,7 @@ def _zero_basis_tangent(message="Direct J/K supports density AD only; basis/geom
 
 
 @lru_cache(maxsize=32)
-def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes):
+def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes, screened=False):
     from .autodiff.common import register_cpu_product
 
     atoms = np.asarray(atoms_key, dtype=np.int32)
@@ -287,10 +292,13 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
     primitive = core.Primitive("gradscf_direct_jk")
     nops = int(with_j) + int(with_k)
 
-    def apply(env, density):
-        register_integrals()
+    def apply(env, density, *reference):
+        handle = register_integrals()
+        if screened and not hasattr(handle, "GradSCFDirectJKScreened"):
+            raise RuntimeError("Density-screened direct J/K requires rebuilding with "
+                               "python -m gradscf.integrals._native.build and restarting the process")
         call = jax.ffi.ffi_call(
-            "gradscf_direct_jk_cpu_v2",
+            "gradscf_direct_jk_screened_cpu_v1" if screened else "gradscf_direct_jk_cpu_v2",
             jax.ShapeDtypeStruct((nops, *density.shape), jnp.float64),
             vmap_method="sequential",
         )
@@ -299,6 +307,7 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
             jnp.asarray(basis),
             env,
             density,
+            *reference,
             cart=np.int32(cart),
             cutoff=np.float64(cutoff),
             workers=np.int32(workers),
@@ -309,32 +318,32 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
 
     # Keep the shell engine on CPU when response arrays live on CUDA. Only
     # bounded density/J/K batches cross devices, never an AO ERI tensor.
-    register_cpu_product(primitive, apply, lambda env, d: (nops, *d.shape))
+    register_cpu_product(primitive, apply, lambda env, d, *s: (nops, *d.shape))
 
     def jvp(primals, tangents):
-        env, d = primals
-        de, dd = tangents
+        env, d, *reference = primals
+        de, dd, *_ = tangents  # The discrete reference indicator has a.e. zero derivative.
         basis_zero = None if isinstance(de, ad.Zero) else _zero_basis_tangent().bind(de)
-        value = primitive.bind(env, d)
+        value = primitive.bind(env, d, *reference)
         tangent = (
             ad.Zero(jax.core.ShapedArray(value.shape, value.dtype))
             if isinstance(dd, ad.Zero)
-            else primitive.bind(env, dd)
+            else primitive.bind(env, dd, *reference)
         )
         if basis_zero is not None:
             tangent = (jnp.zeros_like(value) if isinstance(tangent, ad.Zero) else tangent) + basis_zero
         return value, tangent
 
-    def transpose(cot, env, d):
-        if ad.is_undefined_primal(env):
+    def transpose(cot, env, d, *reference):
+        if ad.is_undefined_primal(env) or any(ad.is_undefined_primal(s) for s in reference):
             raise NotImplementedError(
                 "Direct J/K basis/geometry VJP is not implemented."
             )
         if not ad.is_undefined_primal(d):
-            return None, None
-        if isinstance(cot, ad.Zero):
-            return None, ad.Zero(d.aval)
-        return None, _density_transpose(lambda d: primitive.bind(env, d), cot)
+            return (None, None, *([None] * len(reference)))
+        result = (ad.Zero(d.aval) if isinstance(cot, ad.Zero) else
+                  _density_transpose(lambda d: primitive.bind(env, d, *reference), cot))
+        return (None, result, *([None] * len(reference)))
 
     def batch(args, axes):
         size = next(x.shape[a] for x, a in zip(args, axes) if a is not None)
@@ -348,14 +357,14 @@ def _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k
 
 
 @lru_cache(maxsize=32)
-def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes):
+def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes, screened=False):
     from functools import partial
     from .autodiff.common import batch_product
     from .autodiff.direct_jk import geometry_products
 
     atoms = np.asarray(atoms_key, dtype=np.int32)
     offsets = atoms[:, 1, None] + np.arange(3)[None, :]
-    operator = _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes)
+    operator = _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes, screened)
     geometry = geometry_products(atoms_key, basis_key, cart, with_j, with_k, workers=workers)
 
     def pack(env, coordinates):
@@ -363,18 +372,18 @@ def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, 
 
     value = core.Primitive("gradscf_direct_jk_coordinates")
 
-    def apply(env, coordinates, density):
-        return operator.bind(pack(env, coordinates), density)
+    def apply(env, coordinates, density, *reference):
+        return operator.bind(pack(env, coordinates), density, *reference)
 
     value.def_impl(apply)
-    value.def_abstract_eval(lambda env, coordinates, density:
+    value.def_abstract_eval(lambda env, coordinates, density, *s:
         jax.core.ShapedArray((int(with_j)+int(with_k), *density.shape), jnp.float64))
     mlir.register_lowering(value, mlir.lower_fun(apply, multiple_results=False))
 
     def value_jvp(primals, tangents):
-        env, coordinates, density = primals
-        denv, dcoordinates, ddensity = tangents
-        primal = value.bind(env, coordinates, density)
+        env, coordinates, density, *reference = primals
+        denv, dcoordinates, ddensity, *_ = tangents
+        primal = value.bind(env, coordinates, density, *reference)
         terms = []
         if not isinstance(denv, ad.Zero):
             zero = _zero_basis_tangent(
@@ -383,7 +392,7 @@ def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, 
         if not isinstance(ddensity, ad.Zero):
             # The recursive value retains the geometry response of a density
             # tangent under mixed and higher differentiation.
-            terms.append(value.bind(env, coordinates, ddensity))
+            terms.append(value.bind(env, coordinates, ddensity, *reference))
         if not isinstance(dcoordinates, ad.Zero):
             direction = pack(jnp.zeros_like(env), dcoordinates)
             if cutoff > 0:
@@ -394,17 +403,16 @@ def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, 
                 terms.append(geometry.bind(pack(env, coordinates), density, direction))
         return primal, sum(terms) if terms else ad.Zero.from_primal_value(primal)
 
-    def transpose(cotangent, env, coordinates, density):
-        if ad.is_undefined_primal(env) or ad.is_undefined_primal(coordinates):
+    def transpose(cotangent, env, coordinates, density, *reference):
+        if (ad.is_undefined_primal(env) or ad.is_undefined_primal(coordinates)
+                or any(ad.is_undefined_primal(s) for s in reference)):
             raise NotImplementedError("A direct J/K density transpose requires its primal basis and coordinates")
         if not ad.is_undefined_primal(density):
-            return None, None, None
-        if isinstance(cotangent, ad.Zero):
-            return None, None, ad.Zero(density.aval)
-        # Keep coordinates explicit in the transposed action. Returning a raw
-        # ENV action here would lose geometry response of a density VJP.
-        return None, None, _density_transpose(
-            lambda d: value.bind(env, coordinates, d), cotangent)
+            return (None, None, None, *([None] * len(reference)))
+        # Keep coordinates and the primal reference explicit in the transpose.
+        result = (ad.Zero(density.aval) if isinstance(cotangent, ad.Zero) else
+                  _density_transpose(lambda d: value.bind(env, coordinates, d, *reference), cotangent))
+        return (None, None, result, *([None] * len(reference)))
 
     ad.primitive_jvps[value] = value_jvp
     ad.primitive_transposes[value] = transpose
@@ -427,12 +435,17 @@ def _validate_selection(with_j, with_k):
 
 
 def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
-              with_j=True, with_k=True, coordinates=None, private_output_bytes=None):
+              with_j=True, with_k=True, coordinates=None, private_output_bytes=None, screen_density=None):
     """Contract J/K; IntegralPlan supplies coordinates separately for geometry AD.
 
     A raw packed ENV remains a fixed-basis input. Separating fixed ENV and
     coordinate leaves prevents unsupported exponent/coefficient VJPs from
-    being silently returned as zeros.
+    being silently returned as zeros. An explicit screen_density selects a
+    canonical quartet subset using shell-pair L1 bounds (max over reference
+    batches and transpose), independently of the live density payload. This
+    local contribution bound is not a total Fock error bound. Its indicator
+    derivative is zero almost everywhere; density JVP/VJP use the primal
+    reference. None or cutoff=0 retains the original linear operator/ABI.
     """
     _validate_selection(with_j, with_k)
     if isinstance(workers, bool) or not isinstance(workers, Integral) or workers < 1:
@@ -442,6 +455,13 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
     n = d.shape[-1]
     if d.shape[-2:] != (n, n) or d.dtype not in (jnp.float64, jnp.complex128):
         raise ValueError("Direct J/K requires (...,n,n) float64/complex128 density.")
+    reference = ()
+    if screen_density is not None:
+        s = jnp.asarray(screen_density)
+        if s.ndim < 2 or s.shape[-2:] != (n, n) or s.dtype not in (jnp.float64, jnp.complex128):
+            raise ValueError("screen_density requires (...,n,n) float64/complex128 reference.")
+        if float(cutoff) > 0:
+            reference = (jnp.abs(s).reshape(-1, n, n),)
     env = jnp.asarray(env)
     if env.dtype != jnp.float64:
         raise ValueError("Direct J/K requires float64 environment.")
@@ -454,7 +474,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
         float(cutoff),
         int(workers),
         bool(with_j), bool(with_k),
-        private_output_bytes,
+        private_output_bytes, bool(reference),
     )
     flat = d.reshape(-1, n, n)
     count = len(flat)
@@ -462,7 +482,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
         jnp.concatenate((flat.real, flat.imag), axis=0) if jnp.iscomplexobj(d) else flat
     )
     if coordinates is None:
-        out = operator.bind(env, real)
+        out = operator.bind(env, real, *reference)
     else:
         coordinates = jnp.asarray(coordinates, dtype=env.dtype)
         if coordinates.shape != (len(atm), 3):
@@ -470,7 +490,7 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
         out = _direct_geometry_value(
             tuple(map(tuple, np.asarray(atm).tolist())),
             tuple(map(tuple, np.asarray(bas).tolist())), bool(cart), float(cutoff),
-            int(workers), bool(with_j), bool(with_k), private_output_bytes)(env, coordinates, real)
+            int(workers), bool(with_j), bool(with_k), private_output_bytes, bool(reference))(env, coordinates, real, *reference)
     if jnp.iscomplexobj(d):
         out = out[:, :count] + 1j * out[:, count:]
     out = out.reshape(int(with_j) + int(with_k), *d.shape)
@@ -577,7 +597,7 @@ def packed_jk(eri, density, *, with_j=True, with_k=True, max_memory=None):
 
 
 def _selected_jk(provider, density, *, with_j=True, with_k=True,
-                 screening_threshold=0., workers=1, omega=0.):
+                 screening_threshold=0., workers=1, omega=0., screen_density=None):
     """Select native operators while preserving legacy provider signatures."""
     from ...plan import _validate_omega
 
@@ -585,9 +605,13 @@ def _selected_jk(provider, density, *, with_j=True, with_k=True,
     omega = _validate_omega(omega)
     if type(provider) in (NativeDirectBasis, ProjectedNativeDirectBasis):
         range_options = {"omega": omega} if omega else {}
+        if screen_density is not None:
+            range_options["screen_density"] = screen_density
         return provider.get_jk(density, with_j=with_j, with_k=with_k,
                                screening_threshold=screening_threshold, workers=workers,
                                **range_options)
+    if screen_density is not None:
+        raise NotImplementedError("screen_density requires a canonical native J/K provider.")
     if omega:
         raise NotImplementedError("A nonzero omega requires a native long-range J/K provider.")
     j_mat, k_mat = provider.get_jk(density)

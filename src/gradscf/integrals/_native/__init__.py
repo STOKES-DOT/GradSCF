@@ -66,6 +66,10 @@ def register_integrals():
                     "gradscf_eri_slice_coefficient_hessian_vjp_cpu_v1": "GradSCFERISliceCoefficientHessianVJP",
                     "gradscf_eri_slice_exponent_jvp_cpu_v1": "GradSCFERISliceExponentJVP",
                     "gradscf_eri_slice_exponent_vjp_cpu_v1": "GradSCFERISliceExponentVJP"})
+    # The optional operand has a separate ABI. Old libraries still serve the
+    # default operator; an explicit reference requires a rebuild at its call.
+    if hasattr(handle, "GradSCFDirectJKScreened"):
+        targets["gradscf_direct_jk_screened_cpu_v1"] = "GradSCFDirectJKScreened"
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
             raise RuntimeError(f"The libcint library is stale (missing {symbol}); rebuild with "

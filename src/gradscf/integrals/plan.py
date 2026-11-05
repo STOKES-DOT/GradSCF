@@ -47,7 +47,7 @@ class IntegralPlan:
             separate_exponents=separate_exponents)
 
     def get_jk(self, parameters, density, *, screening_threshold=0., workers=1,
-               with_j=True, with_k=True, omega=0., private_output_bytes=None):
+               with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None):
         """Native shell-direct J/K with density and coordinate response.
 
         Coordinate AD requires zero screening cutoff. Numerical exponents
@@ -67,7 +67,7 @@ class IntegralPlan:
         return direct_jk(atm,bas,env,density,cart=self.topology.cart,
                          cutoff=screening_threshold,workers=workers,
                          with_j=with_j,with_k=with_k,coordinates=coordinates,
-                         private_output_bytes=private_output_bytes)
+                         private_output_bytes=private_output_bytes, screen_density=screen_density)
 
     def evaluate(self, operator, parameters, *, origin=None, ecps=None, aosym='s1', omega=0.0,zeta=None,
                  shell_slice=None):

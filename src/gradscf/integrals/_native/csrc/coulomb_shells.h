@@ -83,7 +83,8 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
                        int shell_begin=0, int shell_end=-1,
                        const std::vector<double>* prepared_bounds=nullptr,
                        CINTOpt* prepared_optimizer=nullptr,
-                       int i_start=0, int i_stride=1) {
+                       int i_start=0, int i_stride=1,
+                       const std::vector<double>* density_bounds=nullptr) {
   if (!std::isfinite(cutoff) || cutoff<0) throw std::invalid_argument("Invalid Schwarz cutoff");
   if (shell_end<0) shell_end=t.nbas;
   if (shell_begin<0 || shell_begin>=shell_end || shell_end>t.nbas)
@@ -97,13 +98,18 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
   const auto& bounds=prepared_bounds ? *prepared_bounds : owned_bounds;
   if (cutoff>0 && bounds.size()!=size_t(t.nbas)*t.nbas)
     throw std::invalid_argument("Schwarz bounds do not match shell dimensions");
+  if (density_bounds && density_bounds->size()!=size_t(t.nbas)*t.nbas)
+    throw std::invalid_argument("Density bounds do not match shell dimensions");
   const double largest_bound=cutoff>0 ? *std::max_element(bounds.begin(),bounds.end()) : 0.;
+  const double largest_density=density_bounds ? *std::max_element(density_bounds->begin(),density_bounds->end()) : 0.;
   ERICacheSizes sizes;
   auto owns=[&](int shell) {return shell_begin<=shell && shell<shell_end;};
   for (int i=shell_begin+i_start;i<t.nbas;i+=i_stride) for (int j=0;j<=i;++j) {
     // This upper bound rejects only pairs whose every inner quartet already
     // fails the same basis-only Schwarz test used below.
     if (cutoff>0 && bounds[size_t(i)*t.nbas+j]*largest_bound<cutoff) continue;
+    // A safe upper bound for every inner density-mask decision below.
+    if (cutoff>0 && density_bounds && 8*bounds[size_t(i)*t.nbas+j]*largest_bound*largest_density<cutoff) continue;
     const bool outer_owned=owns(i) || owns(j);
     // Visit a quartet only if at least one of its four output shells is
     // owned. The retained i,j,k,l order is the original lexicographic order.
@@ -113,6 +119,16 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
       const int last=owned ? k+1:std::min(k+1,shell_end);
       for (int l=first;l<last;++l) {
         if (cutoff>0 && bounds[size_t(i)*t.nbas+j]*bounds[size_t(k)*t.nbas+l]<cutoff) continue;
+        if (cutoff>0 && density_bounds) {
+          const auto& s=*density_bounds;
+          const double magnitude=std::max({s[size_t(i)*t.nbas+j],s[size_t(k)*t.nbas+l],
+              s[size_t(i)*t.nbas+k],s[size_t(i)*t.nbas+l],
+              s[size_t(j)*t.nbas+k],s[size_t(j)*t.nbas+l]});
+          // One canonical-quartet decision retains or drops every symmetry
+          // copy, independent of J/K selection. This is a local contribution
+          // bound, not a bound on the accumulated Fock error.
+          if (8*bounds[size_t(i)*t.nbas+j]*bounds[size_t(k)*t.nbas+l]*magnitude<cutoff) continue;
+        }
         const int di=t.ao[i+1]-t.ao[i],dj=t.ao[j+1]-t.ao[j];
         const int dk=t.ao[k+1]-t.ao[k],dl=t.ao[l+1]-t.ao[l];
         int sh[]={i,j,k,l};
