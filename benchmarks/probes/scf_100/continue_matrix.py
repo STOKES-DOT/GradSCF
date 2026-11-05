@@ -36,14 +36,24 @@ def configurations(root):
     return rows
 
 
-def previous_attempt(root, case, cfg):
-    output = root/'results/matrix-v1'
+def previous_attempt(root, case, cfg, output_prefix='matrix-v1', reuse_legacy=True):
+    output = root/'results'/output_prefix
     paths = [output/case, output/(case+'.process.json'), output/(case+'.log')]
-    if cfg['method'] == 'RKS' and cfg['xc'] == 'pbe':
+    if reuse_legacy and cfg['method'] == 'RKS' and cfg['xc'] == 'pbe':
         tag = 'candidate-grid-cache-v3' if cfg['engine'] == 'gradscf' else 'reference-certified-v1'
         paths.append(root/'results'/tag/(case+'.process.json') if cfg['representation'] == 'df'
                      else root/'results/no-ri-pair'/(tag+'-'+cfg['engine']+'.process.json'))
     return next((path for path in paths if path.exists()), None)
+
+
+def source_manifest(sources):
+    records = {}
+    for engine, source in sorted(sources.items()):
+        files = {str(path.relative_to(source)):hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in sorted((source/'src').rglob('*')) if path.is_file()}
+        records[engine] = dict(path=str(source), files_sha256=files,
+            tree_sha256=hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest())
+    return dict(scope='All regular source/src content, including native shared libraries', sources=records)
 
 
 def lease_seconds(job):
@@ -82,11 +92,25 @@ def main():
     parser.add_argument('--job', required=True)
     parser.add_argument('--wait-pid', type=int, default=1884391)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--source-tree', type=Path, help='Explicit GradSCF source; relative paths are under root')
+    parser.add_argument('--output-prefix', default='matrix-v1', help='Independent directory name under root/results')
+    parser.add_argument('--optimized-order', action='store_true', help='Only 30 Grad rows; six direct method representatives first')
     parser.add_argument('--direct-first', action='store_true', help='2026-11-05 user execution-order overlay; frozen inputs and within-group order unchanged')
     args = parser.parse_args()
     root = args.root.expanduser().absolute()  # Preserve logical homefile/PWD; never resolve symlinks.
     rows = configurations(root)
-    if args.direct_first:
+    source = (args.source_tree or Path('candidate-1a575d18')).expanduser()
+    candidate = source.absolute() if source.is_absolute() else root/source
+    if not args.output_prefix or Path(args.output_prefix).name != args.output_prefix or args.output_prefix in ('.', '..'):
+        parser.error('output-prefix must be one directory name')
+    legacy = args.output_prefix == 'matrix-v1' and candidate == root/'candidate-1a575d18'
+    if not legacy and args.output_prefix == 'matrix-v1':
+        parser.error('A new source requires a distinct output-prefix')
+    if args.optimized_order:
+        rows = [row for row in rows if row[1]['engine'] == 'gradscf']
+        priority = {key:index for index,key in enumerate((('RHF','hf'),('RKS','pbe'),('UHF','hf'),('GHF','hf'),('UKS','pbe'),('GKS','pbe')))}
+        rows.sort(key=lambda row: priority.get((row[1]['method'],row[1]['xc']),6) if row[1]['representation']=='direct' else 6)
+    elif args.direct_first:
         rows.sort(key=lambda row: row[1]['representation'] != 'direct')
     harness = root/'harness-reference-v1'
     worker, guard = (harness/'benchmarks/probes/scf_100/worker.py',
@@ -94,18 +118,29 @@ def main():
     python = root.parent/'gradscf-libcint-nnao-20261026/env-compare/bin/python'
     if not all(path.is_file() for path in (worker, guard, python)):
         raise FileNotFoundError('Missing frozen harness or existing comparison Python')
-    if not all((root/name/'src').is_dir() for name in ('baseline', 'candidate-1a575d18')):
+    sources = {engine:root/'baseline' if engine=='pyscf' else candidate for engine in {row[1]['engine'] for row in rows}}
+    if not all((source/'src').is_dir() for source in sources.values()):
         raise FileNotFoundError('Missing baseline/candidate source')
     if args.dry_run:
         for case, cfg, _, _ in rows:
-            prior = previous_attempt(root, case, cfg)
+            prior = previous_attempt(root, case, cfg, args.output_prefix, legacy)
             print(json.dumps(dict(case_id=case, status='skip_previous_attempt' if prior else 'would_run',
-                prior_record=str(prior) if prior else None, cap_seconds=cfg['process_limit_seconds'])))
+                prior_record=str(prior) if prior else None, cap_seconds=cfg['process_limit_seconds'],
+                source_tree=str(sources[cfg['engine']]), output_prefix=args.output_prefix)))
         return
-    output = root/'results/matrix-v1'
+    output = root/'results'/args.output_prefix
     output.mkdir(parents=True, exist_ok=True)
     lock = (output/'controller.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    manifest = source_manifest(sources)
+    manifest['input_manifest_sha256'] = hashlib.sha256((root/'baseline/reports/scf_100/20261105-40a569bf/plan-v2/input_manifest.json').read_bytes()).hexdigest()
+    manifest_path = output/'source_manifest.json'
+    if manifest_path.exists():
+        if read(manifest_path) != manifest: raise RuntimeError('Source or input manifest changed; use a new output-prefix')
+    else:
+        if not legacy and any(previous_attempt(root, case, cfg, args.output_prefix, False) for case,cfg,_,_ in rows):
+            raise RuntimeError('Existing attempts have no source manifest; use a new output-prefix')
+        with manifest_path.open('x') as stream: stream.write(json.dumps(manifest,indent=2)+'\n')
     os.chdir(root)
     os.environ['PWD'] = str(root)
     def journal(case, status, **fields):
@@ -116,7 +151,7 @@ def main():
         print(json.dumps(row), flush=True)
     wait_predecessor(root, args.wait_pid)
     for case, cfg, config, expected_sha in rows:
-        prior = previous_attempt(root, case, cfg)
+        prior = previous_attempt(root, case, cfg, args.output_prefix, legacy)
         if prior:
             journal(case, 'skip_previous_attempt', prior_record=str(prior))
             continue
@@ -125,12 +160,12 @@ def main():
         if remaining <= cap+180:
             journal(case, 'not_run_resource_boundary', remaining_seconds=remaining, required_seconds=cap+180)
             continue
-        source = root/('baseline' if cfg['engine'] == 'pyscf' else 'candidate-1a575d18')
+        source = sources[cfg['engine']]
         process, log = output/(case+'.process.json'), output/(case+'.log')
         if hashlib.sha256(config.read_bytes()).hexdigest() != expected_sha:
             raise ValueError('Configuration changed after validation: '+case)
         env = dict(os.environ, PWD=str(harness), PYTHONPATH=str(source/'src')+':'+str(harness),
-                   GRADSCF_SOURCE_SNAPSHOT=source.name, PYTHONUNBUFFERED='1')
+                   GRADSCF_SOURCE_SNAPSHOT=source.name, PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1')
         command = ['srun', '--jobid='+args.job, '--immediate=60', '--overlap', '--gres=none', '--mem=240G',
             '-c64', '-N1', '-n1', '--job-name=scf100-'+case, '--chdir='+str(harness), str(python),
             str(guard), '--seconds', str(cap), '--rss-bytes', str(RSS_LIMIT), str(process), '--',

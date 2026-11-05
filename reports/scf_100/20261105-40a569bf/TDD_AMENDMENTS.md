@@ -172,3 +172,32 @@ while the remote controller logged launch at 18:04:39 +08:00. Therefore this
 written file is not claimed as a pre-execution registration. The hypothesis,
 adapter and unchanged gates were already specified; the initial JSON and
 revision-9 lock are retained, and the corrected record states both timestamps.
+
+
+## 2026-11-05: implementation contract audit (revision 14, after execution)
+
+This is a post-execution audit, not a preregistration. Revision 13 is retained
+byte-for-byte. Four new test files record the shared semilocal algebra, explicit
+native density-reference mask, reliable SCF rebase and the bound-XC finalization
+regression. RED/GREEN chronology, failures and the combined-process abort remain
+in `implementation_validation.json`; source versions are not collapsed.
+
+The old false-incremental energy fixture retains its full/fresh energies and
+all original thresholds. Two main cycles test rejection of the first fresh
+energy difference; three cycles test successful rebase when consecutive fresh
+energies agree. Fresh-Fock and nonfinite failures must still reject. No fourth
+incremental-versus-fresh gate, extra main iteration or relaxed tolerance was added.
+
+T3.2 retains its original all-HF grid-free acceptance target, unchanged from
+revision 13. RHF/GHF are grid-free; UHF still supplies eager-grid inputs needed
+by the existing neural initializer. This is a known remaining input/initializer
+migration, so T3.2 is partial/open rather than closed by narrowing its goal.
+Existing supported neural37/geometry8 passes belong to implementation-v2, while
+core46/existing89 belong to final-v3. The parent precision-layer failure is
+separately reproduced and remains open.
+
+Controller/source/output selection and the six-method fresh-density reference
+adapter (preserving each original hermi/default argument) are hashed here after
+their metadata checks. The old controller and original PySCF failures remain
+archived; a distinct optimized source/output carries the final matrix. All sixty
+physical configuration files and scientific thresholds remain byte-identical.

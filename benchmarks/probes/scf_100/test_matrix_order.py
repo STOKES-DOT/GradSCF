@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -38,9 +39,9 @@ class MatrixOrder(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def dry_run(self, direct_first=False):
+    def dry_run(self, direct_first=False, extra=()):
         args = [sys.executable, '-S', str(SCRIPT), '--root', str(self.root), '--job', 'metadata', '--dry-run']
-        result = subprocess.run(args+(['--direct-first'] if direct_first else []),
+        result = subprocess.run(args+(['--direct-first'] if direct_first else [])+list(extra),
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         return [json.loads(line) for line in result.stdout.splitlines()]
@@ -86,6 +87,71 @@ class MatrixOrder(unittest.TestCase):
                 if row['case_id'] in skipped:
                     self.assertTrue(Path(row['prior_record']).exists())
         self.assertEqual(fingerprints(self.root), before)
+
+
+    def test_optimized_order_selects_thirty_grad_rows_with_stable_six_first(self):
+        source = self.root/'candidate-optimized-v1'
+        self.record(source/'src/gradscf/solver.py', '# new source fixture')
+        rows = self.dry_run(extra=('--source-tree', source.name, '--output-prefix',
+                                   'optimized-v1', '--optimized-order'))
+        grad = [case for case in self.order if self.cfg[case]['engine']=='gradscf']
+        keys = (('RHF', 'hf'), ('RKS', 'pbe'), ('UHF', 'hf'),
+                ('GHF', 'hf'), ('UKS', 'pbe'), ('GKS', 'pbe'))
+        first = [next(case for case in grad if self.cfg[case]['representation']=='direct'
+                      and (self.cfg[case]['method'], self.cfg[case]['xc'])==key) for key in keys]
+        self.assertEqual(len(rows), 30)
+        self.assertEqual([row['case_id'] for row in rows], first+[case for case in grad if case not in first])
+        for row in rows:
+            self.assertEqual(row['source_tree'], str(source))
+            self.assertEqual(row['output_prefix'], 'optimized-v1')
+            self.assertEqual(row['cap_seconds'], self.cfg[row['case_id']]['process_limit_seconds'])
+
+    def test_optimized_dry_run_isolates_prefix_without_writing_or_changing_configs(self):
+        source = self.root/'candidate-optimized-v1'
+        self.record(source/'src/gradscf/solver.py', '# new source fixture')
+        grad = [case for case in self.order if self.cfg[case]['engine']=='gradscf']
+        for case in grad:
+            self.record(self.root/'results/matrix-v1'/(case+'.process.json'))
+            self.record(self.root/'results/candidate-grid-cache-v3'/(case+'.process.json'))
+        self.record(self.root/'results/no-ri-pair/candidate-grid-cache-v3-gradscf.process.json')
+        own = self.root/'results/optimized-v1'/(grad[-1]+'.log')
+        self.record(own, 'only this prefix counts')
+        before = fingerprints(self.root)
+        paths_before = {str(p.relative_to(self.root)) for p in self.root.rglob('*')}
+        source_plan_before = fingerprints(ROOT/PLAN)
+        rows = self.dry_run(extra=('--source-tree', str(source), '--output-prefix',
+                                   'optimized-v1', '--optimized-order'))
+        self.assertEqual({r['case_id'] for r in rows if r['status']=='skip_previous_attempt'}, {grad[-1]})
+        self.assertEqual({r['prior_record'] for r in rows if r['prior_record']}, {str(own)})
+        self.assertTrue(all(r['status']=='would_run' for r in rows if r['case_id']!=grad[-1]))
+        manifest = json.loads((self.plan/'input_manifest.json').read_text())['config_file_sha256']
+        actual = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (self.plan/'configs').glob('*.json')}
+        self.assertEqual(len(actual), 60)
+        self.assertEqual(actual, manifest)
+        self.assertEqual(fingerprints(self.root), before)
+        self.assertEqual({str(p.relative_to(self.root)) for p in self.root.rglob('*')}, paths_before)
+        self.assertEqual(fingerprints(ROOT/PLAN), source_plan_before)
+
+    def test_source_manifest_hashes_python_and_native_shared_library_changes(self):
+        source = self.root/'candidate-optimized-v1'
+        python = source/'src/gradscf/solver.py'
+        native = source/'src/gradscf/_native/libintegrals.so'
+        self.record(python, '# source version one')
+        self.record(native, 'native fixture version one')
+        source_manifest = runpy.run_path(str(SCRIPT))['source_manifest']
+        first = source_manifest({'gradscf': source})
+        files = first['sources']['gradscf']['files_sha256']
+        self.assertEqual(set(files), {'src/gradscf/solver.py', 'src/gradscf/_native/libintegrals.so'})
+        self.assertEqual(files['src/gradscf/_native/libintegrals.so'], hashlib.sha256(native.read_bytes()).hexdigest())
+        self.assertEqual(source_manifest({'gradscf': source}), first)
+        self.record(python, '# source version two')
+        second = source_manifest({'gradscf': source})
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first['sources']['gradscf']['tree_sha256'], second['sources']['gradscf']['tree_sha256'])
+        self.record(native, 'native fixture version two')
+        third = source_manifest({'gradscf': source})
+        self.assertNotEqual(second, third)
+        self.assertNotEqual(second['sources']['gradscf']['tree_sha256'], third['sources']['gradscf']['tree_sha256'])
 
 
 if __name__ == '__main__':

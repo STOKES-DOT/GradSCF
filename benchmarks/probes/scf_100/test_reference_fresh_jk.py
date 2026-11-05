@@ -103,5 +103,61 @@ class FreshJKContract(unittest.TestCase):
             self.assertEqual((output/'runtime.json').read_bytes(), before)
 
 
+    def test_original_hermi_default_and_other_arguments_survive_all_call_styles(self):
+        module = adapter()
+        for default in (0, 1):
+            for style in ('omitted', 'positional', 'keyword'):
+                with self.subTest(default=default, style=style):
+                    class MF(FakeMF):
+                        def get_veff(self, mol=None, dm=None, dm_last=0, vhf_last=0, hermi=default, *, marker='untouched'):
+                            self.calls.append((mol, dm, dm_last, vhf_last, hermi, marker))
+                            return 'original-result'
+                    mf = MF()
+                    def run(current, *args, **kwargs):
+                        self.assertEqual(inspect.signature(current.get_veff).parameters['hermi'].default, default)
+                        if style == 'omitted': current.get_veff(dm='D', dm_last='old', vhf_last='old')
+                        elif style == 'positional': current.get_veff('M', 'D', 'old', 'old', 2, marker='custom')
+                        else: current.get_veff(mol='M', dm='D', dm_last='old', vhf_last='old', hermi=2, marker='custom')
+                        return {}
+                    info = module.fresh_reference(run, mf, [], max_cycle=200, finite_state=lambda current: True)
+                    expected = (None, 'D', 0, 0, default, 'untouched') if style == 'omitted' else ('M', 'D', 0, 0, 2, 'custom')
+                    self.assertEqual(mf.calls, [expected])
+                    self.assertEqual(info['reference_get_veff_defaults']['hermi'], default)
+                    self.assertEqual(info['reference_get_veff_defaults']['marker'], 'untouched')
+
+    def test_six_direct_method_parsers_record_actual_method_and_defaults(self):
+        module = adapter()
+        for method in ('RHF', 'UHF', 'GHF', 'RKS', 'UKS', 'GKS'):
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as temporary:
+                config, output = Path(temporary)/'config.json', Path(temporary)/'output'
+                config.write_text(json.dumps(dict(engine='pyscf', method=method, representation='direct')))
+                worker = SimpleNamespace(run_reference=lambda *args, **kwargs: {'reference_accepted':True})
+                results = []
+                def main():
+                    output.mkdir()
+                    results.append(worker.run_reference(FakeMF(), [], max_cycle=200, finite_state=lambda current: True))
+                    (output/'runtime.json').write_text(json.dumps(dict(probe_sha256='worker-original')))
+                    return 0
+                worker.main = main
+                with patch.object(sys, 'argv', ['adapter', str(config), str(output)]):
+                    self.assertEqual(module.main(worker), 0)
+                runtime = json.loads((output/'runtime.json').read_text())
+                self.assertEqual(results[0]['reference_jk_method'], method)
+                self.assertEqual(runtime['reference_jk_method'], method)
+                self.assertEqual(runtime['reference_get_veff_defaults']['hermi'], 1)
+                self.assertEqual(runtime['probe_sha256'], 'worker-original')
+
+    def test_non_direct_or_unknown_method_is_rejected_without_worker_execution(self):
+        module = adapter()
+        for engine, method, representation in [('gradscf','RHF','direct'),('pyscf','ROHF','direct'),('pyscf','UKS','df')]:
+            with self.subTest(engine=engine, method=method, representation=representation), tempfile.TemporaryDirectory() as temporary:
+                config, output = Path(temporary)/'config.json', Path(temporary)/'output'
+                config.write_text(json.dumps(dict(engine=engine, method=method, representation=representation)))
+                worker = SimpleNamespace(run_reference=object(), main=lambda: self.fail('Invalid variant reached worker'))
+                with patch.object(sys, 'argv', ['adapter', str(config), str(output)]), self.assertRaises(SystemExit):
+                    module.main(worker)
+                self.assertFalse(output.exists())
+
+
 if __name__ == '__main__':
     unittest.main()

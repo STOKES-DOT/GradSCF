@@ -110,10 +110,27 @@ Conventional coverage is recorded separately in
 `reports/scf_100/20261105-40a569bf/CONVENTIONAL.md`:
 `profile_conventional.py` retains the real no-RI HF/DFT entry and adds shared
 J/K snapshot diagnostics; `probe_direct_delta.py` varies only density amplitude.
-`reference_fresh_jk.py` is an explicitly labelled PyRHF control retaining its
+`reference_fresh_jk.py` is an explicitly labelled six-method PySCF control retaining its
 optimizer while forcing full-density products. It is not a replacement for an
 unaccepted original reference. `--direct-first` prioritizes the existing thirty
 conventional rows without changing the sixty scientific configurations.
+
+For an independently frozen optimized source, use a new output prefix:
+
+```bash
+python benchmarks/probes/scf_100/continue_matrix.py \
+  --root "$HOME/private/homefile/gradscf-scf-100-20261105" \
+  --job LIVE_JOB --wait-pid 0 --source-tree candidate-optimized-v1 \
+  --output-prefix matrix-optimized-v1 --optimized-order --dry-run
+```
+
+This selects the thirty GradSCF configurations, placing six direct method
+representatives first. It retains the original repetitions and caps. The new
+prefix does not inherit old-source completion records; a source manifest covers
+all regular `src/` files including the native library. On resume, changed
+source or input hashes require another prefix. Keep the source immutable and
+run only one controller per allocation. The 2026-11-05 implementation and its
+RED/GREEN evidence are recorded in `reports/scf_100/20261105-40a569bf/IMPLEMENTATION.md`.
 
 For invasive stage profiling, use `benchmarks/probes/scf_solver/profile_stages.py`
 in a separate process with the same input. Its instrumentation timing is not a
