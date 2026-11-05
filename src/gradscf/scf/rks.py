@@ -189,14 +189,18 @@ def _make_jk_builder(
             def _native_direct(density,mo_coeff=None,mo_occ=None,density_last=None,j_last=None,k_last=None):
                 del mo_coeff,mo_occ
                 delta=density if density_last is None else density-density_last
+                controls = dict(screening_threshold=threshold, workers=cfg.direct_scf_workers,
+                                with_j=with_j, with_k=with_k)
+                if type(direct_basis) is NativeDirectBasis and threshold > 0 and density_last is not None:
+                    # Dynamic S selects a discrete quartet subset; its indicator
+                    # response is handled by the native derivative rule.
+                    controls["screen_density"] = delta
                 if rsh is not None:
                     from .rsh import _direct_rsh_jk
                     j,k=_direct_rsh_jk(direct_basis,delta,rsh.to_range_separated_hybrid_coefficients(),
-                        screening_threshold=threshold,workers=cfg.direct_scf_workers,
-                        with_j=with_j,with_k=with_k)
+                                      **controls)
                 else:
-                    j,k=direct_basis.get_jk(delta,screening_threshold=threshold,
-                        workers=cfg.direct_scf_workers,with_j=with_j,with_k=with_k)
+                    j,k=direct_basis.get_jk(delta, **controls)
                 if density_last is not None:
                     if with_j:j=j+j_last
                     if with_k:k=k+k_last

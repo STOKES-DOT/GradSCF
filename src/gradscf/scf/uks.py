@@ -226,6 +226,7 @@ def _spin_jk_matrices(
     nocc_b: int | None = None,
     only_dfj: bool = False,
     rsh_coefficients: tuple[float, float, float] | None = None,
+    screen_density: Array | None = None,
 ) -> tuple[Array, Array, Array, Array]:
     density_tot = density_a + density_b
     if only_dfj and df_factors is None:
@@ -268,6 +269,8 @@ def _spin_jk_matrices(
         density = jnp.stack((density_a, density_b)) if with_k else density_tot
         controls = dict(with_j=not only_dfj, with_k=with_k,
             screening_threshold=direct_scf_tol, workers=direct_scf_workers)
+        if screen_density is not None:
+            controls["screen_density"] = screen_density
         if rsh_coefficients is None:
             coulomb, exchange = _selected_jk(direct_basis, density, **controls)
         else:
@@ -690,31 +693,36 @@ def run_uks_from_integrals(
 
     incremental = direct_basis is not None and (cfg.jk_backend == "direct" or cfg.only_dfj)
 
+    def evaluate_plain(density_spin, mo_coeff_spin, mo_energy_spin, previous):
+        energy, xc, fa, fb = eval_state(*density_spin, *mo_coeff_spin, *mo_energy_spin)
+        return energy, jnp.stack([fa, fb]), (xc, (), jnp.asarray(True))
+
     def evaluate_incremental(density_spin, mo_coeff_spin, mo_energy_spin, previous):
+        from ..integrals.backends.native.jk import NativeDirectBasis
         delta = density_spin if previous is None else density_spin - previous.density
+        # Dynamic S selects the subset; native rules handle its indicator response.
+        screen = (delta if previous is not None
+                  and type(direct_basis) is NativeDirectBasis and cfg.direct_scf_tol > 0 else None)
         _, *matrices = _spin_jk_matrices(eri, delta[0], delta[1],
             df_factors=df_factors_arr if cfg.only_dfj else None,
             with_k=(bound_xc is not None or rsh is not None or abs(float(hybrid_coeff(cfg.xc_spec))) > 1e-14),
             direct_basis=direct_basis, direct_scf_tol=cfg.direct_scf_tol,
             direct_scf_workers=cfg.direct_scf_workers, only_dfj=cfg.only_dfj,
-            rsh_coefficients=rsh.to_range_separated_hybrid_coefficients() if rsh is not None else None)
+            rsh_coefficients=rsh.to_range_separated_hybrid_coefficients() if rsh is not None else None,
+            screen_density=screen)
         if previous is not None:
-            matrices = [current + last for current, last in zip(matrices, previous.aux)]
+            matrices = [current + last for current, last in zip(matrices, previous.aux[1])]
         matrices = tuple(matrices)
-        energy, _, fa, fb = eval_state(*density_spin, *mo_coeff_spin, *mo_energy_spin,
-                                      jk_matrices=matrices)
-        return energy, jnp.stack([fa, fb]), matrices
+        energy, xc, fa, fb = eval_state(*density_spin, *mo_coeff_spin, *mo_energy_spin,
+                                       jk_matrices=matrices)
+        return energy, jnp.stack([fa, fb]), (xc, matrices, jnp.asarray(previous is None))
 
-    seed = (evaluate_incremental(jnp.stack([density_a, density_b]),
-        jnp.stack([mo_coeff_a, mo_coeff_b]), jnp.stack([mo_energy_a, mo_energy_b]), None)
-        if incremental else None)
+    evaluator = evaluate_incremental if incremental else evaluate_plain
+    seed = evaluator(jnp.stack([density_a, density_b]), jnp.stack([mo_coeff_a, mo_coeff_b]),
+                     jnp.stack([mo_energy_a, mo_energy_b]), None)
 
     def fock_builder(density_spin: Array, mo_coeff_spin: Array, mo_energy_spin: Array) -> tuple[Array, Array, Array]:
-        if seed is None:
-            energy, _, fa, fb = eval_state(*density_spin, *mo_coeff_spin, *mo_energy_spin)
-            raw_fock = jnp.stack([fa, fb])
-        else:
-            energy, raw_fock, _ = seed
+        energy, raw_fock, _ = seed
         effective = raw_fock + jnp.asarray(cfg.level_shift, dtype=h.dtype) * s
         return effective, raw_fock, energy
 
@@ -730,6 +738,7 @@ def run_uks_from_integrals(
         _best_cycle,
         _selected_rms,
         _best_rms,
+        selected_state,
     ) = run_unrestricted_scf(
         fock_builder=fock_builder,
         density_spin=jnp.stack([density_a, density_b], axis=0),
@@ -746,26 +755,33 @@ def run_uks_from_integrals(
         convergence_metric=str(cfg.convergence_metric),
         level_shift=float(cfg.level_shift),
         iterate_selection="best_rms",
-        orthogonalizer=x, state_evaluator=evaluate_incremental if incremental else None,
-        initial_aux=() if seed is None else seed[2], refresh_on_convergence=incremental,
+        orthogonalizer=x, state_evaluator=evaluator,
+        initial_aux=seed[2], refresh_on_convergence=incremental, return_state=True,
     )
     density_a, density_b = density_spin[0], density_spin[1]
     mo_coeff_a, mo_coeff_b = mo_coeff_spin[0], mo_coeff_spin[1]
     mo_energy_a, mo_energy_b = mo_energy_spin[0], mo_energy_spin[1]
     fock_a, fock_b = raw_fock_spin[0], raw_fock_spin[1]
-    if cfg.level_shift != 0.0:
-        # Remove the shift from reported energies without reoccupying a different
-        # unshifted root. Convergence establishes stationarity, not stability.
+    bound_shift = bound_xc is not None and cfg.level_shift != 0.0
+    if bound_shift:
+        # Bound callbacks may use eps independently: preserve the historical
+        # raw-Fock correction before their required final energy/potential call.
         mo_energy_a = jnp.diag(mo_coeff_a.T @ fock_a @ mo_coeff_a)
         mo_energy_b = jnp.diag(mo_coeff_b.T @ fock_b @ mo_coeff_b)
-    energy, xc_energy, fock_a, fock_b = eval_state(
-        density_a,
-        density_b,
-        mo_coeff_a,
-        mo_coeff_b,
-        mo_energy_a,
-        mo_energy_b,
-    )
+    def full_selected(_):
+        return eval_state(density_a, density_b, mo_coeff_a, mo_coeff_b, mo_energy_a, mo_energy_b)
+    cached = (selected_state.energy, selected_state.aux[0], fock_a, fock_b)
+    fresh = selected_state.aux[2]
+    if bound_shift:
+        energy, xc_energy, fock_a, fock_b = full_selected(None)
+    elif isinstance(fresh, jax.core.Tracer):
+        energy, xc_energy, fock_a, fock_b = jax.lax.cond(fresh, lambda _: cached, full_selected, None)
+    else:
+        energy, xc_energy, fock_a, fock_b = cached if bool(fresh) else full_selected(None)
+    if cfg.level_shift != 0.0 and not bound_shift:
+        # Report expectations of the selected raw Fock, retaining its branch.
+        mo_energy_a = jnp.diag(mo_coeff_a.T @ fock_a @ mo_coeff_a)
+        mo_energy_b = jnp.diag(mo_coeff_b.T @ fock_b @ mo_coeff_b)
     converged = bool(converged_arr) if not traceable_inputs else converged_arr
     cycles = int(cycles_arr) if not traceable_inputs else cycles_arr
 

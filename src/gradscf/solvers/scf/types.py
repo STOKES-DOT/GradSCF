@@ -61,3 +61,6 @@ class SCFResult(NamedTuple):
     cycles: jax.Array
     metrics: SCFMetrics
     history: SCFHistory
+    # Caller seed preparation is excluded; main cycles count advances only.
+    advance_evaluations: jax.Array | int = 0
+    fresh_evaluations: jax.Array | int = 0

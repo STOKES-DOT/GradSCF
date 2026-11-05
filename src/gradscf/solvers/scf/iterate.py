@@ -22,6 +22,9 @@ class _Carry(NamedTuple):
     best_state: SCFState
     best_cycle: jax.Array
     best_rms: jax.Array
+    fresh_evaluations: jax.Array
+    state_is_fresh: jax.Array
+    best_is_fresh: jax.Array
 
 
 def _pack_error(error):
@@ -58,7 +61,11 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
         jnp.zeros((cfg.diis_space,)+initial_state.fock.shape, dtype=initial_state.fock.dtype),
         jnp.zeros((cfg.diis_space,)+error_shape.shape, dtype=error_shape.dtype),
         zero, zero, zero, jnp.asarray(False), SCFMetrics(infinity, infinity, infinity),
-        initial_state, zero, infinity)
+        initial_state, zero, infinity, zero, jnp.asarray(True), jnp.asarray(True))
+
+    def finite_state(state):
+        return jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in
+            (state.density, state.mo_coeff, state.mo_energy, state.energy, state.fock)]))
 
     def assess(old, state, density_rms):
         delta = (state.energy-old.state.energy if energy_change is None
@@ -67,9 +74,7 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
         passed = convergence_reached(*metrics, conv_tol=cfg.conv_tol,
             conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
             energy_only=cfg.energy_only, has_prior_cycle=old.cycles > 0)
-        finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(value)) for value in
-            (state.density, state.mo_coeff, state.mo_energy, state.energy, state.fock)]))
-        return metrics, passed & finite
+        return metrics, passed & finite_state(state)
 
     def advance(old):
         damp = ((old.cycles < cfg.fock_damping_cycles)
@@ -95,27 +100,49 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
         state = SCFState(density, coeff, energies, energy, raw_fock, aux)
         rms = jnp.sqrt(jnp.mean(jnp.abs(density-old.state.density)**2))
         metrics, passed = assess(old, state, rms)
-        if cfg.refresh_on_convergence:
+        refreshed = jnp.asarray(False)
+        if cfg.refresh_on_convergence and cfg.conv_tol > 0:
+            # A drifting incremental energy must not prevent its own rebase.
+            # The full rebuild still has to pass every original convergence gate.
+            ready = ((old.cycles > 0) & finite_state(state)
+                & jnp.isfinite(metrics.density_rms) & jnp.isfinite(metrics.gradient)
+                & (metrics.density_rms < cfg.conv_tol_density)
+                & (metrics.gradient < cfg.conv_tol_grad))
+            refreshed = passed | ready
             def refresh(_):
                 energy, fock, aux = evaluate(density, coeff, energies, None)
                 fresh = SCFState(density, coeff, energies, energy, fock, aux)
                 fresh_metrics, fresh_passed = assess(old, fresh, rms)
                 return fresh, fresh_metrics, fresh_passed
             state, metrics, passed = jax.lax.cond(
-                passed, refresh, lambda unchanged: unchanged, (state, metrics, passed))
+                refreshed, refresh, lambda unchanged: unchanged, (state, metrics, passed))
         return old._replace(state=state, last_fock=effective, focks=focks,
             errors=errors, head=head, count=count, cycles=old.cycles+1,
-            converged=passed, metrics=metrics)
+            converged=passed, metrics=metrics,
+            fresh_evaluations=old.fresh_evaluations+refreshed.astype(jnp.int32),
+            state_is_fresh=refreshed | jnp.asarray(not cfg.refresh_on_convergence))
 
     def step(old, _):
         current = jax.lax.cond(old.converged, lambda value: value, advance, old)
         rms = jnp.where(old.converged, 0., current.metrics.density_rms)
         delta = jnp.where(old.converged, 0., current.metrics.energy_delta)
         better = jnp.isfinite(rms) & (rms < old.best_rms)
-        best = jax.lax.cond(better, lambda _: current.state, lambda _: old.best_state, operand=None)
+        # A fresh rebuild of the identical physical state also replaces stale
+        # E/F/aux in a tied-density best record, without changing its cycle/frame.
+        same = (jnp.all(current.state.density == old.best_state.density)
+                & jnp.all(current.state.mo_coeff == old.best_state.mo_coeff)
+                & jnp.all(current.state.mo_energy == old.best_state.mo_energy))
+        rebased_best = jnp.asarray(cfg.refresh_on_convergence) & current.state_is_fresh & same
+        updated_best = old.best_state._replace(energy=current.state.energy,
+            fock=current.state.fock, aux=current.state.aux)
+        best = jax.lax.cond(better, lambda _: current.state,
+            lambda _: jax.lax.cond(rebased_best, lambda _: updated_best,
+                                  lambda _: old.best_state, None), None)
         current = current._replace(best_state=best,
             best_cycle=jnp.where(better, current.cycles, old.best_cycle),
-            best_rms=jnp.where(better, rms, old.best_rms))
+            best_rms=jnp.where(better, rms, old.best_rms),
+            best_is_fresh=jnp.where(better, current.state_is_fresh,
+                                   rebased_best | old.best_is_fresh))
         iterates = ((current.state.density, current.state.mo_coeff, current.state.mo_energy)
                     if cfg.store_iterates else ())
         return current, SCFHistory(rms, delta, current.metrics.gradient, current.converged, iterates)
@@ -125,5 +152,15 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
     valid_best = jnp.isfinite(final.best_rms)
     best = jax.lax.cond(valid_best, lambda _: final.best_state, lambda _: final.state, operand=None)
     best_cycle = jnp.where(valid_best, final.best_cycle, final.cycles)
+    fresh_evaluations = final.fresh_evaluations
+    if cfg.refresh_on_convergence and cfg.conv_tol > 0:
+        # A consumer may select a different historical best state. Certify its
+        # values once before returning it; this is not another main advance.
+        def refresh_best(state):
+            energy, fock, aux = evaluate(state.density, state.mo_coeff, state.mo_energy, None)
+            return state._replace(energy=energy, fock=fock, aux=aux)
+        needed = valid_best & ~final.best_is_fresh
+        best = jax.lax.cond(needed, refresh_best, lambda state: state, best)
+        fresh_evaluations = fresh_evaluations+needed.astype(jnp.int32)
     return SCFResult(final.state, best, best_cycle, final.converged,
-                     final.cycles, final.metrics, history)
+                     final.cycles, final.metrics, history, final.cycles, fresh_evaluations)

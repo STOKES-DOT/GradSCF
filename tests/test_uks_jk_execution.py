@@ -176,7 +176,8 @@ def test_rsh_only_dfj_uses_ri_coulomb_and_direct_exchange(monkeypatch):
 
 
 @pytest.mark.parametrize("mismatch", ["energy", "fock", "nonfinite"])
-def test_state_evaluator_rejects_false_incremental_convergence(mismatch):
+@pytest.mark.parametrize("max_cycle", [2, 3])
+def test_state_evaluator_rejects_false_incremental_convergence(mismatch, max_cycle):
     h, eye = jnp.diag(jnp.array([-1., 1.])), jnp.eye(2)
     occ = jnp.array([[1., 0.], [0., 0.]])
     coeff = jnp.stack([eye, eye])
@@ -198,6 +199,12 @@ def test_state_evaluator_rejects_false_incremental_convergence(mismatch):
         state_evaluator=evaluate, initial_aux=jnp.asarray(0.), refresh_on_convergence=True,
         density_spin=jnp.stack([jnp.diag(occ[0]), jnp.diag(occ[1])]),
         mo_coeff_spin=coeff, mo_occ_spin=occ, mo_energy_spin=jnp.stack([jnp.diag(h)] * 2),
-        overlap=eye, max_cycle=3, damping=0., conv_tol=1e-12, conv_tol_density=1e-11,
-        conv_tol_grad=1e-10, orthogonalization_eps=1e-10)
-    assert not bool(result[4]), "fresh E/F must pass before an incremental state is certified"
+        overlap=eye, max_cycle=max_cycle, damping=0., conv_tol=1e-12, conv_tol_density=1e-11,
+        conv_tol_grad=1e-10, orthogonalization_eps=1e-10, return_state=True)
+    # Two advances reject the first inconsistent fresh value. A third may
+    # accept the identical physical fresh target against the rebased energy;
+    # this introduces no fourth gate comparing incremental and fresh energies.
+    expected = max_cycle == 3 and mismatch == "energy"
+    assert bool(result[4]) == expected, "fresh E/F must pass the original gates after rebasing"
+    if mismatch == "energy":
+        np.testing.assert_equal(np.asarray(result[-1].energy), 1e-6)

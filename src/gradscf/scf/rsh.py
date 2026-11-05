@@ -57,7 +57,7 @@ def _empty_eri(value):
 
 
 def _direct_rsh_jk(provider, density, coefficients, *, with_j=True, with_k=True,
-                   screening_threshold=0., workers=1):
+                   screening_threshold=0., workers=1, screen_density=None):
     """Full Coulomb and sr*K(full)+(lr-sr)*K(omega), for any density batch."""
     _require_direct_rsh_provider(provider)
     from ..integrals.backends.native.jk import _selected_jk, _validate_selection
@@ -71,6 +71,8 @@ def _direct_rsh_jk(provider, density, coefficients, *, with_j=True, with_k=True,
     density = jnp.asarray(density)
     coulomb = exchange = jnp.zeros_like(density)
     controls = dict(screening_threshold=screening_threshold, workers=workers)
+    if screen_density is not None:
+        controls["screen_density"] = screen_density
     if with_j or (with_k and short_range != 0.):
         coulomb, full_k = _selected_jk(provider, density, with_j=with_j,
             with_k=with_k and short_range != 0., omega=0., **controls)

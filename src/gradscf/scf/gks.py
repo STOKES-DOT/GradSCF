@@ -145,6 +145,41 @@ def generalized_jk(eri: Array | None, density: Array, *, with_k=True,
     return j, _hermitian(exchange)
 
 
+def _scf_direct_spinor_jk(provider, density, *, cfg, df_factors=None,
+                           coefficients=None, incremental=False):
+    """One native batch per spatial operator, local to the SCF consumer.
+
+    The generic generalized_jk/response contract is unchanged. Four complex
+    spin blocks share the ordinary traversal; Coulomb uses their aa+bb sum.
+    """
+    from ..integrals.backends.native.jk import NativeDirectBasis, _selected_jk
+
+    n = density.shape[0]//2
+    blocks = density.reshape(2, n, 2, n).transpose(0, 2, 1, 3)
+    with_k = coefficients is not None or abs(float(hybrid_coeff(cfg.xc_spec))) > 1e-14
+    if cfg.only_dfj:
+        coulomb, _ = generalized_jk(None, density, df_factors=df_factors, with_k=False)
+        if not with_k:
+            return coulomb, jnp.zeros_like(density)
+    payload = blocks if with_k else density[:n, :n]+density[n:, n:]
+    controls = dict(with_j=not cfg.only_dfj, with_k=with_k,
+        screening_threshold=cfg.direct_scf_tol, workers=cfg.direct_scf_workers)
+    if incremental and type(provider) is NativeDirectBasis and cfg.direct_scf_tol > 0:
+        # Dynamic S selects the subset; native rules handle its indicator response.
+        controls["screen_density"] = payload
+    if coefficients is None:
+        j_blocks, k_blocks = _selected_jk(provider, payload, **controls)
+    else:
+        from .rsh import _direct_rsh_jk
+        j_blocks, k_blocks = _direct_rsh_jk(provider, payload, coefficients, **controls)
+    if not cfg.only_dfj:
+        spatial_j = j_blocks[0, 0]+j_blocks[1, 1] if with_k else j_blocks
+        coulomb = _hermitian(_spin_diagonal(spatial_j))
+    exchange = (k_blocks.transpose(0, 2, 1, 3).reshape(2*n, 2*n)
+                if with_k else jnp.zeros_like(density))
+    return coulomb, _hermitian(exchange)
+
+
 def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential=True, grid_ao=None):
     if grid_ao is not None and kind != "HF":
         initial = (jnp.asarray(0., dtype=density.real.dtype), jnp.zeros_like(density))
@@ -212,6 +247,7 @@ def generalized_energy_and_fock(
     compute_potential: bool = True, df_factors: Array | None = None,
     direct_basis: Any | None = None, grid_ao: Any | None = None,
     eri_lr: Array | None = None, dispersion_energy: Array | float | None = None,
+    jk_matrices: tuple[Array, Array] | None = None,
 ) -> tuple[Array, Array, Array | None]:
     """Return energy/XC/Fock; energy-only requests return None for the Fock."""
 
@@ -226,10 +262,13 @@ def generalized_energy_and_fock(
         direct_basis=direct_basis)
     coefficients = None if preset is None else preset.to_range_separated_hybrid_coefficients()
     alpha = hybrid_coeff(config.xc_spec) if preset is None else 1.
-    j, k = generalized_jk(eri, density, with_k=alpha != 0., df_factors=df_factors,
-        direct_basis=direct_basis, only_dfj=config.only_dfj,
-        direct_scf_tol=config.direct_scf_tol, direct_scf_workers=config.direct_scf_workers,
-        eri_lr=eri_lr, range_separated_coefficients=coefficients)
+    if jk_matrices is None:
+        j, k = generalized_jk(eri, density, with_k=alpha != 0., df_factors=df_factors,
+            direct_basis=direct_basis, only_dfj=config.only_dfj,
+            direct_scf_tol=config.direct_scf_tol, direct_scf_workers=config.direct_scf_workers,
+            eri_lr=eri_lr, range_separated_coefficients=coefficients)
+    else:
+        j, k = jk_matrices
     exc, vxc = _generalized_xc(density, jnp.asarray(ao), jnp.asarray(ao_deriv1),
                              jnp.asarray(grid_weights), config, kind,
                              compute_potential=compute_potential, grid_ao=grid_ao)
@@ -326,20 +365,32 @@ def run_gks_from_integrals(
     def density_from(coeff):
         return _hermitian((coeff * occ) @ coeff.conj().T)
 
+    from .rsh import rsh_preset
+    preset = rsh_preset(cfg.xc_spec)
+    coefficients = None if preset is None else preset.to_range_separated_hybrid_coefficients()
+    incremental = direct_basis is not None and (cfg.jk_backend == "direct" or cfg.only_dfj)
+
     def evaluate(dm, coeff, energies, previous):
+        matrices = None
+        if incremental:
+            delta = dm if previous is None else dm-previous.density
+            matrices = _scf_direct_spinor_jk(direct_basis, delta, cfg=cfg,
+                df_factors=df_factors, coefficients=coefficients, incremental=previous is not None)
+            if previous is not None:
+                matrices = tuple(current+last for current, last in zip(matrices, previous.aux[1]))
         energy, exc, fock = generalized_energy_and_fock(
             density=dm, hcore=h, eri=eri, nuclear_repulsion=nuclear_repulsion,
             ao=ao, ao_deriv1=deriv, grid_weights=weights, config=cfg,
             df_factors=df_factors, direct_basis=direct_basis, grid_ao=grid_ao,
-            eri_lr=eri_lr, dispersion_energy=dispersion_energy,
+            eri_lr=eri_lr, dispersion_energy=dispersion_energy, jk_matrices=matrices,
         )
-        return energy, fock, exc
+        return energy, fock, (exc, () if matrices is None else matrices, jnp.asarray(previous is None or not incremental))
 
     eps0, c0 = diagonalize(h)
     dm0 = density_from(c0) if init_density is None else jnp.asarray(init_density, dtype=complex_dtype)
     _validate_hermitian(dm0, (2*n, 2*n), "init_density")
-    e0, f0, xc0 = evaluate(dm0, c0, eps0, None)
-    result = solve_scf(SCFState(dm0, c0, eps0, e0, f0, xc0),
+    e0, f0, aux0 = evaluate(dm0, c0, eps0, None)
+    result = solve_scf(SCFState(dm0, c0, eps0, e0, f0, aux0),
         evaluate=evaluate, diagonalize=diagonalize, density_from_coeff=density_from,
         diis_error=lambda f, state: x.conj().T @ (
             f @ state.density @ s2 - s2 @ state.density @ f) @ x,
@@ -349,7 +400,7 @@ def run_gks_from_integrals(
         config=SCFConfig(max_cycle=cfg.max_cycle, conv_tol=cfg.conv_tol,
             conv_tol_density=cfg.conv_tol_density, conv_tol_grad=cfg.conv_tol_grad,
             damping=cfg.damping, fock_damping_cycles=2,
-            energy_only=cfg.convergence_metric == "energy"))
+            energy_only=cfg.convergence_metric == "energy", refresh_on_convergence=incremental))
     final = result.state
     traced = _contains_jax_tracer(result)
     return GKSResult(
@@ -358,7 +409,7 @@ def run_gks_from_integrals(
         total_energy=_host_float_unless_traced(final.energy),
         electronic_energy=_host_float_unless_traced(final.energy - nuclear_repulsion),
         nuclear_repulsion=_host_float_unless_traced(nuclear_repulsion),
-        xc_energy=_host_float_unless_traced(final.aux),
+        xc_energy=_host_float_unless_traced(final.aux[0]),
         exact_exchange_fraction=float(hybrid_coeff(cfg.xc_spec)),
         mo_energy=jnp.diag(final.mo_coeff.conj().T @ final.fock @ final.mo_coeff).real,
         mo_coeff=final.mo_coeff, mo_occ=occ, density_matrix=final.density,

@@ -73,12 +73,13 @@ def run_unrestricted_scf(
     overlap, max_cycle, damping, conv_tol=None, conv_tol_density,
     conv_tol_grad=1e-7, orthogonalization_eps, convergence_metric="energy_and_residual",
     level_shift=0., eigenvalue_jitter=0., iterate_selection="final", orthogonalizer=None,
-    state_evaluator=None, initial_aux=(), refresh_on_convergence=False,
+    state_evaluator=None, initial_aux=(), refresh_on_convergence=False, return_state=False,
 ):
     """Adapt fixed spin occupations; retain the historical eleven-value result.
 
     Optional state_evaluator(D,C,eps,previous) returns energy/raw Fock/aux.
     A None previous requests a fresh physical build before convergence.
+    return_state appends the selected SCFState; the default eleven values stay unchanged.
     """
     # DifferentiableSCF retains its symmetric frame by default; built-in
     # forward producers can supply their already prepared orbital factor.
@@ -124,6 +125,7 @@ def run_unrestricted_scf(
         selected_index = jnp.where(result.converged, first, best_index)
     else:
         state, selected_index = result.state, jnp.asarray(int(max_cycle)-1, jnp.int32)
-    return (state.density, state.mo_coeff, state.mo_energy, state.fock,
-            result.converged, result.cycles, rms, selected_index+1, best_index+1,
-            rms[selected_index], rms[best_index])
+    legacy = (state.density, state.mo_coeff, state.mo_energy, state.fock,
+              result.converged, result.cycles, rms, selected_index+1, best_index+1,
+              rms[selected_index], rms[best_index])
+    return (*legacy, state) if return_state else legacy
