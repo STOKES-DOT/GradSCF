@@ -65,10 +65,9 @@ def test_residual_ready_rebases_drifting_energy_and_stale_best_state(layout):
     jax.effects_barrier()
     assert bool(result.converged), 'D/g pass but incremental dE drift must not block a fresh check'
     assert int(result.cycles) == int(result.advance_evaluations) == 3
-    assert int(result.fresh_evaluations) == 2
-    assert [event[0] for event in events] == ['advance', 'advance', 'fresh', 'advance', 'fresh']
-    # The next advance must see fresh E/F/aux, not any member of the stale tuple.
-    np.testing.assert_allclose(events[3][1:], [.49, 0., 0.], atol=1e-15, rtol=0)
+    assert int(result.fresh_evaluations) == 1
+    # The third advance uses the full evaluator and supplies its own certificate.
+    assert [event[0] for event in events] == ['advance', 'advance', 'fresh', 'fresh']
     for state in (result.state, result.best_state):
         np.testing.assert_allclose(state.energy, .49, atol=1e-15, rtol=0)
         np.testing.assert_array_equal(state.fock, jnp.zeros_like(state.fock))
@@ -277,3 +276,21 @@ def test_optional_selected_state_keeps_legacy_tuple_and_selected_energy_aux(monk
     np.testing.assert_array_equal(selected.fock, expected.fock)
     np.testing.assert_array_equal(selected.energy, expected.energy)
     np.testing.assert_array_equal(selected.aux[0], expected.aux[0])
+
+
+def test_failed_fresh_switches_to_full_tail_without_duplicate_certification():
+    events = []
+    result = _drifting_problem(events=events)
+    jax.block_until_ready(result)
+    jax.effects_barrier()
+    assert bool(result.converged)
+    assert int(result.cycles) == int(result.advance_evaluations) == 3
+    assert int(result.fresh_evaluations) == 1, 'The full third advance must serve as its own fresh certificate'
+    assert [event[0] for event in events] == ['advance', 'advance', 'fresh', 'fresh']
+    for state in (result.state, result.best_state):
+        np.testing.assert_allclose(state.energy, .49, atol=1e-15, rtol=0)
+        np.testing.assert_array_equal(state.fock, jnp.zeros_like(state.fock))
+        assert int(state.aux) == 0
+    assert float(result.metrics.energy_delta) < 1e-10
+    assert float(result.metrics.density_rms) < 1e-8
+    assert float(result.metrics.gradient) < 1e-7

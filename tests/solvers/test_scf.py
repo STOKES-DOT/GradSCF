@@ -205,7 +205,7 @@ def test_fresh_fock_recheck_can_reject_incremental_convergence():
     assert not bool(result.converged)
     assert int(result.cycles) == 3
     assert float(result.history.gradient[1]) > .1
-    assert calls == [False, False, True, False]
+    assert calls == [False, False, True, True]
     assert len(gradient_calls) == 4  # Three candidates and one actual fresh rebuild.
     ordinary = solve(initial, config=replace(cfg, refresh_on_convergence=False), **kwargs)
     assert bool(ordinary.converged) and int(ordinary.cycles) == 2

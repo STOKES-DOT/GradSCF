@@ -41,6 +41,8 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
 
     ``evaluate(D,C,eps,previous)`` returns ``(energy,raw_fock,aux)``; previous
     is a state for incremental builds and None for a fresh convergence check.
+    A failed fresh check switches subsequent advances to the full evaluator;
+    those advances already supply their physical certificate without a repeat.
     ``diis_error(fock,state)`` may return a real or complex array. Complex errors
     use a real+imaginary metric. ``orbital_gradient(state)`` certifies the raw
     Fock, never the DIIS extrapolate. ``shift_fock(fock,state)`` acts after DIIS.
@@ -96,7 +98,16 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
             active = jnp.asarray(True) if cfg.density_damping == "all" else count < 2
             mixing = jnp.where(active, jnp.asarray(cfg.damping, dtype=dtype), 0.)
             density = (1-mixing)*density+mixing*old.state.density
-        energy, raw_fock, aux = evaluate(density, coeff, energies, old.state)
+        full_tail = jnp.asarray(False)
+        if cfg.refresh_on_convergence and cfg.conv_tol > 0:
+            # A prior fresh failure starts a permanent full-evaluator tail.
+            # The seed is fresh too, so exclude cycle zero from this transition.
+            full_tail = old.state_is_fresh & (old.cycles > 0)
+            energy, raw_fock, aux = jax.lax.cond(full_tail,
+                lambda _: evaluate(density, coeff, energies, None),
+                lambda _: evaluate(density, coeff, energies, old.state), None)
+        else:
+            energy, raw_fock, aux = evaluate(density, coeff, energies, old.state)
         state = SCFState(density, coeff, energies, energy, raw_fock, aux)
         rms = jnp.sqrt(jnp.mean(jnp.abs(density-old.state.density)**2))
         metrics, passed = assess(old, state, rms)
@@ -108,7 +119,7 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
                 & jnp.isfinite(metrics.density_rms) & jnp.isfinite(metrics.gradient)
                 & (metrics.density_rms < cfg.conv_tol_density)
                 & (metrics.gradient < cfg.conv_tol_grad))
-            refreshed = passed | ready
+            refreshed = ~full_tail & (passed | ready)
             def refresh(_):
                 energy, fock, aux = evaluate(density, coeff, energies, None)
                 fresh = SCFState(density, coeff, energies, energy, fock, aux)
@@ -120,7 +131,7 @@ def solve_scf(initial_state, *, evaluate, diagonalize, density_from_coeff,
             errors=errors, head=head, count=count, cycles=old.cycles+1,
             converged=passed, metrics=metrics,
             fresh_evaluations=old.fresh_evaluations+refreshed.astype(jnp.int32),
-            state_is_fresh=refreshed | jnp.asarray(not cfg.refresh_on_convergence))
+            state_is_fresh=full_tail | refreshed | jnp.asarray(not cfg.refresh_on_convergence))
 
     def step(old, _):
         current = jax.lax.cond(old.converged, lambda value: value, advance, old)
