@@ -466,9 +466,14 @@ def _build_unrestricted_reference(
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
     verbose: int = 0,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
     **mol_kwargs: Any,
 ) -> UnrestrictedMolecule:
     """Build an unrestricted strict-JAX UKS reference directly from molecule specs."""
+
+    if scf_result is not None and scf_inputs is None:
+        raise ValueError('A cached SCF result requires the inputs from the same calculation.')
 
     xc_spec_resolved = str(xc_spec)
     parse_xc(local_xc_spec(xc_spec_resolved))
@@ -476,27 +481,28 @@ def _build_unrestricted_reference(
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
 
-    scf_inputs = build_uks_integral_inputs(
-        atom=atom,
-        basis=basis,
-        config=cfg,
-        xc_spec=xc_spec_resolved,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        cart=cart,
-        grids_level=grids_level,
-        max_l=max_l,
-        grid_ao_backend=grid_ao_backend,
-        integral_backend=integral_backend,
-        libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-        init_guess=init_guess,
-        chkfile=chkfile,
-        init_guess_sap_basis=init_guess_sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project,
-        verbose=verbose,
-        **mol_kwargs,
-    )
+    if scf_inputs is None:
+        scf_inputs = build_uks_integral_inputs(
+            atom=atom,
+            basis=basis,
+            config=cfg,
+            xc_spec=xc_spec_resolved,
+            unit=unit,
+            charge=charge,
+            spin=spin,
+            cart=cart,
+            grids_level=grids_level,
+            max_l=max_l,
+            grid_ao_backend=grid_ao_backend,
+            integral_backend=integral_backend,
+            libcint_geometry_grad_policy=libcint_geometry_grad_policy,
+            init_guess=init_guess,
+            chkfile=chkfile,
+            init_guess_sap_basis=init_guess_sap_basis,
+            init_guess_chkfile_project=init_guess_chkfile_project,
+            verbose=verbose,
+            **mol_kwargs,
+        )
     spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
     scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
         require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
@@ -516,10 +522,9 @@ def _build_unrestricted_reference(
     ao_laplacian = scf_inputs.ao_laplacian
     dipole_integrals = scf_inputs.dipole_integrals
 
-    uks = run_uks_from_integrals(
-        **scf_inputs.as_uks_kwargs(),
-        config=cfg,
-    )
+    uks = scf_result
+    if uks is None:
+        uks = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=cfg)
     uks_is_traceable = _contains_jax_tracer(uks.total_energy)
     if not uks_is_traceable and not uks.converged:
         if not (
@@ -643,6 +648,8 @@ def build_unrestricted_reference_from_facade(
     hfx_omega_values: tuple[float, ...] = (0.0, 0.4),
     hfx_chunk_size: int = 512,
     reference_builder: Any | None = None,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
 ) -> Any:
     if reference_builder is None:
         raise ValueError("reference_builder must be provided for unrestricted facade references.")
@@ -670,7 +677,37 @@ def build_unrestricted_reference_from_facade(
         init_guess_sap_basis=sap_basis,
         init_guess_chkfile_project=init_guess_chkfile_project,
         verbose=mol.verbose,
+        **({"scf_inputs": scf_inputs, "scf_result": scf_result} if scf_inputs is not None else {}),
     )
+
+
+def build_unrestricted_scf_result_from_facade(
+    spec: MoleculeSpec,
+    *,
+    mol: Any,
+    xc: str,
+    grids_level: int,
+    max_l: int,
+    integral_backend: str,
+    geometry_grad_policy: str,
+    grid_ao_backend: str,
+    uks_config: UKSConfig,
+    init_guess: Any,
+    chkfile: str | None,
+    sap_basis: Any | None,
+    init_guess_chkfile_project: bool | None,
+    return_inputs: bool = False,
+) -> Any:
+    """Prepare the energy inputs and solved UKS state without exporting a grid reference."""
+    scf_inputs = build_uks_integral_inputs(
+        atom=spec, basis=mol.basis, config=uks_config, xc_spec=xc,
+        unit=mol.unit, charge=mol.charge, spin=mol.spin, cart=mol.cart,
+        grids_level=grids_level, max_l=max_l, grid_ao_backend=grid_ao_backend,
+        integral_backend=integral_backend, libcint_geometry_grad_policy=geometry_grad_policy,
+        init_guess=init_guess, chkfile=chkfile, init_guess_sap_basis=sap_basis,
+        init_guess_chkfile_project=init_guess_chkfile_project, verbose=mol.verbose)
+    result = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=uks_config)
+    return (result, scf_inputs) if return_inputs else result
 
 
 __all__ = [
@@ -678,6 +715,7 @@ __all__ = [
     "build_restricted_reference_from_facade",
     "build_restricted_scf_result_from_facade",
     "build_unrestricted_reference_from_facade",
+    "build_unrestricted_scf_result_from_facade",
     "_build_restricted_reference",
     "_build_unrestricted_reference",
 ]

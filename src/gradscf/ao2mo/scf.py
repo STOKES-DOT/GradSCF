@@ -55,6 +55,8 @@ def prepare_scf_source(source, *, max_memory=None, allow_rohf=False, reserved_by
         eri, pair = inputs.eri, getattr(inputs,'eri_pair_matrix',None)
     elif unrestricted:
         ref = source.reference
+        if ref is None:
+            ref = source._ensure_reference()
         if ref is None or ref.fock_matrix is None:
             raise RuntimeError("Solved UHF Fock data is missing; run SCF again before post-HF preparation")
         ns = (ref.nocc_alpha, ref.nocc_beta)

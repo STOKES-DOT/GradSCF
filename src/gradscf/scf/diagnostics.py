@@ -81,6 +81,13 @@ def _unrestricted_scf_state(source):
         raise TypeError("Unrestricted stability requires a UKS/UHF facade")
     reference = source.reference
     if reference is None:
-        raise RuntimeError("Run unrestricted SCF before stability analysis")
+        if source.scf_result is None or source._scf_inputs is None:
+            raise RuntimeError("Run unrestricted SCF before stability analysis")
+        # Stability retains the finite, unconverged -> unresolved protocol.
+        # Validate the solved source before completing its missing grid.
+        source._check_reference_source(allow_unconverged=True)
+        reference = source._put_on_requested_device(source._build_reference(source._spec()))
+        source.reference = reference
+        source._cached_response_key = source._response_signature()
     _check_scf_snapshot(source, reference, "mf_energy")
     return reference
