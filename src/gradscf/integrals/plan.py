@@ -46,8 +46,15 @@ class IntegralPlan:
             self, parameters, active_shells=active_shells,
             separate_exponents=separate_exponents)
 
+    def _direct_environment(self, parameters):
+        """Normalize one live basis state with coordinates carried separately."""
+        fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
+                        nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
+        return self.pack(fixed)[2]
+
     def get_jk(self, parameters, density, *, screening_threshold=0., workers=1,
-               with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None):
+               with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None,
+               _environment=None):
         """Native shell-direct J/K with density and coordinate response.
 
         Coordinate AD requires zero screening cutoff. Numerical exponents
@@ -57,9 +64,16 @@ class IntegralPlan:
         """
         omega = _validate_omega(omega)
         from .backends.native.jk import direct_jk
-        fixed=replace(parameters,centers=jnp.zeros_like(parameters.centers),
-                      nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
-        atm,bas,env=self.pack(fixed)
+        if _environment is None:
+            env = self._direct_environment(parameters)
+        else:
+            # Only trace-local bound providers supply this private operand;
+            # their raw parameters retain the normalization dependency graph.
+            check_parameter_shapes(self.topology, parameters)
+            if _environment.shape != (self.env_size,):
+                raise ValueError("Prepared direct ENV does not match the plan.")
+            env = _environment
+        atm, bas = self.atm, self.bas
         if omega:
             env=env.at[8].set(omega)  # libcint PTR_RANGE_OMEGA
         coordinates=jnp.concatenate((parameters.nuclear_coords,parameters.centers))

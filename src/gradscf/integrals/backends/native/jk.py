@@ -1,7 +1,7 @@
 """Native direct and packed J/K operators and bound direct-SCF providers."""
 
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from numbers import Integral
 import jax
 import jax.numpy as jnp
@@ -99,18 +99,37 @@ class NativeDirectBasis:
 
     J/K density response and first/second coordinate response are supported.
     Coordinate AD requires zero screening cutoff; primitive exponent and
-    coefficient derivatives remain explicitly unsupported.
+    coefficient derivatives remain explicitly unsupported. Construction binds
+    one normalized zero-coordinate ENV inside the caller's differentiable
+    graph. Mutable host parameters are copied into immutable JAX arrays;
+    subsequent caller edits require a new provider. Only static topology and
+    programs are globally cached; this numerical preparation belongs here.
     """
 
     plan: object
     parameters: object
     private_output_bytes: int | None = None
+    _prepared: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if self.private_output_bytes is not None:
             object.__setattr__(self, 'private_output_bytes', _private_output_limit(self.private_output_bytes))
+        prepared = self._prepared
+        if self.parameters is not None and (prepared is None or
+                prepared[0] is not self.plan or prepared[1] is not self.parameters):
+            # Identity only decides reuse within this immutable object family
+            # (e.g. a workspace-quota replace), never a JIT/global cache key.
+            is_dynamic = lambda value: isinstance(value, (jax.Array, jax.core.Tracer))
+            if not all(is_dynamic(value) for value in jax.tree.leaves(self.parameters)):
+                parameters = jax.tree.map(
+                    lambda value: value if is_dynamic(value) else jnp.array(value, copy=True),
+                    self.parameters)
+                object.__setattr__(self, 'parameters', parameters)
+            env = self.plan._direct_environment(self.parameters)
+            object.__setattr__(self, '_prepared', (self.plan, self.parameters, env))
 
     def tree_flatten(self):
+        # Canonical raw state only: any tree update must rederive preparation.
         return (self.parameters,), (self.plan.topology, self.plan.backend, self.private_output_bytes)
 
     @classmethod
@@ -118,7 +137,15 @@ class NativeDirectBasis:
         from ...plan import make_plan
 
         topology, backend, *quota = metadata
-        return cls(make_plan(topology, backend=backend), children[0], quota[0] if quota else None)
+        plan = make_plan(topology, backend=backend)
+        # Unflatten also handles abstract values and tangent trees. Never
+        # normalize their parameters or perform array operations here.
+        result = object.__new__(cls)
+        object.__setattr__(result, 'plan', plan)
+        object.__setattr__(result, 'parameters', children[0])
+        object.__setattr__(result, 'private_output_bytes', quota[0] if quota else None)
+        object.__setattr__(result, '_prepared', None)
+        return result
 
     @property
     def nao(self):
@@ -135,7 +162,8 @@ class NativeDirectBasis:
         return self.plan.get_jk(
             self.parameters, density, screening_threshold=screening_threshold,
             workers=workers, with_j=with_j, with_k=with_k,
-            private_output_bytes=self.private_output_bytes, **range_options,
+            private_output_bytes=self.private_output_bytes,
+            _environment=None if self._prepared is None else self._prepared[2], **range_options,
         )
 
     def response_eri_pair_matrix(self):
@@ -162,7 +190,8 @@ class NativeDirectBasis:
 
         omega = _validate_omega(omega)
         range_options = {"omega": omega} if omega else {}
-        direct = lambda density: self.get_jk(
+        bound = _prepare_direct_basis(self)
+        direct = lambda density: bound.get_jk(
             density, screening_threshold=screening_threshold, workers=workers,
             with_j=with_j, with_k=with_k, **range_options)
         coordinates_traced = any(isinstance(value, jax.core.Tracer) for value in
@@ -189,7 +218,7 @@ class NativeDirectBasis:
         # CPU shell callback instead of the generic packed GPU row gather.
         return lambda density: jax.lax.platform_dependent(
             density, cpu=lambda d: packed_jk(eri, d, with_j=with_j, with_k=with_k),
-            default=lambda d: self.get_jk(d, screening_threshold=screening_threshold,
+            default=lambda d: bound.get_jk(d, screening_threshold=screening_threshold,
                                           workers=min(workers, 8),
                                           with_j=with_j, with_k=with_k))
 
@@ -242,6 +271,25 @@ class ProjectedNativeDirectBasis:
             "pi,...pq,qj->...ij", transform, matrix, transform
         )
         return project(primitive_j), project(primitive_k)
+
+
+def _prepare_direct_basis(provider):
+    """Bind fresh state locally, before a consumer's repeated density actions.
+
+    PyTree reconstruction deliberately discards derived preparation. Return a
+    new provider when rebinding is needed; never write a tracer into an input
+    object that can outlive this trace. No numerical cache survives raw-tree
+    updates or appears as an independent differentiable state variable.
+    """
+    if isinstance(provider, NativeDirectBasis):
+        if provider._prepared is not None or provider.parameters is None:
+            return provider
+        return replace(provider)
+    if isinstance(provider, ProjectedNativeDirectBasis):
+        primitive = _prepare_direct_basis(provider.primitive_basis)
+        return (provider if primitive is provider.primitive_basis else
+                replace(provider, primitive_basis=primitive))
+    return provider
 
 
 @lru_cache(maxsize=4)

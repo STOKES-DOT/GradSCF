@@ -184,23 +184,25 @@ def _make_jk_builder(
             raise ValueError("jk_backend='direct' requires direct_basis.")
 
         threshold = float(cfg.direct_scf_tol)
-        from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
+        from gradscf.integrals.backends.native.jk import (
+            NativeDirectBasis, ProjectedNativeDirectBasis, _prepare_direct_basis)
         if isinstance(direct_basis,(NativeDirectBasis,ProjectedNativeDirectBasis)):
+            provider = _prepare_direct_basis(direct_basis)
             def _native_direct(density,mo_coeff=None,mo_occ=None,density_last=None,j_last=None,k_last=None):
                 del mo_coeff,mo_occ
                 delta=density if density_last is None else density-density_last
                 controls = dict(screening_threshold=threshold, workers=cfg.direct_scf_workers,
                                 with_j=with_j, with_k=with_k)
-                if type(direct_basis) is NativeDirectBasis and threshold > 0 and density_last is not None:
+                if type(provider) is NativeDirectBasis and threshold > 0 and density_last is not None:
                     # Dynamic S selects a discrete quartet subset; its indicator
                     # response is handled by the native derivative rule.
                     controls["screen_density"] = delta
                 if rsh is not None:
                     from .rsh import _direct_rsh_jk
-                    j,k=_direct_rsh_jk(direct_basis,delta,rsh.to_range_separated_hybrid_coefficients(),
+                    j,k=_direct_rsh_jk(provider,delta,rsh.to_range_separated_hybrid_coefficients(),
                                       **controls)
                 else:
-                    j,k=direct_basis.get_jk(delta, **controls)
+                    j,k=provider.get_jk(delta, **controls)
                 if density_last is not None:
                     if with_j:j=j+j_last
                     if with_k:k=k+k_last
@@ -757,20 +759,21 @@ def _run_rks_from_integrals_shared(
         # The existing rank-selecting spectral compression is a host step.
         # Pass its factors to both Fock builders, outside the compiled loop.
         df_factors = eri_to_df_factors(eri_arr, tol=cfg.df_tol, max_rank=cfg.df_max_rank)
-    if grid_ao is not None and xc_kind in {"LDA", "GGA"}:
+    if grid_ao is not None and xc_kind in {"LDA", "GGA", "MGGA"}:
         from gradscf._memory import tree_storage_bytes
-        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+        from .inputs.grid import prepare_scf_grid, _scf_operator_reservation
 
         resident = tree_storage_bytes(s, h, eri_arr, eri_pair_arr, eri_lr,
                                       df_factors, ao, ao_deriv1, density, mo_coeff)
         # Built-in forward SCF keeps DIIS/state matrices, not max_cycle copies.
         resident += 32 * s.size * max(8, h.dtype.itemsize)
-        operator = scf_operator_workspace_bytes(df_factors, direct_basis,
+        operator = _scf_operator_reservation(df_factors, direct_basis,
             with_k=abs(alpha_scalar) > 1e-14, only_dfj=cfg.only_dfj,
             density_dtype=density.dtype, workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
         if operator is not None:
+            device_work, host_work = operator
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
-                resident_bytes=resident + operator, deriv=0 if xc_kind == "LDA" else 1)
+                resident_bytes=resident + device_work, host_workspace_bytes=host_work, deriv=0 if xc_kind == "LDA" else 1)
     jk_builder = _make_jk_builder(
         eri_arr,
         cfg,

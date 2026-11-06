@@ -345,18 +345,19 @@ def run_gks_from_integrals(
     occ = jnp.zeros((2*n,), dtype=real_dtype).at[:nelectron].set(1.)
     if grid_ao is not None and _validate_mode(cfg) in {"LDA", "GGA"}:
         from gradscf._memory import tree_storage_bytes
-        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+        from .inputs.grid import prepare_scf_grid, _scf_operator_reservation
 
         resident = tree_storage_bytes(s, h, eri, eri_lr, df_factors, ao, deriv, init_density)
         resident += 32 * h.size * h.dtype.itemsize
         exchange = parse_recipe(cfg.xc_spec).exact_exchange
-        operator = scf_operator_workspace_bytes(df_factors, direct_basis,
+        operator = _scf_operator_reservation(df_factors, direct_basis,
             with_k=exchange.omega is not None or float(hybrid_coeff(cfg.xc_spec)) != 0.,
             only_dfj=cfg.only_dfj, density_dtype=h.dtype,
             workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
         if operator is not None:
+            device_work, host_work = operator
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
-                resident_bytes=resident + operator, deriv=0 if xc_type(cfg.xc_spec) == "LDA" else 1)
+                resident_bytes=resident + device_work, host_workspace_bytes=host_work, deriv=0 if xc_type(cfg.xc_spec) == "LDA" else 1)
 
     def diagonalize(fock):
         values, c = jnp.linalg.eigh(_hermitian(x.conj().T @ fock @ x))
@@ -369,6 +370,10 @@ def run_gks_from_integrals(
     preset = rsh_preset(cfg.xc_spec)
     coefficients = None if preset is None else preset.to_range_separated_hybrid_coefficients()
     incremental = direct_basis is not None and (cfg.jk_backend == "direct" or cfg.only_dfj)
+
+    if incremental:
+        from ..integrals.backends.native.jk import _prepare_direct_basis
+        direct_basis = _prepare_direct_basis(direct_basis)
 
     def evaluate(dm, coeff, energies, previous):
         matrices = None

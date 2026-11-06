@@ -11,6 +11,7 @@ import numpy as np
 from jaxtyping import Array
 from gradscf._memory import (
     DEFAULT_MAX_MEMORY_MB, array_storage_bytes, validate_memory_mb, workspace_bytes,
+    _requested_workspace_bytes, validate_reserved_bytes,
 )
 from gradscf.integrals.basis import CartesianBasis
 from gradscf.data.molecule import MoleculeSpec
@@ -147,13 +148,13 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
         adaptive=grid_block_size == 0 and grid_max_memory is None)
 
 
-def scf_operator_workspace_bytes(df_factors=None, direct_basis=None, with_k=False,
-                                 only_dfj=False, density_dtype=None, workers=1, cutoff=0):
-    """Bound known RI/direct products from metadata; None disables AO reuse.
+def _scf_operator_reservation(df_factors=None, direct_basis=None, with_k=False,
+                              only_dfj=False, density_dtype=None, workers=1, cutoff=0):
+    """Return (device, host) working bytes; None disables optional AO reuse.
 
-    RI exchange may fall back to a full-density QNN product. Native estimates
-    retain assembly's three-call allowance. No integral values are inspected;
-    opaque/projected providers retain their original streamed execution.
+    RI products follow their JAX consumer's device. Libcint work remains on
+    the host, including the GPU callback path and three-call allowance.
+    Opaque/projected providers retain their original streamed execution.
     """
     reserve = 0
     if df_factors is not None:
@@ -167,13 +168,13 @@ def scf_operator_workspace_bytes(df_factors=None, direct_basis=None, with_k=Fals
             return None
         reserve = 2 * shape[0] * item  # Auxiliary contraction/solve vectors.
         if with_k and not only_dfj:
-            return int(reserve + shape[0] * shape[1] * shape[2] * item)
+            return int(reserve + shape[0] * shape[1] * shape[2] * item), 0
         if not with_k or not only_dfj:
-            return int(reserve)
+            return int(reserve), 0
     elif only_dfj:
         return None
     if direct_basis is None:
-        return None if only_dfj and with_k else reserve
+        return None if only_dfj and with_k else (int(reserve), 0)
     from gradscf.integrals.backends.native.jk import NativeDirectBasis, native_jk_workspace_bytes
     if type(direct_basis) is not NativeDirectBasis:
         return None
@@ -181,26 +182,54 @@ def scf_operator_workspace_bytes(df_factors=None, direct_basis=None, with_k=Fals
         estimate = native_jk_workspace_bytes(direct_basis, workers, cutoff)
     except (AttributeError, TypeError, ValueError):
         return None
-    return None if estimate is None else int(reserve + 3 * estimate)
+    return None if estimate is None else (int(reserve), int(3 * estimate))
 
 
-def prepare_scf_grid(raw, *, max_memory, resident_bytes=0, deriv=1):
+
+def scf_operator_workspace_bytes(df_factors=None, direct_basis=None, with_k=False,
+                                 only_dfj=False, density_dtype=None, workers=1, cutoff=0):
+    """Total method reservation, retaining the existing scalar estimate API."""
+    reservation = _scf_operator_reservation(df_factors, direct_basis, with_k,
+        only_dfj, density_dtype, workers, cutoff)
+    return None if reservation is None else sum(reservation)
+
+
+def prepare_scf_grid(raw, *, max_memory, resident_bytes=0, deriv=1,
+                     host_workspace_bytes=0, expected_passes=None):
     """Return call-local AO reuse when outputs, one copy and scratch fit.
 
     The raw provider stays unchanged. Caller reservations cover other SCF
     arrays; the provider's own leaves are additionally charged conservatively.
+    Host-only native work consumes the method budget before the device cap;
+    on CPU all storage shares one pool. An explicit zero/single-consumption
+    hint streams; unknown/default reuse keeps the existing admission policy.
+    No SCF iteration limit is interpreted as a count of Fock evaluations.
     Unknown traced devices and explicit streaming retain the original path.
     """
     if not isinstance(raw, AOGrid) or not raw.adaptive or not raw.ngrids or not raw.nao:
         return raw
     if deriv not in (0, 1, 2):
         raise ValueError("SCF AO preparation requires deriv in (0, 1, 2).")
+    host = validate_reserved_bytes(host_workspace_bytes, name="host_workspace_bytes")
+    if expected_passes is not None:
+        if isinstance(expected_passes, bool) or not isinstance(expected_passes, Integral) or expected_passes < 0:
+            raise ValueError("expected_passes must be a nonnegative integer or None.")
+        if expected_passes <= 1:
+            return raw
     device = _grid_device(raw.coords)
     if device is None:
         return raw
     owned = array_storage_bytes(*jax.tree_util.tree_leaves(raw))
     try:
-        available = workspace_bytes(max_memory, resident_bytes=resident_bytes + owned, device=device)
+        if getattr(device, "platform", None) == "cpu" or device == "cpu":
+            available = workspace_bytes(max_memory,
+                resident_bytes=resident_bytes + owned + host, device=device)
+        else:
+            # Keep the shared 20% reserve for both method and device limits.
+            # Host scratch is not a VRAM allocation, but cannot disappear
+            # from the total method allowance when the device cap is lower.
+            available = min(workspace_bytes(max_memory, device=device),
+                _requested_workspace_bytes(max_memory) - host) - resident_bytes - owned
     except ValueError:
         return raw  # An optional cache must not displace an already streamed calculation.
     itemsize = max(8, np.dtype(jnp.result_type(raw.coords, raw.exponents, raw.coefficients)).itemsize)

@@ -637,22 +637,27 @@ def run_uks_from_integrals(
         alpha = None
         alpha_scalar = float(jnp.asarray(getattr(bound_xc, "exact_exchange_fraction", 0.0)))
 
-    if bound_xc is None and grid_ao is not None and xc_kind in {"LDA", "GGA"}:
+    if bound_xc is None and grid_ao is not None and xc_kind in {"LDA", "GGA", "MGGA"}:
         from gradscf._memory import tree_storage_bytes
-        from .inputs.grid import prepare_scf_grid, scf_operator_workspace_bytes
+        from .inputs.grid import prepare_scf_grid, _scf_operator_reservation
 
         resident = tree_storage_bytes(s, h, eri, eri_lr, df_factors_arr,
             ao, ao_deriv1, density_a, density_b, mo_coeff_a, mo_coeff_b)
         resident += 64 * s.size * max(8, h.dtype.itemsize)
-        operator = scf_operator_workspace_bytes(df_factors_arr, direct_basis,
+        operator = _scf_operator_reservation(df_factors_arr, direct_basis,
             with_k=rsh is not None or abs(alpha_scalar) > 1e-14, only_dfj=cfg.only_dfj,
             density_dtype=density_a.dtype, workers=cfg.direct_scf_workers, cutoff=cfg.direct_scf_tol)
         if operator is not None:
+            device_work, host_work = operator
             if df_factors_arr is not None and not cfg.only_dfj and abs(alpha_scalar) > 1e-14:
                 # Independent spin contractions may keep both QNN products live.
-                operator += df_factors_arr.size * jnp.result_type(df_factors_arr, density_a).itemsize
+                device_work += df_factors_arr.size * jnp.result_type(df_factors_arr, density_a).itemsize
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
-                resident_bytes=resident + operator, deriv=0 if xc_kind == "LDA" else 1)
+                resident_bytes=resident + device_work, host_workspace_bytes=host_work, deriv=0 if xc_kind == "LDA" else 1)
+
+    if direct_basis is not None and (cfg.jk_backend == "direct" or cfg.only_dfj):
+        from ..integrals.backends.native.jk import _prepare_direct_basis
+        direct_basis = _prepare_direct_basis(direct_basis)
 
     def eval_state(
         density_a_arg: Array,

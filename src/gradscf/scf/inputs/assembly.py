@@ -161,7 +161,7 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         if cfg.jk_backend == "direct" or only_dfj:
             from gradscf.integrals.backends.native.jk import NativeDirectBasis, native_jk_workspace_bytes
 
-            estimate = native_jk_workspace_bytes(NativeDirectBasis(plan, params),
+            estimate = native_jk_workspace_bytes(NativeDirectBasis(plan, None),
                                                  cfg.direct_scf_workers, cfg.direct_scf_tol)
             if estimate is None:
                 raise ValueError("Native J/K workspace requires a complete basis topology.")
