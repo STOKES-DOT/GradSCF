@@ -117,7 +117,9 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
     for (int k=outer_owned ? 0:shell_begin;k<=i;++k) {
       const bool owned=outer_owned || owns(k);
       const int first=owned ? 0:shell_begin;
-      const int last=owned ? k+1:std::min(k+1,shell_end);
+      // Canonical shell pairs avoid computing both (i,j,i,l) and (i,l,i,j).
+      const int pair_end=k==i ? j+1:k+1;
+      const int last=owned ? pair_end:std::min(pair_end,shell_end);
       for (int l=first;l<last;++l) {
         if (cutoff>0 && bounds[size_t(i)*t.nbas+j]*bounds[size_t(k)*t.nbas+l]<cutoff) continue;
         if (cutoff>0 && density_bounds) {
@@ -137,14 +139,22 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
         const int dk=t.ao[k+1]-t.ao[k],dl=t.ao[l+1]-t.ao[l];
         int sh[]={i,j,k,l};
         block(t,f,opt.value,sh,size_t(di)*dj*dk*dl,data,cache,&sizes);
+        const bool same_shell_pair=i==k && j==l;
         for (int p=0;p<di;++p) for (int q=0;q<dj;++q) {
           const int a=t.ao[i]+p,b=t.ao[j]+q;
           if (a<b) continue;
           const size_t ab=pair_index(a,b);
           for (int r=0;r<dk;++r) for (int s=0;s<dl;++s) {
             const int c=t.ao[k]+r,d=t.ao[l]+s;
-            if (c<d || ab<pair_index(c,d)) continue;
-            consume(a,b,c,d,data[((size_t(s)*dk+r)*dj+q)*di+p]);
+            if (c<d) continue;
+            const bool ordered=ab>=pair_index(c,d);
+            if (!ordered && same_shell_pair) continue;
+            const double value=data[((size_t(s)*dk+r)*dj+q)*di+p];
+            // With i==k, distinct shell pairs can interleave in AO-pair
+            // order. Emit their exchanged AO tuple instead of dropping it;
+            // only equal shell pairs contain both copies in this block.
+            if (ordered) consume(a,b,c,d,value);
+            else consume(c,d,a,b,value);
           }
         }
       }
