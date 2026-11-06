@@ -110,7 +110,7 @@ static ffi::Future DirectJKImpl(ffi::ThreadPool pool,
               }
             }
           },shell_begin,shell_end,bounds.get(),optimizer->value,
-            private_outputs ? worker : 0,private_outputs ? workers : 1,density_bounds.get());
+            private_outputs ? worker : 0,private_outputs ? workers : 1,density_bounds.get(),with_j,with_k);
         } catch(const std::exception& e) {
           (*errors)[worker]=e.what();
         }

@@ -18,7 +18,7 @@ CUTOFF = .05
 OMEGA = .3
 
 
-def mask_for(eri, screen, offsets, cutoff=CUTOFF):
+def mask_for(eri, screen, offsets, cutoff=CUTOFF, *, with_j=True, with_k=True):
     """Independent dense oracle for shell L1 bounds and all canonical copies."""
     n = eri.shape[0]
     pairs = [(a, b) for a, b in zip(offsets[:-1], offsets[1:])]
@@ -34,7 +34,8 @@ def mask_for(eri, screen, offsets, cutoff=CUTOFF):
     i, j, k, l = labels
     schwarz = bound[i, j] * bound[k, l]
     density_bound = np.zeros_like(eri)
-    for a, b in ((i, j), (k, l), (i, k), (i, l), (j, k), (j, l)):
+    products = (((i, j), (k, l)) if with_j else ()) + (((i, k), (i, l), (j, k), (j, l)) if with_k else ())
+    for a, b in products:
         density_bound = np.maximum(density_bound, magnitude[a, b])
     return (schwarz >= cutoff) & (8 * schwarz * density_bound >= cutoff)
 
@@ -62,7 +63,7 @@ def system():
 
 def oracle(system, screen, omega, with_j=True, with_k=True):
     eri = system.eri[omega]
-    mask = mask_for(eri, screen, system.offsets)
+    mask = mask_for(eri, screen, system.offsets, with_j=with_j, with_k=with_k)
     for permutation in ((1, 0, 2, 3), (0, 1, 3, 2), (2, 3, 0, 1)):
         np.testing.assert_array_equal(mask, mask.transpose(permutation))
     assert mask.any() and not mask.all(), 'Fixture must exercise a partial quartet subset'
@@ -100,14 +101,15 @@ def test_zero_screen_drops_nonzero_payload_without_changing_default(system):
 
 
 @pytest.mark.parametrize('omega', [0., OMEGA])
-def test_fixed_reference_keeps_linearity_adjoint_and_joint_array_ad(system, omega):
+@pytest.mark.parametrize('with_j,with_k', [(True,True),(True,False),(False,True)])
+def test_fixed_reference_keeps_linearity_adjoint_and_joint_array_ad(system, omega, with_j, with_k):
     d, s = system.density, system.screen
     rng = np.random.default_rng(781)
     direction = jnp.asarray(.03 * (rng.normal(size=d.shape) + 1j * rng.normal(size=d.shape)))
     ds = jnp.asarray(.0003 * (rng.normal(size=s.shape) + 1j * rng.normal(size=s.shape)))
-    expected = oracle(system, s, omega)
+    expected = oracle(system, s, omega, with_j, with_k)
     action = lambda x, screen: system.provider.get_jk(x, screen_density=screen,
-        screening_threshold=CUTOFF, workers=2, omega=omega)
+        screening_threshold=CUTOFF, workers=2, omega=omega, with_j=with_j, with_k=with_k)
     value, tangent = jax.jvp(action, (d, s), (direction, ds))
     compare(value, expected(d))
     compare(tangent, expected(direction), 1e-9)  # never screen with the tangent
@@ -171,7 +173,7 @@ def test_zero_cutoff_retains_projected_coefficient_ad(system):
 def test_rsh_uses_each_operator_mask_with_one_screen_reference(system):
     from gradscf.scf.rsh import _direct_rsh_jk
     d, s = system.density, system.screen
-    full, long_range = oracle(system, s, 0.)(d), oracle(system, s, OMEGA)(d)
+    full, long_range = oracle(system, s, 0.)(d), oracle(system, s, OMEGA, with_j=False, with_k=True)(d)
     expected = full[0], .19*full[1] + (.65-.19)*long_range[1]
     actual = _direct_rsh_jk(system.provider, d, (OMEGA, .65, .19), screen_density=s,
                             screening_threshold=CUTOFF, workers=2)

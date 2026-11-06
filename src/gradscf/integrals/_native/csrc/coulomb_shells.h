@@ -84,7 +84,8 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
                        const std::vector<double>* prepared_bounds=nullptr,
                        CINTOpt* prepared_optimizer=nullptr,
                        int i_start=0, int i_stride=1,
-                       const std::vector<double>* density_bounds=nullptr) {
+                       const std::vector<double>* density_bounds=nullptr,
+                       bool with_j=true, bool with_k=true) {
   if (!std::isfinite(cutoff) || cutoff<0) throw std::invalid_argument("Invalid Schwarz cutoff");
   if (shell_end<0) shell_end=t.nbas;
   if (shell_begin<0 || shell_begin>=shell_end || shell_end>t.nbas)
@@ -121,12 +122,15 @@ static void unique_eri(IntegralTables& t, int cart, double cutoff, Consume consu
         if (cutoff>0 && bounds[size_t(i)*t.nbas+j]*bounds[size_t(k)*t.nbas+l]<cutoff) continue;
         if (cutoff>0 && density_bounds) {
           const auto& s=*density_bounds;
-          const double magnitude=std::max({s[size_t(i)*t.nbas+j],s[size_t(k)*t.nbas+l],
+          // J consumes the within-pair density blocks; K consumes cross-pair
+          // blocks. Each selected set is invariant under all eight ERI copies,
+          // so the fixed-reference operator retains its transpose symmetry.
+          double magnitude=with_j ? std::max(s[size_t(i)*t.nbas+j],s[size_t(k)*t.nbas+l]):0.;
+          if (with_k) magnitude=std::max({magnitude,
               s[size_t(i)*t.nbas+k],s[size_t(i)*t.nbas+l],
               s[size_t(j)*t.nbas+k],s[size_t(j)*t.nbas+l]});
-          // One canonical-quartet decision retains or drops every symmetry
-          // copy, independent of J/K selection. This is a local contribution
-          // bound, not a bound on the accumulated Fock error.
+          // Keep the existing conservative multiplicity factor. This bounds
+          // local contributions, not the accumulated Fock error.
           if (8*bounds[size_t(i)*t.nbas+j]*bounds[size_t(k)*t.nbas+l]*magnitude<cutoff) continue;
         }
         const int di=t.ao[i+1]-t.ao[i],dj=t.ao[j+1]-t.ao[j];
