@@ -107,7 +107,7 @@ matrix; the 96-atom calculation is not multiplied by all names/aliases.
 - [x] 01a. Freeze plan, source/input fingerprints and registry-family inventory.
 - [x] 01b. Add independent selected-product screening/call-count RED fixtures;
       verify the old native library fails for the intended reason.
-- [ ] 01c. Add real multi-block AO materialization/consumer tests and identify
+- [x] 01c. Add real multi-block AO materialization/consumer tests and identify
       the 103-second preparation cost with bounded whole-grid evidence.
 - [ ] 01d. Add preparation-lifetime tests: density update, geometry update,
       coefficient/exponent/model update and same-signature new object.
@@ -126,7 +126,7 @@ matrix; the 96-atom calculation is not multiplied by all names/aliases.
 
 ### HFKS-03 — AO cache and XC integration
 
-- [ ] 03a. Fix measured AO materialization/layout/copy waste; preserve the exact
+- [x] 03a. Fix measured AO materialization/layout/copy waste; preserve the exact
       grid and differentiable geometry/basis dependence. Caller-owned arrays
       needed by AD cannot be donated or mutated.
 - [ ] 03b. Improve shared rho/gradient/tau/Laplacian and Vxc contractions using
@@ -180,3 +180,33 @@ A job allocation is not a completed test. Retain original worktree user changes.
   32 -> 29 (K); joint remains 32. See HFKS-02a.md and checkpoint.json.
   The stale incremental build is retained as rejected evidence. HFKS-02d and
   all grid/remaining-family/training/large-scale gates remain unchecked.
+
+- 2026-11-06, HFKS-01c/03a candidate (not finally accepted): RED compiled-operation
+  gate 2 failed / 7 passed; common Cartesian coordinate powers still used generic
+  floating power. Candidate replaces integer powers 0..4 by exact multiplication,
+  retaining the existing custom JVP and higher-power path. Remote observations:
+  CPU tests 47 passed, GPU 12 passed, six facades 6 passed; independent whole-grid
+  energy/Vxc and 257-point AO comparisons passed. AO cache preparation median
+  103.415 -> 33.983 s. CPU cached XC 10.529 -> 11.419 s (no speedup claimed);
+  GPU streamed XC 3.151 -> 2.280 s. See ao_grid/observed_summary.json.
+  Compiled buffers do not show a full 31-GB cache copy on each iteration; the
+  confirmed first target is AO production, not an assumed cache-copy bug.
+- 2026-11-06, maintenance boundary: job 116546 completed the kernel round. Job
+  116579 started clean full-SCF one-cold/three-warm validation; GPU calls 0/1
+  passed, subsequent calls remain unverified. SSH then timed out, and the user
+  confirmed maintenance and requested local organization. No resubmission or
+  further remote polling until the user reports restoration. Keep 01c/03a/03d
+  unchecked until raw evidence and the applicable final checks are reconciled.
+
+- 2026-11-06, recovery and HFKS-01c/03a acceptance: existing job 116579 had
+  COMPLETED (0:0) during maintenance; no calculation was repeated after recovery.
+  All 66 XML-recorded tests and CPU/GPU 4/4 full-SCF calls passed; source hashes
+  and the uninstrumented production library were verified. Raw files are now
+  synchronized. CPU AO preparation 103.415 -> 33.983 s; GPU streamed XC
+  3.151 -> 2.280 s. CPU cached XC 10.529 -> 11.419 s remains an open consumer
+  performance issue, not a claimed improvement. Whole-call warm medians are
+  CPU 459.674 s / GPU 232.254 s, including both recent changes; previous-run
+  comparisons have different affinity and CPU iteration count. See
+  `reports/hfks_optimization/20261106/ao_grid/verification.json` and README.md.
+  Only 01c/03a are newly checked. Remaining family/RI/training and preparation-
+  lifetime gates remain open; this is not completion of the full project.
