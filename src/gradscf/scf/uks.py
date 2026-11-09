@@ -581,7 +581,7 @@ def run_uks_from_integrals(
     *,
     overlap: Array,
     hcore: Array,
-    eri: Array,
+    eri: Array | None,
     nalpha: int,
     nbeta: int,
     nuclear_repulsion: float | Array,
@@ -617,7 +617,9 @@ def run_uks_from_integrals(
         xc_kind = xc_type(local_xc_spec(cfg.xc_spec))
     s = jnp.asarray(overlap)
     h = jnp.asarray(hcore)
-    eri = jnp.asarray(eri)
+    if eri is None and cfg.jk_backend == "full":
+        raise ValueError("Full-integral UKS requires an ERI array.")
+    eri = jnp.zeros((0, 0, 0, 0), dtype=h.dtype) if eri is None else jnp.asarray(eri)
     df_factors_arr = None if df_factors is None else jnp.asarray(df_factors)
     ao = jnp.asarray(ao)
     ao_deriv1 = jnp.asarray(ao_deriv1)

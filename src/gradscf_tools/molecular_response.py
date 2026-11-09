@@ -38,12 +38,15 @@ class MolecularEnergy:
     current stationarity/metric checks still apply; use a fresh solution at
     each geometry. This mode retains orbital response rather than freezing it.
 
-    Native full J/K is the default geometry-AD representation. Supported HF
-    and DFT references may opt into ``jk_backend="direct"`` to use moving
-    native J/K without full or long-range AO ERIs.
-    Direct calls inherit the seed's J/K worker count and retain zero screening.
-    The default requires a full-J/K seed; explicit direct accepts full or
-    direct seeds. DFT assembly inherits the seed's grid and memory controls;
+    The default representation inherits a direct seed; otherwise it uses full
+    J/K. An explicit ``jk_backend="direct"`` also accepts a full-J/K seed and
+    uses moving native J/K without full or long-range AO ERIs.
+    Direct calls inherit the seed's J/K workers and screening cutoff. Positive
+    cutoff response follows the selected quartet mask away from its thresholds;
+    convergence to the unscreened result remains an observable-specific check.
+    Full J/K requires a full-J/K seed; direct accepts full or direct seeds.
+    Direct workflows inherit the seed memory budget unless explicitly overridden.
+    DFT assembly inherits the seed's grid and memory controls;
     an explicit max_memory overrides that assembly budget. Original
     omegaB97X-D retains its geometry-dependent CHG energy in both backends.
     DFT grids and AO values move with R. Isolated state stability and numerical
@@ -51,17 +54,24 @@ class MolecularEnergy:
     """
 
     def __init__(self, mf, *, mode="implicit", forward="minimize", gradient_tolerance=1e-9,
-                 jk_backend="full", max_memory=None, reserved_bytes=0):
+                 jk_backend=None, max_memory=None, reserved_bytes=0):
         if forward not in ("minimize", "scf", "reference"):
             raise ValueError("forward must be 'minimize', 'scf' or 'reference'.")
+        if jk_backend is None:
+            jk_backend = "direct" if getattr(mf, "jk_backend", "full") == "direct" else "full"
         if jk_backend not in ("full", "direct"):
             raise ValueError("jk_backend must be 'full' or 'direct'.")
+        if max_memory is None and jk_backend == "direct":
+            max_memory = getattr(mf, "max_memory", None)
         self.max_memory = None if max_memory is None else validate_memory_mb(max_memory)
         self.reserved_bytes = validate_reserved_bytes(reserved_bytes)
         if not jax.config.x64_enabled:
             raise ValueError("MolecularEnergy requires JAX float64.")
         if not bool(mf.converged):
             raise ValueError("Supply a converged molecular reference.")
+        check_grid = getattr(mf, "_check_response_grid", None)
+        if check_grid is not None:
+            check_grid()
         coefficients = np.asarray(mf.mo_coeff)
         occupations = np.asarray(mf.mo_occ)
         if np.iscomplexobj(coefficients) or coefficients.ndim not in (2, 3):
@@ -82,6 +92,7 @@ class MolecularEnergy:
             raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct J/K.")
         self.jk_backend = jk_backend
         self.direct_scf_workers = getattr(mf, "direct_scf_workers", 1)
+        self.direct_scf_tol = getattr(mf, "direct_scf_tol", 0.)
         self.xc = mf.xc
         self.rsh = rsh_preset(self.xc)
         self.kind = xc_type(local_xc_spec(self.xc))
@@ -113,7 +124,8 @@ class MolecularEnergy:
                                                             np.flatnonzero(occupations == 0)])
                 self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
         if self.kind != "HF" or forward == "scf":
-            self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
+            self.scf_config = replace(mf._config(), jk_backend=jk_backend,
+                                      direct_scf_tol=self.direct_scf_tol)
             if self.max_memory is not None:
                 self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
         topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
@@ -165,8 +177,8 @@ class MolecularEnergy:
             if self.jk_backend == 'direct':
                 from gradscf.integrals.backends.native.jk import NativeDirectBasis
                 from gradscf.scf.orbital_optimization import _native_workspace
-                required += _native_workspace(NativeDirectBasis(self.plan, self.parameters),
-                                               self.direct_scf_workers)
+                required += _native_workspace(NativeDirectBasis(self.plan, None),
+                                               self.direct_scf_workers, self.direct_scf_tol)
             workspace_bytes(self.max_memory, resident_bytes=resident+required)
         moving = replace(self.parameters, centers=coordinates[self.owners],
                          nuclear_coords=coordinates)
@@ -254,7 +266,9 @@ class MolecularEnergy:
         if self.forward == "scf":
             coefficients = self._scf_seed(inputs)
         minimize = scf.minimize_uks_from_integrals if self.unrestricted else scf.minimize_roks_from_integrals
-        options = dict(direct_scf_workers=self.direct_scf_workers) if self.jk_backend == "direct" else {}
+        options = (dict(direct_scf_workers=self.direct_scf_workers,
+                        direct_scf_tol=self.direct_scf_tol)
+                   if self.jk_backend == "direct" else {})
         if self.max_memory is not None:
             options.update(max_memory=self.max_memory,
                 reserved_bytes=self.reserved_bytes+tree_storage_bytes(

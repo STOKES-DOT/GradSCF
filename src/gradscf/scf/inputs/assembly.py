@@ -192,18 +192,16 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         s = plan.evaluate("overlap", params)
         h = plan.evaluate("kinetic", params)+plan.evaluate("nuclear", params)
         full_eri=pair=factors=None
-        if cfg.jk_backend=='direct':
-            if context.geometry_is_traced and cfg.direct_scf_tol != 0.:
-                raise ValueError('Direct-SCF geometry AD requires direct_scf_tol=0.')
-        elif cfg.jk_backend=='df' and auxiliary is not None:
+        if cfg.jk_backend=='df' and auxiliary is not None:
             from gradscf.integrals.molecular.density_fitting import make_auxiliary_plan, unpack_factors
             packed_factors=make_auxiliary_plan(top,aux_top).factors(params,aux_params,lindep=cfg.df_tol)
             factors=unpack_factors(packed_factors,top.nao)
-        elif rsh is not None:
-            full_eri = plan.evaluate("eri", params)
-            eri_lr = plan.evaluate("eri", params, omega=rsh.default_omega)
-        else:
-            pair=plan.evaluate('eri',params,aosym='s4')
+        elif cfg.jk_backend != 'direct':
+            if rsh is not None:
+                full_eri = plan.evaluate("eri", params)
+                eri_lr = plan.evaluate("eri", params, omega=rsh.default_omega)
+            else:
+                pair=plan.evaluate('eri',params,aosym='s4')
         dipole = plan.evaluate("dipole", params) if include_dipole else None
     if cfg.jk_backend == "df" and factors is None:
         from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors, eri_pair_matrix_to_df_factors_traceable

@@ -452,8 +452,8 @@ def minimize_uks_from_integrals(*, overlap, hcore, eri, nuclear_repulsion, ao, a
     stationary branch and returns nonfinite gradients if it has not converged.
     A JAX-pytree AO J/K ``direct_basis`` replaces ERIs; pass ``eri=None``.
     Native providers retain moving coordinates in the stationary response.
-    Geometry AD requires ``direct_scf_tol=0``; primitive exponent
-    and coefficient derivatives remain unsupported by native direct J/K.
+    Positive-cutoff geometry AD follows the selected quartet mask away from
+    threshold changes. Basis-parameter orders follow the direct provider contract.
     Optional decimal-MB planning covers known forward and implicit-response
     arrays; explicit outer AD, compilation and opaque library storage are not
     a process cap. None retains the original numerical path.
