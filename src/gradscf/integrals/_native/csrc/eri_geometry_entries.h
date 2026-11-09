@@ -71,14 +71,22 @@ template<class Consume>
 void for_each_eri_geometry_orbit(IntegralTables& t,const ERIWindow* window,
                                 Consume consume,int first_shell,int last_shell,
                                 int first_task=0,int task_stride=1,
-                                const ERIQuartetScreen* screen=nullptr) {
+                                const ERIQuartetScreen* screen=nullptr,
+                                const ERICanonicalQuartets* prepared_schedule=nullptr) {
   const int physical_shells=int(t.ao.size())-1;
   if (last_shell<0) last_shell=physical_shells;
   if (first_shell<0 || first_shell>last_shell || last_shell>physical_shells)
     throw std::invalid_argument("Invalid ERI first-shell range");
   ERIWindow full(t);
   const ERIWindow& selected=window ? *window:full;
-  ERICanonicalQuartets(selected).for_each([&](const auto& shells) {
+  // Parallel direct callers retain one schedule until all workers finish.
+  // Serial/window callers construct only their own selected schedule here.
+  std::shared_ptr<const ERICanonicalQuartets> owned_schedule;
+  if (!prepared_schedule) {
+    owned_schedule=std::make_shared<const ERICanonicalQuartets>(selected);
+    prepared_schedule=owned_schedule.get();
+  }
+  prepared_schedule->for_each([&](const auto& shells) {
     if (screen && !screen->keep(shells)) return;
     libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::scheduled_quartets);
     consume(ERIGeometryOrbit(t,selected,shells));
@@ -90,7 +98,8 @@ void for_each_eri_geometry_entry(IntegralTables& t, int cart, Accumulate&& add,
                                  const ERIWindow* window=nullptr,
                                  int first_shell=0,int last_shell=-1,
                                  int first_task=0,int task_stride=1,
-                                 const ERIQuartetScreen* screen=nullptr) {
+                                 const ERIQuartetScreen* screen=nullptr,
+                                 const ERICanonicalQuartets* prepared_schedule=nullptr) {
   Intor ip=cart ? int2e_ip1_cart : int2e_ip1_sph;
   std::vector<double> block,cache;
   for_each_eri_geometry_orbit(t,window,[&](const ERIGeometryOrbit& orbit) {
@@ -109,5 +118,5 @@ void for_each_eri_geometry_entry(IntegralTables& t, int cart, Accumulate&& add,
           }
         }
     });
-  },first_shell,last_shell,first_task,task_stride,screen);
+  },first_shell,last_shell,first_task,task_stride,screen,prepared_schedule);
 }

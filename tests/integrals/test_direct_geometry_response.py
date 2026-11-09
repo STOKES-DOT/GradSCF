@@ -98,8 +98,7 @@ def test_direct_geometry_translation_sum_rule(problem):
 
 
 def test_direct_geometry_retains_requested_workers(problem, monkeypatch):
-    from gradscf.integrals.backends.native import jk
-    from gradscf.integrals.backends.native.autodiff import direct_jk as geometry
+    from gradscf.integrals.backends.native.autodiff import direct_basis as geometry
     plan, _, coords, density, _, at, _, _ = problem
     original = geometry.geometry_products
     observed = []
@@ -108,7 +107,7 @@ def test_direct_geometry_retains_requested_workers(problem, monkeypatch):
         observed.append(kwargs.get("workers"))
         return original(*args, **kwargs)
 
-    jk._direct_geometry_value.cache_clear()
+    geometry.basis_value.cache_clear()
     monkeypatch.setattr(geometry, "geometry_products", products)
 
     def energy(r):
@@ -150,13 +149,25 @@ def test_real_third_direct_geometry_response_remains_explicitly_unsupported(prob
 
 
 @pytest.mark.parametrize("field", ["exponents", "coefficients"])
-def test_direct_basis_parameter_derivatives_remain_explicitly_unsupported(problem, field):
+def test_direct_basis_parameter_derivatives_match_full_eri(problem, field):
     plan, parameters, _, density, _, _, _, _ = problem
     values = getattr(parameters, field)
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError),
-                       match="(?i)(basis|exponent|coefficient)"):
-        jax.jvp(lambda value: plan.get_jk(replace(parameters, **{field: (value, *values[1:])}), density),
-                (values[0],), (jnp.ones_like(values[0]),))
+
+    def action(value, *, dense):
+        current = replace(parameters, **{field: (value, *values[1:])})
+        if not dense:
+            return plan.get_jk(current, density)
+        eri = plan.evaluate("eri", current)
+        return (jnp.einsum("pqrs,brs->bpq", eri, density),
+                jnp.einsum("prqs,brs->bpq", eri, density))
+
+    direction = jnp.ones_like(values[0])
+    expected = jax.jvp(lambda x: action(x, dense=True), (values[0],), (direction,))[1]
+    actual = jax.jit(lambda x, v: jax.jvp(
+        lambda y: action(y, dense=False), (x,), (v,))[1])(values[0], direction)
+    assert any(float(jnp.linalg.norm(matrix)) > 1e-6 for matrix in expected)
+    for result, reference in zip(actual, expected):
+        np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
 def test_projected_direct_geometry_and_transform_mixed_hvp(monkeypatch):

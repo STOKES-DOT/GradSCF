@@ -71,6 +71,19 @@ def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes
     derivative_cache = max(6*derivative_g+9*derivative_nf+3*nc+pair_scratch,
                            nc+4*derivative_nf)
     scratch = max(scratch, 16*(9*max_output**4+derivative_cache)+128*shapes**4)
+    # A coefficient pull uncontracts one leg to nprim functions; exponent
+    # raising retains one l+2 Cartesian leg plus reduced/transform buffers.
+    basis_block = max(max_p*cart0, max(contractions)*cart2)*max_cart**3
+    cart3 = (max_l+4)*(max_l+5)//2
+    mixed_nf = max(cart3*cart0**3, cart2*cart1*cart0**2)
+    mixed_g = (2*max_l+4)**3*(max_l+3)**2
+    basis_cache = max(6*mixed_g+9*mixed_nf+3*basis_block+pair_scratch,
+                      basis_block+4*mixed_nf)
+    # ip1 adds three components; permuted, reduced and spherical scratch
+    # remain at most shell-sized even for a one-leg identity contraction.
+    scratch = max(scratch, 16*(13*basis_block+basis_cache)+128*shapes**4)
+    shadow_capacity = max(p*max(p, c) for p, c in zip(primitive, contractions))
+    basis_tables = 8*(total_coefficients+4*shadow_capacity)+4*4*8
     allowed_l = min(max_l, 6)
     cumulative_cart = (allowed_l+1)*(allowed_l+2)*(allowed_l+3)//6
     optimizer = (48 + 12*cumulative_cart**4 + 8*(max_l+1)*16**3
@@ -81,6 +94,13 @@ def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes
     tables = (4*(6*atoms + 8*shells + shells+1)
               + 8*(20 + 3*atoms + total_primitive + total_coefficients))
     bounds = 16*shells**2 if cutoff > 0 else 0  # Schwarz plus optional density bounds
+    # ERICanonicalQuartets owns Pair{int,int,unsigned} and two size_t index
+    # arrays. Full direct windows reserve each array exactly, with no map or
+    # growth/copy peak. Budget 16 bytes per Pair (12 on the pinned LP64 ABI),
+    # two 8-byte indices, plus vector/control-block/allocation overhead. Basis
+    # and coordinate VJP workers share this immutable schedule once per call.
+    shell_pairs = shells*(shells+1)//2
+    schedule = 32*shell_pairs + 256
     # Coordinate VJPs reduce one ENV-sized vector per worker. Private value
     # outputs have a separate native cap and are absent for one worker.
     nao = sum(c*(f if topology.cart else 2*l+1)
@@ -89,7 +109,8 @@ def native_jk_workspace_bytes(provider, workers, cutoff, *, private_output_bytes
         if private_output_bytes is None else private_output_bytes)
     private = (min(limit,
                    workers*2*_DIRECT_JK_PRIVATE_MAX_BATCH*nao**2*8) if workers > 1 else 0)
-    return optimizer + bounds + (2*workers+1)*tables + workers*scratch + private
+    return (optimizer + bounds + schedule + (2*workers+1)*tables + workers*scratch + private
+            + (workers+1)*basis_tables + 8*(total_coefficients+total_primitive))
 
 
 @jax.tree_util.register_pytree_node_class
@@ -98,10 +119,10 @@ class NativeDirectBasis:
     """Native AO action with static topology and dynamic basis parameters.
 
     J/K density response and first/second coordinate response are supported.
-    Positive-cutoff coordinate AD differentiates the selected quartet set
-    away from mask changes; primitive exponent and coefficient derivatives
-    remain explicitly unsupported. Construction binds
-    one normalized zero-coordinate ENV inside the caller's differentiable
+    First primitive exponent/coefficient and mixed geometry/basis products
+    retain a static Coulomb range parameter. Positive-cutoff AD differentiates the selected quartet
+    set away from mask changes. Construction binds independent normalized
+    coefficient/exponent operands and fixed control ENV inside the caller's differentiable
     graph. Mutable host parameters are copied into immutable JAX arrays;
     subsequent caller edits require a new provider. Only static topology and
     programs are globally cached; this numerical preparation belongs here.
@@ -126,8 +147,8 @@ class NativeDirectBasis:
                     lambda value: value if is_dynamic(value) else jnp.array(value, copy=True),
                     self.parameters)
                 object.__setattr__(self, 'parameters', parameters)
-            env = self.plan._direct_environment(self.parameters)
-            object.__setattr__(self, '_prepared', (self.plan, self.parameters, env))
+            inputs = self.plan._direct_inputs(self.parameters)
+            object.__setattr__(self, '_prepared', (self.plan, self.parameters, inputs))
 
     def tree_flatten(self):
         # Canonical raw state only: any tree update must rederive preparation.
@@ -164,7 +185,7 @@ class NativeDirectBasis:
             self.parameters, density, screening_threshold=screening_threshold,
             workers=workers, with_j=with_j, with_k=with_k,
             private_output_bytes=self.private_output_bytes,
-            _environment=None if self._prepared is None else self._prepared[2], **range_options,
+            _inputs=None if self._prepared is None else self._prepared[2], **range_options,
         )
 
     def response_eri_pair_matrix(self):
@@ -182,8 +203,8 @@ class NativeDirectBasis:
 
         The caller pays for both the cache and contraction workspaces. The
         returned closure owns the cache; neither the reference nor a global
-        cache is mutated. Traced coordinates use the direct geometry action.
-        Exponent/coefficient AD has the same strict boundary as direct J/K.
+        cache is mutated. Any traced basis/coordinate state uses the direct
+        response action, retaining its normalization and parameter products.
         Nonzero omega always uses direct J/K; the cached s8 values are ordinary
         Coulomb integrals and must not be reused for a long-range operator.
         """
@@ -195,9 +216,9 @@ class NativeDirectBasis:
         direct = lambda density: bound.get_jk(
             density, screening_threshold=screening_threshold, workers=workers,
             with_j=with_j, with_k=with_k, **range_options)
-        coordinates_traced = any(isinstance(value, jax.core.Tracer) for value in
-                                 jax.tree.leaves((self.parameters.centers, self.parameters.nuclear_coords)))
-        if (omega or coordinates_traced or not (with_j or with_k) or cache_bytes < self.eri_cache_nbytes
+        parameters_traced = any(isinstance(value, jax.core.Tracer) for value in
+                                jax.tree.leaves(self.parameters))
+        if (omega or parameters_traced or not (with_j or with_k) or cache_bytes < self.eri_cache_nbytes
                 or screening_threshold > 0):
             return direct
 
@@ -230,8 +251,8 @@ class ProjectedNativeDirectBasis:
     """Exact contracted J/K with coordinate and contraction-matrix response.
 
     JAX owns both contractions with ``transform``. Primitive AO coordinates
-    retain their native geometry response; primitive exponents/coefficients
-    are explicitly unsupported differentiation inputs.
+    retain their native geometry response. First primitive exponent/coefficient
+    products follow the native direct contract.
     """
 
     primitive_basis: NativeDirectBasis
@@ -483,12 +504,13 @@ def _validate_selection(with_j, with_k):
 
 
 def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
-              with_j=True, with_k=True, coordinates=None, private_output_bytes=None, screen_density=None):
+              with_j=True, with_k=True, coordinates=None, coefficients=None, exponents=None,
+              private_output_bytes=None, screen_density=None):
     """Contract J/K; IntegralPlan supplies coordinates separately for geometry AD.
 
-    A raw packed ENV remains a fixed-basis input. Separating fixed ENV and
-    coordinate leaves prevents unsupported exponent/coefficient VJPs from
-    being silently returned as zeros. An explicit screen_density selects a
+    A raw packed ENV remains a fixed-basis input. IntegralPlan supplies
+    independent normalized coefficient/exponent and coordinate operands for
+    basis AD, without repeating normalization. An explicit screen_density selects a
     canonical quartet subset using shell-pair L1 bounds (max over reference
     batches and transpose), independently of the live density payload. This
     local contribution bound is not a total Fock error bound. Its indicator
@@ -529,7 +551,28 @@ def direct_jk(atm, bas, env, density, *, cart, cutoff=0.0, workers=1,
     real = (
         jnp.concatenate((flat.real, flat.imag), axis=0) if jnp.iscomplexobj(d) else flat
     )
-    if coordinates is None:
+    if (coefficients is None) != (exponents is None):
+        raise ValueError("Direct basis AD requires both coefficients and exponents.")
+    if coefficients is not None:
+        from .autodiff.direct_basis import basis_value
+
+        coefficients, exponents = map(jnp.asarray, (coefficients, exponents))
+        basis = np.asarray(bas)
+        for name, value, size in (("coefficients", coefficients, int(np.sum(basis[:, 2]*basis[:, 3]))),
+                                   ("exponents", exponents, int(np.sum(basis[:, 2])))):
+            if value.dtype != jnp.float64 or value.shape != (size,):
+                raise ValueError(f"Direct {name} must have float64 dtype and shape {(size,)}.")
+        if coordinates is None:
+            raise ValueError("Direct basis AD requires explicit coordinates.")
+        coordinates = jnp.asarray(coordinates, dtype=env.dtype)
+        if coordinates.shape != (len(atm), 3):
+            raise ValueError("Direct J/K coordinates must contain every nuclear and basis-center atom.")
+        screen = reference[0] if reference else jnp.zeros((0, n, n), dtype=env.dtype)
+        out = basis_value(tuple(map(tuple, np.asarray(atm).tolist())),
+                          tuple(map(tuple, basis.tolist())), bool(cart), float(cutoff),
+                          int(workers), bool(with_j), bool(with_k), private_output_bytes,
+                          bool(reference))(env, coefficients, exponents, coordinates, real, screen)
+    elif coordinates is None:
         out = operator.bind(env, real, *reference)
     else:
         coordinates = jnp.asarray(coordinates, dtype=env.dtype)

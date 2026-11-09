@@ -9,7 +9,8 @@ void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
                                      const ERIWindow* window=nullptr,
                                      int first_shell=0,int last_shell=-1,
                                      int first_task=0,int task_stride=1,
-                                     const ERIQuartetScreen* screen=nullptr) {
+                                     const ERIQuartetScreen* screen=nullptr,
+                                     const ERICanonicalQuartets* prepared_schedule=nullptr) {
   // Shadow shells may have been appended, but never enter the physical loop.
   const int nshell=int(t.ao.size())-1;
   // Each call contributes one ordered Hessian entry. Cross-slot entries
@@ -51,7 +52,7 @@ void for_each_geometry_hessian_entry(IntegralTables& t, int op, int cart,
         });
       };
       modes(0,eri_geometry_legs);modes(1,same_pair);modes(2,cross_pair);
-    },first_shell,last_shell,first_task,task_stride,screen);
+    },first_shell,last_shell,first_task,task_stride,screen,prepared_schedule);
   } else {
     Intor same_cart[]={int1e_ipipovlp_cart,int1e_ipipkin_cart,int1e_ipiprinv_cart,int1e_ipipr_cart};
     Intor same_sph[]={int1e_ipipovlp_sph,int1e_ipipkin_sph,int1e_ipiprinv_sph,int1e_ipipr_sph};

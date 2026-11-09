@@ -46,34 +46,36 @@ class IntegralPlan:
             self, parameters, active_shells=active_shells,
             separate_exponents=separate_exponents)
 
-    def _direct_environment(self, parameters):
-        """Normalize one live basis state with coordinates carried separately."""
+    def _direct_inputs(self, parameters):
+        """Normalize once, retaining independent coefficient/exponent operands."""
         fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
                         nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
-        return self.pack(fixed)[2]
+        _, _, env, coefficients, exponents = self.coefficient_data(fixed, separate_exponents=True)
+        return env, coefficients, exponents
 
     def get_jk(self, parameters, density, *, screening_threshold=0., workers=1,
                with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None,
-               _environment=None):
+               _inputs=None):
         """Native shell-direct J/K with density and coordinate response.
 
-        Positive-cutoff coordinate AD follows the selected quartet mask away
-        from threshold changes. Numerical exponents and coefficients remain
-        separate unsupported differentiation inputs.
+        Density, first basis-parameter and first/second coordinate responses
+        are supported. Positive-cutoff AD follows the selected quartet mask
+        away from threshold changes. Mixed basis/coordinate products are
+        supported; pure/cross basis Hessians and third derivatives are not.
         A static positive omega selects erf(omega*r12)/r12 in inverse Bohr;
         omega=0 retains ordinary Coulomb, including its exact density response.
         """
         omega = _validate_omega(omega)
         from .backends.native.jk import direct_jk
-        if _environment is None:
-            env = self._direct_environment(parameters)
+        if _inputs is None:
+            env, coefficients, exponents = self._direct_inputs(parameters)
         else:
-            # Only trace-local bound providers supply this private operand;
-            # their raw parameters retain the normalization dependency graph.
+            # Derived operands belong to this bound raw state, never a global
+            # numerical cache. Normalization retains its ordinary JAX graph.
             check_parameter_shapes(self.topology, parameters)
-            if _environment.shape != (self.env_size,):
+            env, coefficients, exponents = _inputs
+            if env.shape != (self.env_size,):
                 raise ValueError("Prepared direct ENV does not match the plan.")
-            env = _environment
         atm, bas = self.atm, self.bas
         if omega:
             env=env.at[8].set(omega)  # libcint PTR_RANGE_OMEGA
@@ -82,6 +84,7 @@ class IntegralPlan:
         return direct_jk(atm,bas,env,density,cart=self.topology.cart,
                          cutoff=screening_threshold,workers=workers,
                          with_j=with_j,with_k=with_k,coordinates=coordinates,
+                         coefficients=coefficients, exponents=exponents,
                          private_output_bytes=private_output_bytes, screen_density=screen_density)
 
     def evaluate(self, operator, parameters, *, origin=None, ecps=None, aosym='s1', omega=0.0,zeta=None,

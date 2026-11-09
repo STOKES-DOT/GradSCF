@@ -163,17 +163,25 @@ def test_bound_environment_retains_geometry_density_mixed_hvp(system):
 
 
 @pytest.mark.parametrize("field", ["exponents", "coefficients"])
-def test_prepared_environment_preserves_basis_ad_guard(system, field):
+def test_prepared_environment_retains_basis_gradient(system, field):
     plan, parameters, density = system
     values = getattr(parameters, field)
 
-    def value(x):
+    def value(x, *, dense):
         current = replace(parameters, **{field: (x, *values[1:])})
-        return sum(jnp.sum(v*v) for v in NativeDirectBasis(plan, current).get_jk(density))
+        result = (_oracle(plan, current)(density) if dense else
+                  NativeDirectBasis(plan, current).get_jk(density))
+        return sum(jnp.sum(v*v) for v in result)
 
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError),
-                       match="(?i)(basis|exponent|coefficient)"):
-        jax.block_until_ready(jax.jit(jax.grad(value))(values[0]))
+    expected = jax.jit(jax.grad(lambda x: value(x, dense=True)))(values[0])
+    actual = jax.jit(jax.grad(lambda x: value(x, dense=False)))(values[0])
+    assert float(jnp.linalg.norm(expected)) > 1e-6
+    np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-10)
+    direction = .07*jnp.cos(jnp.arange(values[0].size).reshape(values[0].shape)+.3)
+    for step in (2e-4, 1e-4):
+        fd = (value(values[0]+step*direction, dense=True)
+              - value(values[0]-step*direction, dense=True))/(2*step)
+        np.testing.assert_allclose(jnp.vdot(actual, direction), fd, atol=2e-7, rtol=4e-6)
 
 
 def test_workspace_quota_change_keeps_parameter_preparation(system, monkeypatch):
@@ -194,16 +202,28 @@ def test_provider_argument_cannot_hide_raw_basis_tangent_in_zero_preparation(sys
     leaves, structure = jax.tree.flatten(provider)
     target = getattr(parameters, field)[0]
     assert any(value is target for value in leaves)
-    # Only a raw basis leaf moves; any separately prepared operands have zero
-    # tangents. Unsupported parameter AD must still be diagnosed explicitly.
+    # Only a raw basis leaf moves. Reconstructed preparation must retain its
+    # true tangent, including JAX primitive/contraction normalization.
     tangent_leaves = [jnp.ones_like(value) if value is target else jnp.zeros_like(value)
                       for value in leaves]
     tangent = jax.tree.unflatten(structure, tangent_leaves)
     action = jax.jit(lambda p, dp: jax.jvp(
         lambda q: q.get_jk(density), (p,), (dp,))[1])
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError),
-                       match="(?i)(basis|exponent|coefficient)"):
-        jax.block_until_ready(action(provider, tangent))
+
+    def reference(x):
+        current = replace(parameters, **{field: (x, *getattr(parameters, field)[1:])})
+        return _oracle(plan, current)(density)
+
+    direction = jnp.ones_like(target)
+    expected = jax.jvp(reference, (target,), (direction,))[1]
+    assert any(float(jnp.linalg.norm(matrix)) > 1e-6 for matrix in expected)
+    actual = action(provider, tangent)
+    _assert_jk(actual, expected)
+    for step in (2e-4, 1e-4):
+        fd = jax.tree.map(lambda plus, minus: (plus-minus)/(2*step),
+                          reference(target+step*direction), reference(target-step*direction))
+        for observed, finite_difference in zip(actual, fd):
+            np.testing.assert_allclose(observed, finite_difference, atol=2e-7, rtol=4e-6)
 
 
 def test_provider_raw_basis_second_order_is_not_hidden_by_zero_first_tangent(system):
@@ -218,9 +238,21 @@ def test_provider_raw_basis_second_order_is_not_hidden_by_zero_first_tangent(sys
         current = jax.tree.unflatten(structure, changed)
         return sum(jnp.sum(value**2) for value in current.get_jk(density))
 
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError),
-                       match="(?i)(basis|exponent|coefficient)"):
-        jax.block_until_ready(jax.jit(jax.jacfwd(jax.jacfwd(loss)))(0.))
+    def reference(x):
+        current = replace(parameters, exponents=(x, *parameters.exponents[1:]))
+        return sum(jnp.sum(value**2) for value in _oracle(plan, current)(density))
+
+    # p(t)=p0+t^2*v has zero first tangent at t=0. Its second derivative is
+    # 2*grad_p(E).v, requiring only first basis products, not a basis Hessian.
+    expected = 2*jnp.sum(jax.grad(reference)(target))
+    assert abs(float(expected)) > 1e-6
+    actual = jax.jit(jax.jacfwd(jax.jacfwd(loss)))(0.)
+    np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-10)
+    first = jax.jit(jax.grad(loss))
+    np.testing.assert_allclose(first(0.), 0., atol=1e-12)
+    for step in (2e-4, 1e-4):
+        fd = (first(step)-first(-step))/(2*step)
+        np.testing.assert_allclose(actual, fd, atol=2e-7, rtol=4e-6)
 
 
 def test_mutable_numpy_inputs_are_snapshotted_at_provider_binding(system):

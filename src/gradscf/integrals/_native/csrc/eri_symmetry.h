@@ -2,6 +2,7 @@
 // AO triangular restriction, optimizer, or retained quartet connection list.
 #pragma once
 #include "eri_window.h"
+#include <memory>
 
 struct ERICanonicalQuartets {
   struct Pair {int first,second;unsigned membership;};
@@ -9,6 +10,22 @@ struct ERICanonicalQuartets {
   std::vector<size_t> left,right;
 
   explicit ERICanonicalQuartets(const ERIWindow& window) {
+    const int shells=window.shells[1];
+    bool full=true;
+    for (int axis=0;axis<4;++axis)
+      full=full && window.shells[2*axis]==0 && window.shells[2*axis+1]==shells;
+    if (full) {
+      // Direct products use this complete window. Exact reservation avoids
+      // map-node construction and vector-growth peaks. Lexicographic (i,j)
+      // order is identical to the map path, including task partitioning.
+      const size_t count=size_t(shells)*(size_t(shells)+1)/2;
+      pairs.reserve(count);left.reserve(count);right.reserve(count);
+      for (int i=0;i<shells;++i) for (int j=0;j<=i;++j) {
+        const size_t index=pairs.size();
+        pairs.push_back({i,j,3u});left.push_back(index);right.push_back(index);
+      }
+      return;
+    }
     std::map<std::pair<int,int>,unsigned> selected;
     for (int side=0;side<2;++side) {
       const int axis=4*side;

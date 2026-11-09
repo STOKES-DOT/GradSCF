@@ -52,6 +52,12 @@ def register_integrals():
                "gradscf_direct_jk_geometry_vjp_cpu_v1": "GradSCFDirectJKGeometryVJP",
                "gradscf_direct_jk_geometry_vjp_cpu_v2": "GradSCFDirectJKGeometryVJPParallel",
                "gradscf_packed_jk_cpu_v1": "GradSCFPackedJK"}
+    targets.update({"gradscf_direct_jk_coefficient_geometry_cpu_v1": "GradSCFDirectJKCoefficientGeometry",
+                    "gradscf_direct_jk_exponent_geometry_cpu_v1": "GradSCFDirectJKExponentGeometry"})
+    targets.update({"gradscf_direct_jk_coefficient_jvp_cpu_v1": "GradSCFDirectJKCoefficientJVP",
+                    "gradscf_direct_jk_coefficient_vjp_cpu_v1": "GradSCFDirectJKCoefficientVJP",
+                    "gradscf_direct_jk_exponent_jvp_cpu_v1": "GradSCFDirectJKExponentJVP",
+                    "gradscf_direct_jk_exponent_vjp_cpu_v1": "GradSCFDirectJKExponentVJP"})
     targets.update({"gradscf_exponent_jvp_cpu_v1": "GradSCFExponentJVP",
                     "gradscf_exponent_vjp_cpu_v1": "GradSCFExponentVJP"})
     targets.update({"gradscf_eri_coefficient_jvp_cpu_v1": "GradSCFERICoefficientJVP",
