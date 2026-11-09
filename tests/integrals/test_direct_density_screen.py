@@ -180,13 +180,13 @@ def test_rsh_uses_each_operator_mask_with_one_screen_reference(system):
     compare(actual, expected)
 
 
-def test_positive_cutoff_keeps_geometry_and_primitive_basis_guards(system):
+def test_positive_cutoff_retains_translation_response_and_primitive_basis_guard(system):
     def moved(t):
         parameters = replace(system.parameters, centers=system.parameters.centers + t)
         return NativeDirectBasis(system.plan, parameters).get_jk(system.density,
             screen_density=system.screen, screening_threshold=CUTOFF)
-    with pytest.raises((NotImplementedError, RuntimeError), match='(?i)(geometry|coordinate|cutoff)'):
-        jax.block_until_ready(jax.jit(lambda t: jax.jvp(moved, (t,), (jnp.ones_like(t),))[1])(jnp.zeros((4, 3))))
+    translated = jax.jit(lambda t: jax.jvp(moved, (t,), (jnp.ones_like(t),))[1])(jnp.zeros((4, 3)))
+    compare(translated, tuple(jnp.zeros_like(x) for x in translated), 1e-10)
     def changed(t):
         parameters = replace(system.parameters, exponents=tuple(a*jnp.exp(t) for a in system.parameters.exponents))
         return NativeDirectBasis(system.plan, parameters).get_jk(system.density,

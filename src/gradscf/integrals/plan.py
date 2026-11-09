@@ -57,8 +57,9 @@ class IntegralPlan:
                _environment=None):
         """Native shell-direct J/K with density and coordinate response.
 
-        Coordinate AD requires zero screening cutoff. Numerical exponents
-        and coefficients remain separate unsupported differentiation inputs.
+        Positive-cutoff coordinate AD follows the selected quartet mask away
+        from threshold changes. Numerical exponents and coefficients remain
+        separate unsupported differentiation inputs.
         A static positive omega selects erf(omega*r12)/r12 in inverse Bohr;
         omega=0 retains ordinary Coulomb, including its exact density response.
         """

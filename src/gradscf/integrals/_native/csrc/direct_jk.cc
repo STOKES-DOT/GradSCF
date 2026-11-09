@@ -26,26 +26,7 @@ static ffi::Future DirectJKImpl(ffi::ThreadPool pool,
     for (size_t i=0;i<density.element_count();++i) if (!std::isfinite(d[i])) throw std::invalid_argument("Nonfinite density");
     std::shared_ptr<std::vector<double>> density_bounds;
     if (screen_density && cutoff>0) {
-      if (screen_density->dimensions()[0]<1 || screen_density->dimensions()[1]!=n || screen_density->dimensions()[2]!=n)
-        throw std::invalid_argument("Direct J/K screen reference shape mismatch");
-      const double* s=screen_density->typed_data();
-      for (size_t a=0;a<screen_density->element_count();++a)
-        if (!std::isfinite(s[a]) || s[a]<0) throw std::invalid_argument("Invalid screen reference magnitude");
-      density_bounds=std::make_shared<std::vector<double>>(size_t(tables->nbas)*tables->nbas,0.);
-      // Reference batches are independent of the payload batches (including
-      // real/imaginary splitting and density-transpose concatenation).
-      for (int i=0;i<tables->nbas;++i) for (int j=0;j<tables->nbas;++j)
-        for (int batch=0;batch<screen_density->dimensions()[0];++batch) {
-          double sum=0.;
-          for (int a=tables->ao[i];a<tables->ao[i+1];++a)
-            for (int b=tables->ao[j];b<tables->ao[j+1];++b) sum+=s[size_t(batch)*nn+size_t(a)*n+b];
-          double& bound=(*density_bounds)[size_t(i)*tables->nbas+j];
-          bound=std::max(bound,sum);
-        }
-      for (int i=0;i<tables->nbas;++i) for (int j=0;j<i;++j) {
-        double bound=std::max((*density_bounds)[size_t(i)*tables->nbas+j],(*density_bounds)[size_t(j)*tables->nbas+i]);
-        (*density_bounds)[size_t(i)*tables->nbas+j]=(*density_bounds)[size_t(j)*tables->nbas+i]=bound;
-      }
+      density_bounds=std::make_shared<std::vector<double>>(eri_density_bounds(*tables,*screen_density));
     }
     const size_t size=result->element_count();
     const int row_workers=int(std::max<int64_t>(1,std::min<int64_t>(

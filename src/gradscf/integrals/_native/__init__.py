@@ -70,6 +70,10 @@ def register_integrals():
     # default operator; an explicit reference requires a rebuild at its call.
     if hasattr(handle, "GradSCFDirectJKScreened"):
         targets["gradscf_direct_jk_screened_cpu_v1"] = "GradSCFDirectJKScreened"
+    for suffix in ("JVP", "VJP"):
+        symbol = f"GradSCFDirectJKGeometryScreened{suffix}"
+        if hasattr(handle, symbol):
+            targets[f"gradscf_direct_jk_geometry_screened_{suffix.lower()}_cpu_v1"] = symbol
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
             raise RuntimeError(f"The libcint library is stale (missing {symbol}); rebuild with "

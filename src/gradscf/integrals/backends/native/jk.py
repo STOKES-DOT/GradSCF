@@ -98,8 +98,9 @@ class NativeDirectBasis:
     """Native AO action with static topology and dynamic basis parameters.
 
     J/K density response and first/second coordinate response are supported.
-    Coordinate AD requires zero screening cutoff; primitive exponent and
-    coefficient derivatives remain explicitly unsupported. Construction binds
+    Positive-cutoff coordinate AD differentiates the selected quartet set
+    away from mask changes; primitive exponent and coefficient derivatives
+    remain explicitly unsupported. Construction binds
     one normalized zero-coordinate ENV inside the caller's differentiable
     graph. Mutable host parameters are copied into immutable JAX arrays;
     subsequent caller edits require a new provider. Only static topology and
@@ -414,7 +415,7 @@ def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, 
     atoms = np.asarray(atoms_key, dtype=np.int32)
     offsets = atoms[:, 1, None] + np.arange(3)[None, :]
     operator = _direct_operator(atoms_key, basis_key, cart, cutoff, workers, with_j, with_k, private_output_bytes, screened)
-    geometry = geometry_products(atoms_key, basis_key, cart, with_j, with_k, workers=workers)
+    geometry = geometry_products(atoms_key, basis_key, cart, with_j, with_k, workers=workers, cutoff=cutoff)
 
     def pack(env, coordinates):
         return env.at[offsets].set(coordinates, unique_indices=True)
@@ -444,12 +445,10 @@ def _direct_geometry_value(atoms_key, basis_key, cart, cutoff, workers, with_j, 
             terms.append(value.bind(env, coordinates, ddensity, *reference))
         if not isinstance(dcoordinates, ad.Zero):
             direction = pack(jnp.zeros_like(env), dcoordinates)
-            if cutoff > 0:
-                zero = _zero_basis_tangent(
-                    "Screened direct J/K geometry AD requires cutoff=0").bind(direction)
-                terms.append(jnp.zeros_like(primal) + zero)
-            else:
-                terms.append(geometry.bind(pack(env, coordinates), density, direction))
+            # The absent-reference sentinel requests basis-only screening. Keep
+            # the primal reference even when payloads become tangents/cotangents.
+            screen = reference[0] if reference else jnp.zeros((0, *density.shape[-2:]), dtype=env.dtype)
+            terms.append(geometry.bind(pack(env, coordinates), density, screen, direction))
         return primal, sum(terms) if terms else ad.Zero.from_primal_value(primal)
 
     def transpose(cotangent, env, coordinates, density, *reference):

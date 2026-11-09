@@ -133,10 +133,12 @@ def test_traced_geometry_cache_factory_uses_direct_response(problem, monkeypatch
         np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
-def test_screened_geometry_direction_is_explicitly_rejected(problem):
-    _, _, coords, density, direction, _, actual, _ = problem
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError), match="(?i)(cutoff|screen)"):
-        jax.jvp(lambda r: actual(r, density, cutoff=1e-12), (coords,), (direction,))
+def test_basis_screened_geometry_direction_matches_small_cutoff_oracle(problem):
+    _, _, coords, density, direction, _, actual, oracle = problem
+    expected = jax.jvp(lambda r: oracle(r, density), (coords,), (direction,))[1]
+    observed = jax.jvp(lambda r: actual(r, density, cutoff=1e-12), (coords,), (direction,))[1]
+    for result, reference in zip(observed, expected):
+        np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
 def test_real_third_direct_geometry_response_remains_explicitly_unsupported(problem):
