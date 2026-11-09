@@ -176,7 +176,8 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         grid_max_memory=getattr(cfg, "grid_max_memory", None),
         max_memory=getattr(cfg, "max_memory", DEFAULT_MAX_MEMORY_MB),
         scf_max_cycle=cfg.max_cycle, scf_history_matrices=scf_history_matrices,
-        fixed_workspace_bytes=fixed_workspace)
+        fixed_workspace_bytes=fixed_workspace,
+        force_streamed=getattr(cfg, 'grid_screen_tol', 0.) > 0)
     if context.geometry_is_traced and geometry_grad_policy == "error":
         raise NotImplementedError("Geometry gradients are disabled by geometry_grad_policy='error'")
     _check_eri_memory(context, cfg, mode=mode, rsh=rsh,

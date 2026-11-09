@@ -292,6 +292,16 @@ def _curvature_check(
     )
 
 
+def _reject_screened_stability(config):
+    if config.grid_screen_tol > 0:
+        from ..dft.xc import xc_type
+        from .rsh import local_xc_spec
+
+        if xc_type(local_xc_spec(config.xc_spec)) != "HF":
+            raise NotImplementedError(
+                "Orbital stability for screened XC is not implemented; use grid_screen_tol=0.")
+
+
 def _unrestricted_problem(
     coeff,
     occ,
@@ -306,6 +316,7 @@ def _unrestricted_problem(
     fock=None,
     grid_ao=None,
 ):
+    _reject_screened_stability(config)
     if config.jk_backend != "full" or config.potential_clip is not None:
         raise NotImplementedError(
             "Stability requires full/packed ERIs and an unclipped XC potential."
@@ -390,6 +401,8 @@ def _validate_stability_source(source):
     reject_rsh_response(source)
     if callable(getattr(source, '_is_external_xc', None)) and source._is_external_xc():
         raise NotImplementedError('Orbital stability for external XC energies is not implemented.')
+    if getattr(source, "grid_screen_tol", 0.) > 0:
+        _reject_screened_stability(source._config())
 
 
 def restricted_stability(
@@ -601,6 +614,7 @@ def stabilize_uks_from_integrals(
     if scf_inputs.get("bound_xc") is not None:
         raise NotImplementedError("Bound/Neural XC stability is not yet supported.")
     config = scf_inputs.get("config") or UKSConfig()
+    _reject_screened_stability(config)
     if config.jk_backend != "full" or config.potential_clip is not None:
         raise NotImplementedError(
             "Stability requires full ERIs and an unclipped XC potential."
@@ -802,6 +816,8 @@ def stabilize_scf(
 
     if not isinstance(source, (RKS, UKS)) or isinstance(source, ROKS):
         raise TypeError("Stabilization requires an RKS or UKS/UHF facade")
+    if getattr(source, "grid_screen_tol", 0.) > 0:
+        _validate_stability_source(source)
     if channel not in {"internal", "spin"} or (
         isinstance(source, UKS) and channel != "internal"
     ):

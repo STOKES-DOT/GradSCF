@@ -182,13 +182,16 @@ def _scf_direct_spinor_jk(provider, density, *, cfg, df_factors=None,
 
 def _generalized_xc(density, ao, deriv, weights, cfg, kind, *, compute_potential=True, grid_ao=None):
     if grid_ao is not None and kind != "HF":
+        from gradscf.integrals.grids.blocks import _ao_submatrix, _add_ao_submatrix
         initial = (jnp.asarray(0., dtype=density.real.dtype), jnp.zeros_like(density))
-        def contribution(carry, block_ao, derivative, laplacian, coords, block_weights):
+        def contribution(carry, block_ao, derivative, laplacian, coords, block_weights, indices=None):
             del laplacian, coords
-            energy, potential = _generalized_xc(density, block_ao, derivative,
+            spin_indices = None if indices is None else jnp.concatenate((indices, indices+density.shape[0]//2))
+            energy, potential = _generalized_xc(_ao_submatrix(density, spin_indices), block_ao, derivative,
                 block_weights, cfg, kind, compute_potential=compute_potential)
-            return carry[0]+energy, carry[1] if potential is None else carry[1]+potential
-        energy, potential = grid_ao.reduce(contribution, initial, deriv=0 if kind == "LDA" else 1)
+            return carry[0]+energy, carry[1] if potential is None else _add_ao_submatrix(carry[1], potential, spin_indices)
+        reduce = getattr(grid_ao, 'reduce_local', grid_ao.reduce)
+        energy, potential = reduce(contribution, initial, deriv=0 if kind == "LDA" else 1)
         return energy, potential if compute_potential else None
     n = ao.shape[1]
     if kind == "HF":
@@ -357,7 +360,8 @@ def run_gks_from_integrals(
         if operator is not None:
             device_work, host_work = operator
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
-                resident_bytes=resident + device_work, host_workspace_bytes=host_work, deriv=0 if xc_type(cfg.xc_spec) == "LDA" else 1)
+                resident_bytes=resident + device_work, host_workspace_bytes=host_work,
+                deriv=0 if xc_type(cfg.xc_spec) == "LDA" else 1, screen_tol=cfg.grid_screen_tol)
 
     def diagonalize(fock):
         values, c = jnp.linalg.eigh(_hermitian(x.conj().T @ fock @ x))
@@ -448,7 +452,8 @@ class GKS(_BaseKS):
                          auxbasis=self.auxbasis, only_dfj=self.only_dfj, df_tol=self.df_tol,
                          df_max_rank=self.df_max_rank, direct_scf_tol=self.direct_scf_tol,
                          direct_scf_workers=self.direct_scf_workers,
-                         grid_block_size=self.grid_block_size, grid_max_memory=self.grid_max_memory)
+                         grid_block_size=self.grid_block_size, grid_max_memory=self.grid_max_memory,
+                         grid_screen_tol=self.grid_screen_tol)
 
     def kernel(self, dm0: Array | None = None) -> Any:
         cfg = self._config()

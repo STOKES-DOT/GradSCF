@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 import weakref
@@ -250,6 +251,119 @@ def _spin_tau(
         ao_deriv1[1:4],
         precision=Precision.HIGHEST,
     )
+
+
+def _dense_spin_density_fields(
+    ao: Array,
+    ao_deriv1: Array | None,
+    dm_spin: Array,
+    xc_kind: str,
+) -> tuple[Array, Array, Array]:
+    if xc_kind == "LDA":
+        rho = jnp.einsum("rp,pq,rq->r", ao, dm_spin, ao, precision=Precision.HIGHEST)
+        grad = jnp.zeros((ao.shape[0], 3), dtype=rho.dtype)
+    else:
+        rho, grad = _spin_density_and_gradient(ao, ao_deriv1, dm_spin)
+    tau = _spin_tau(ao_deriv1, dm_spin) if xc_kind == "MGGA" else jnp.zeros_like(rho)
+    return rho, grad, tau
+
+
+@partial(jax.custom_jvp, nondiff_argnums=(5, 6))
+def _spin_density_fields_with_orbitals(
+    ao: Array,
+    ao_deriv1: Array | None,
+    dm_spin: Array,
+    mo_coeff: Array,
+    mo_occ: Array,
+    xc_kind: str,
+    occupied_columns: int,
+) -> tuple[Array, Array, Array]:
+    # Match the full SCF density construction, including its reduction shape.
+    # Truncating before this check can change rounding and defeat exact equality.
+    orbital_density = jnp.einsum(
+        "pi,i,qi->pq", mo_coeff, mo_occ, mo_coeff, precision=Precision.HIGHEST)
+    matches = (jnp.all(dm_spin == orbital_density)
+               & jnp.all(mo_occ[occupied_columns:] == 0)
+               & jnp.all(jnp.isfinite(mo_coeff))
+               & jnp.all(jnp.isfinite(mo_occ)))
+
+    def orbital_fields(_):
+        coeff = mo_coeff[:, :occupied_columns]
+        occ = mo_occ[:occupied_columns]
+        orbitals = jnp.matmul(ao, coeff, precision=Precision.HIGHEST)
+        rho = jnp.sum(occ * orbitals * orbitals, axis=1)
+        grad = jnp.zeros((ao.shape[0], 3), dtype=rho.dtype)
+        tau = jnp.zeros_like(rho)
+        if xc_kind != "LDA":
+            derivatives = jnp.matmul(ao_deriv1[1:4], coeff, precision=Precision.HIGHEST)
+            grad = 2.0 * jnp.einsum(
+                "i,ri,xri->rx", occ, orbitals, derivatives, precision=Precision.HIGHEST)
+            if xc_kind == "MGGA":
+                tau = 0.5 * jnp.einsum(
+                    "i,xri,xri->r", occ, derivatives, derivatives, precision=Precision.HIGHEST)
+        return rho, grad, tau
+
+    return jax.lax.cond(matches, orbital_fields,
+                        lambda _: _dense_spin_density_fields(ao, ao_deriv1, dm_spin, xc_kind),
+                        operand=None)
+
+
+@_spin_density_fields_with_orbitals.defjvp
+def _spin_density_fields_with_orbitals_jvp(xc_kind, occupied_columns, primals, tangents):
+    # C and occupations are redundant hints. The physical dependence is through
+    # AO, dAO and D, including arbitrary dD unrelated to the hinted orbitals.
+    # Calling the decorated primal retains the same rule under higher-order AD.
+    values = _spin_density_fields_with_orbitals(*primals, xc_kind, occupied_columns)
+    _, response = jax.jvp(
+        lambda a, da, d: _dense_spin_density_fields(a, da, d, xc_kind),
+        primals[:3], tangents[:3])
+    return values, response
+
+
+def _spin_density_fields(
+    ao: Array,
+    ao_deriv1: Array | None,
+    dm_spin: Array,
+    *,
+    xc_kind: str,
+    mo_coeff: Array | None = None,
+    mo_occ: Array | None = None,
+    occupied_columns: int | None = None,
+) -> tuple[Array, Array, Array]:
+    """Build density, gradient and tau, optionally using exact orbital hints.
+
+    ``occupied_columns`` is a static upper bound on the occupied prefix. The
+    tail is checked dynamically, as is exact agreement with the current density.
+    Missing/unsuitable hints retain the existing dense bilinear convention.
+    Hints only accelerate values: all AD is defined by the dense AO/dAO/D map,
+    so callers constructing D(C, occ) retain that physical chain rule once.
+    """
+    if xc_kind not in ("LDA", "GGA", "MGGA"):
+        raise ValueError(f"Unsupported density field kind: {xc_kind}")
+    if ao_deriv1 is None and xc_kind != "LDA":
+        raise ValueError("GGA/meta-GGA density fields require AO first derivatives.")
+    dense = lambda: _dense_spin_density_fields(ao, ao_deriv1, dm_spin, xc_kind)
+    if mo_coeff is None or mo_occ is None or occupied_columns is None:
+        return dense()
+    if not isinstance(occupied_columns, (int, np.integer)):
+        raise TypeError("occupied_columns must be a static integer or None.")
+    mo_coeff, mo_occ = jnp.asarray(mo_coeff), jnp.asarray(mo_occ)
+    if (mo_coeff.ndim != 2 or mo_occ.ndim != 1
+            or mo_coeff.shape != (ao.shape[1], mo_occ.shape[0])
+            or not 0 < occupied_columns <= mo_occ.shape[0]):
+        return dense()
+    # GGA's shared AO-D product costs less than four separate AO-C transforms
+    # unless the occupied prefix is small. This is only a cost eligibility gate;
+    # consumers must measure actual kernel and end-to-end gains before enabling.
+    transform_count = 4 if xc_kind == "GGA" else 1
+    if transform_count * occupied_columns >= ao.shape[1]:
+        return dense()
+    if (any(jnp.iscomplexobj(value) for value in (ao, ao_deriv1, dm_spin, mo_coeff, mo_occ)
+            if value is not None) or mo_coeff.dtype != dm_spin.dtype):
+        return dense()
+    mo_occ = jnp.asarray(mo_occ, dtype=mo_coeff.dtype)
+    return _spin_density_fields_with_orbitals(
+        ao, ao_deriv1, dm_spin, mo_coeff, mo_occ, xc_kind, int(occupied_columns))
 
 
 def _spin_laplacian(

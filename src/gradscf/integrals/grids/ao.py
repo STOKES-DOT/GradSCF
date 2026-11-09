@@ -125,6 +125,11 @@ def _evaluate_cartesian_ao_kernel(
         jnp.arange(exponents.shape[1], dtype=jnp.int32)[None, None, :]
         < nprims[None, :, None]
     ).astype(dtype)
+    # Padding is not a physical primitive. Normalizing alpha=0 before its
+    # eventual zero mask introduces singular higher parameter derivatives.
+    # Keep every active exponent dynamic and use a finite dummy value only
+    # outside nprims, where the primitive contribution is identically zero.
+    exponents = jnp.where(prim_mask[0] != 0, exponents, 1.)
     norms = _primitive_cartesian_norm_array(exponents, angulars).astype(dtype)
 
     exp_term = jnp.exp(-exponents[None, :, :] * r2)

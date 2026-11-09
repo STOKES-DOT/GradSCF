@@ -12,6 +12,7 @@ from .._memory import DEFAULT_MAX_MEMORY_MB, validate_memory_mb
 from ..tools.features import (
     MoleculeLikeState,
     _spin_density_and_gradient,
+    _spin_density_fields,
     _spin_tau,
     molecule_grid_view,
 )
@@ -69,9 +70,12 @@ class UKSConfig:
     direct_scf_workers: int = 1
     grid_block_size: int = 0
     grid_max_memory: float | None = None
+    grid_screen_tol: float = 0.
     max_memory: float = field(default=DEFAULT_MAX_MEMORY_MB, kw_only=True)
 
     def __post_init__(self):
+        if not 0 <= self.grid_screen_tol < float('inf'):
+            raise ValueError("grid_screen_tol must be finite and nonnegative.")
         object.__setattr__(self, "max_memory", validate_memory_mb(self.max_memory))
         if self.grid_max_memory is not None:
             object.__setattr__(self, "grid_max_memory",
@@ -133,6 +137,12 @@ def _unrestricted_xc_energy_and_potential_on_grid(
     xc_kind: str,
     compute_potential: bool = True,
     return_tau: bool = False,
+    mo_coeff_a: Array | None = None,
+    mo_coeff_b: Array | None = None,
+    mo_occ_a: Array | None = None,
+    mo_occ_b: Array | None = None,
+    nocc_a: int | None = None,
+    nocc_b: int | None = None,
 ) -> tuple[Array | None, ...]:
     if xc_kind == "MGGA" and not return_tau:
         raise ValueError("MGGA grid potentials require return_tau=True to retain both kinetic-density potentials.")
@@ -140,9 +150,23 @@ def _unrestricted_xc_energy_and_potential_on_grid(
         rho_a = jnp.einsum("rp,pq,rq->r", ao, density_a, ao, precision=Precision.HIGHEST)
         rho_b = jnp.einsum("rp,pq,rq->r", ao, density_b, ao, precision=Precision.HIGHEST)
         grad_a = grad_b = jnp.zeros((ao.shape[0], 3), dtype=rho_a.dtype)
+    elif xc_kind == "MGGA" and ao.shape[1] >= 128 and ao.shape[0] >= 256:
+        fields = []
+        for density, coeff, occ, nocc in (
+                (density_a, mo_coeff_a, mo_occ_a, nocc_a),
+                (density_b, mo_coeff_b, mo_occ_b, nocc_b)):
+            usable = (coeff is not None and occ is not None and nocc is not None
+                      and 0 < nocc < ao.shape[1])
+            fields.append(_spin_density_fields(
+                ao, ao_deriv1, density, xc_kind=xc_kind,
+                mo_coeff=coeff if usable else None, mo_occ=occ if usable else None,
+                occupied_columns=nocc if usable else None))
+        (rho_a, grad_a, tau_a), (rho_b, grad_b, tau_b) = fields
     else:
         rho_a, grad_a = _spin_density_and_gradient(ao, ao_deriv1, density_a)
         rho_b, grad_b = _spin_density_and_gradient(ao, ao_deriv1, density_b)
+        if xc_kind == "MGGA":
+            tau_a, tau_b = _spin_tau(ao_deriv1, density_a), _spin_tau(ao_deriv1, density_b)
     rho_total = rho_a + rho_b
     if xc_kind == "HF":
         if not compute_potential:
@@ -167,8 +191,7 @@ def _unrestricted_xc_energy_and_potential_on_grid(
         )
         if xc_kind == "MGGA":
             response_variables = jnp.concatenate([response_variables,
-                _spin_tau(ao_deriv1, density_a)[:, None],
-                _spin_tau(ao_deriv1, density_b)[:, None]], axis=-1)
+                tau_a[:, None], tau_b[:, None]], axis=-1)
     else:
         raise ValueError(f"Unsupported XC kind={xc_kind!r}.")
 
@@ -343,6 +366,12 @@ def _unrestricted_xc_energy_and_matrices(
     xc_kind: str,
     grid_ao: Any | None = None,
     compute_potential: bool = True,
+    mo_coeff_a: Array | None = None,
+    mo_coeff_b: Array | None = None,
+    mo_occ_a: Array | None = None,
+    mo_occ_b: Array | None = None,
+    nocc_a: int | None = None,
+    nocc_b: int | None = None,
 ) -> tuple[Array, Array]:
     """Reduce unrestricted built-in XC to an energy and two AO potentials."""
     dtype = jnp.result_type(density_a, density_b, ao, weights)
@@ -351,24 +380,31 @@ def _unrestricted_xc_energy_and_matrices(
     if xc_kind == "HF":
         return initial
 
-    def contribution(carry, block_ao, derivative, laplacian, coords, block_weights):
+    from gradscf.integrals.grids.blocks import _ao_submatrix, _add_ao_submatrix
+
+    def contribution(carry, block_ao, derivative, laplacian, coords, block_weights, indices=None):
         del laplacian, coords
+        coeff_a = mo_coeff_a if indices is None or mo_coeff_a is None else mo_coeff_a[indices]
+        coeff_b = mo_coeff_b if indices is None or mo_coeff_b is None else mo_coeff_b[indices]
         energy, v_ra, v_rb, v_ga, v_gb, v_ta, v_tb = _unrestricted_xc_energy_and_potential_on_grid(
             ao=block_ao, ao_deriv1=derivative, weights=block_weights,
-            density_a=density_a, density_b=density_b, xc_spec=cfg.xc_spec,
+            density_a=_ao_submatrix(density_a, indices), density_b=_ao_submatrix(density_b, indices), xc_spec=cfg.xc_spec,
             density_floor=cfg.density_floor, potential_clip=cfg.potential_clip,
-            xc_kind=xc_kind, compute_potential=compute_potential, return_tau=True)
+            xc_kind=xc_kind, compute_potential=compute_potential, return_tau=True,
+            mo_coeff_a=coeff_a, mo_coeff_b=coeff_b, mo_occ_a=mo_occ_a, mo_occ_b=mo_occ_b,
+            nocc_a=nocc_a, nocc_b=nocc_b)
         if not compute_potential:
             return carry[0] + energy, carry[1]
         va, vb = _unrestricted_vxc_matrices(
             ao=block_ao, ao_deriv1=derivative, ao_laplacian=None, weights=block_weights,
             vxc_rho_a=v_ra, vxc_rho_b=v_rb, vxc_grad_a=v_ga, vxc_grad_b=v_gb,
             vxc_tau_a=v_ta, vxc_tau_b=v_tb, xc_kind=xc_kind)
-        return carry[0] + energy, carry[1] + jnp.stack([va, vb])
+        return carry[0] + energy, _add_ao_submatrix(carry[1], jnp.stack([va, vb]), indices)
 
     if grid_ao is None:
         return contribution(initial, ao, ao_deriv1, None, None, weights)
-    return grid_ao.reduce(contribution, initial, deriv=0 if xc_kind == "LDA" else 1)
+    reduce = getattr(grid_ao, 'reduce_local', grid_ao.reduce)
+    return reduce(contribution, initial, deriv=0 if xc_kind == "LDA" else 1)
 
 
 def _raw_fock_and_energy_for_state(
@@ -435,7 +471,9 @@ def _raw_fock_and_energy_for_state(
         xc_energy, potential = _unrestricted_xc_energy_and_matrices(
             density_a=density_a, density_b=density_b, ao=ao, ao_deriv1=ao_deriv1,
             weights=weights, cfg=cfg, xc_kind=xc_kind, grid_ao=grid_ao,
-            compute_potential=compute_potential)
+            compute_potential=compute_potential,
+            mo_coeff_a=mo_coeff_a, mo_coeff_b=mo_coeff_b, mo_occ_a=mo_occ_a, mo_occ_b=mo_occ_b,
+            nocc_a=nocc_a, nocc_b=nocc_b)
     else:
         molecule_state = _molecule_like_state_for_bound_xc(
             density_a=density_a,
@@ -653,7 +691,8 @@ def run_uks_from_integrals(
                 # Independent spin contractions may keep both QNN products live.
                 device_work += df_factors_arr.size * jnp.result_type(df_factors_arr, density_a).itemsize
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
-                resident_bytes=resident + device_work, host_workspace_bytes=host_work, deriv=0 if xc_kind == "LDA" else 1)
+                resident_bytes=resident + device_work, host_workspace_bytes=host_work,
+                deriv=0 if xc_kind == "LDA" else 1, screen_tol=cfg.grid_screen_tol)
 
     if direct_basis is not None and (cfg.jk_backend == "direct" or cfg.only_dfj):
         from ..integrals.backends.native.jk import _prepare_direct_basis

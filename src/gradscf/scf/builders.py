@@ -27,6 +27,12 @@ def _host_array(value: Any, dtype: Any | None = None) -> np.ndarray:
     return np.asarray(jax.device_get(value), dtype=dtype)
 
 
+def _reject_screened_reference(config):
+    if config.grid_screen_tol > 0 and xc_type(local_xc_spec(config.xc_spec)) != "HF":
+        raise NotImplementedError(
+            "Response export for screened XC is not implemented; use grid_screen_tol=0.")
+
+
 def _restricted_reference_array_packaging(
     *,
     mo_coeff: Any,
@@ -142,6 +148,7 @@ def _build_restricted_reference(
     cfg = RKSConfig(xc_spec=xc_spec_resolved) if rks_config is None else rks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
+    _reject_screened_reference(cfg)
 
     rsh = rsh_preset(xc_spec_resolved)
     exact_exchange_fraction = (rsh.default_sr_hf_fraction if rsh is not None
@@ -480,6 +487,7 @@ def _build_unrestricted_reference(
     cfg = UKSConfig(xc_spec=xc_spec_resolved) if uks_config is None else uks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
+    _reject_screened_reference(cfg)
 
     if scf_inputs is None:
         scf_inputs = build_uks_integral_inputs(

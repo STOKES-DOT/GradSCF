@@ -71,6 +71,7 @@ class _BaseKS:
     grid_ao_backend: Literal["jax"] = "jax"
     grid_block_size: int = 0
     grid_max_memory: float | None = None
+    grid_screen_tol: float = 0.
     max_memory: float = field(default=DEFAULT_MAX_MEMORY_MB, kw_only=True)
     execution_device: Literal["auto", "cpu", "gpu"] = "auto"
     init_guess: Any = "hcore"
@@ -364,7 +365,15 @@ class _BaseKS:
         if self._cached_orbital_key != self._orbital_signature():
             raise RuntimeError('Orbital state changed; run kernel() before preparing a reference.')
 
+    def _check_response_grid(self):
+        from ..dft.xc import xc_type
+        if (self.grid_screen_tol > 0 and not self._is_external_xc()
+                and xc_type(self._standard_xc_spec()) != 'HF'):
+            raise NotImplementedError(
+                "Response export for screened XC is not implemented; use grid_screen_tol=0.")
+
     def _ensure_reference(self) -> Any:
+        self._check_response_grid()
         self._check_reference_source()
         response_key = self._response_signature()
         if self.reference is not None and response_key == self._cached_response_key:
@@ -414,6 +423,7 @@ class RKS(_BaseKS):
             max_memory=self.max_memory,
             grid_block_size=self.grid_block_size,
             grid_max_memory=self.grid_max_memory,
+            grid_screen_tol=self.grid_screen_tol,
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
@@ -543,6 +553,7 @@ class UKS(_BaseKS):
     def _ensure_reference(self) -> Any:
         if self.only_dfj:
             raise NotImplementedError("RI-J/direct-K response export is not implemented; SCF energies remain available.")
+        self._check_response_grid()
         self._check_reference_source()
         if self.reference is None:
             return super()._ensure_reference()
@@ -570,6 +581,7 @@ class UKS(_BaseKS):
             max_memory=self.max_memory,
             grid_block_size=self.grid_block_size,
             grid_max_memory=self.grid_max_memory,
+            grid_screen_tol=self.grid_screen_tol,
         )
 
     def _sync_from_scf_result(self, result: Any) -> None:
@@ -613,7 +625,8 @@ class UKS(_BaseKS):
             setattr(self, name, None)
         if self._is_external_xc():
             return self._run_external_xc()
-        if xc_type(local_xc_spec(self._standard_xc_spec())) == 'HF':
+        if (self.grid_screen_tol > 0
+                or xc_type(local_xc_spec(self._standard_xc_spec())) == 'HF'):
             result = self._build_scf_result(self._spec())
             self._sync_from_scf_result(result)
             self._cached_scf_key = self._scf_signature()
