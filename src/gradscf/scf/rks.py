@@ -513,7 +513,7 @@ def _restricted_xc_energy_and_matrix(
     def contribution(carry, block_ao, derivative, laplacian, coords, block_weights, indices=None):
         del laplacian, coords
         block_density = _ao_submatrix(density, indices)
-        # Only measured MGGA block sizes enable automatic orbital hints.
+        # Restrict automatic hints to MGGA and avoid small blocks (heuristic).
         use_orbitals = (xc_kind == "MGGA" and block_ao.shape[1] >= 128
                         and block_ao.shape[0] >= 256 and mo_coeff is not None
                         and mo_occ is not None and occupied_columns is not None
