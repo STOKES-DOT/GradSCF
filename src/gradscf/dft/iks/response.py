@@ -35,12 +35,14 @@ def orbital_response(reference, fock, gap_floor, *, with_density=True):
     return delta, jnp.sum(jnp.abs(kappa)**2), valid
 
 
-def density_norm2(reference, delta, grid):
+def density_norm2(reference, delta, grid, *, relative=False):
     """Spin/Pauli-resolved integral of |n_s+delta n-n_target|^2.
 
     grid is an AOGrid provider or an explicit (real grid AO, weights) pair.
     Density units are bohr^-3, so the squared L2 norm has units bohr^-3.
-    No electron, volume or component normalization is implicit.
+    With relative=True, divide both norms by the target squared L2 norm,
+    using the same grid pass. A zero target norm is invalid. Otherwise no
+    electron, volume or component normalization is implicit.
     """
     if grid is None:
         raise ValueError('Predicted-density assessment requires a grid')
@@ -52,17 +54,26 @@ def density_norm2(reference, delta, grid):
     difference = reference.density+delta-target.density
     components = _components(difference, target.overlap.shape[0], target.layout)
     baseline = _components(reference.density-target.density, target.overlap.shape[0], target.layout)
+    target_components = target.components
     def add(total, ao, deriv, lap, coords, weights):
         rho = jnp.einsum('gi,cij,gj->cg', ao, components, ao).real
         ref_rho = jnp.einsum('gi,cij,gj->cg', ao, baseline, ao).real
-        return total+jnp.stack((jnp.sum(weights*rho**2), jnp.sum(weights*ref_rho**2)))
-    initial = jnp.zeros(2, dtype=difference.real.dtype)
+        values = [jnp.sum(weights*rho**2), jnp.sum(weights*ref_rho**2)]
+        if relative:
+            target_rho = jnp.einsum('gi,cij,gj->cg', ao, target_components, ao).real
+            values.append(jnp.sum(weights*target_rho**2))
+        return total+jnp.stack(values)
+    initial = jnp.zeros(3 if relative else 2, dtype=difference.real.dtype)
+    def finish(value):
+        if relative:
+            return jnp.where(valid_weights & (value[2] > 0), value[:2]/value[2], jnp.nan)
+        return jnp.where(valid_weights, value, jnp.nan)
     if isinstance(grid, tuple):
         ao, weights = map(jnp.asarray, grid)
         if ao.ndim != 2 or ao.shape[1] != target.overlap.shape[0] or weights.shape != ao.shape[:1] or jnp.iscomplexobj(ao):
             raise ValueError('Grid requires real (npoints,nao) AO values and (npoints,) weights')
         value = add(initial, ao, None, None, None, weights)
-        return jnp.where(valid_weights, value, jnp.nan)
+        return finish(value)
     if grid.nao != target.overlap.shape[0]:
         raise ValueError('Grid AO dimension differs from the reference')
-    return jnp.where(valid_weights, grid.reduce(add, initial), jnp.nan)
+    return finish(grid.reduce(add, initial))

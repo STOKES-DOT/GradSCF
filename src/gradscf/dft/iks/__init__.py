@@ -17,3 +17,6 @@ __all__ = ['Target', 'Potential', 'constant_potential', 'Reference', 'OrbitalRef
 
 from .guides import guide_fock
 __all__ += ['guide_fock']
+
+from .reward import Reward, reward
+__all__ += ['Reward', 'reward']

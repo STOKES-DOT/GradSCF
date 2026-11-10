@@ -87,14 +87,14 @@ def evaluate(reference, energy_fn, params=None, *, quantities=None, grid=None, g
     remain live. No candidate SCF or implicit inverse-map gradient is performed.
     New orbital references default to energy only. For legacy thermal results,
     omitted quantities preserves energy/operator/commutator evaluation. Select
-    energy, operator, commutator, stationarity or predicted_density explicitly.
+    energy, fock, operator, commutator, stationarity or predicted_density explicitly.
     Stationarity returns a squared rotation norm, not a mean or SCF certificate.
     """
     target = reference.target
     if quantities is None:
         quantities = ('energy',) if isinstance(reference, OrbitalReference) else ('energy', 'operator', 'commutator')
     requested = frozenset(quantities)
-    if not requested or requested-{'energy', 'operator', 'commutator', 'stationarity', 'predicted_density', 'xc_potential'}:
+    if not requested or requested-{'energy', 'fock', 'operator', 'commutator', 'stationarity', 'predicted_density', 'xc_potential'}:
         raise ValueError('Unknown fixed-reference assessment quantity')
     needs_fock = bool(requested-{'energy', 'xc_potential'})
     if needs_fock:
