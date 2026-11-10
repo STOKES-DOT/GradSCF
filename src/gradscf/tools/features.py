@@ -481,6 +481,36 @@ def _restricted_spin_inputs(
     return ao, ao_deriv1, rdm1
 
 
+def _map_physical_grid_fields(provider, rdm1, *, field_kind):
+    """Project AO blocks to only the small physical fields a consumer needs."""
+    def fields(ao, dao, lap, coords, weights):
+        if field_kind == "restricted":
+            return _restricted_spin_channels_kernel(ao, dao, rdm1)
+        if field_kind == "spin":
+            return _spin_resolved_channels_kernel(ao, dao, rdm1)
+        view = SimpleNamespace(ao=ao, ao_deriv1=dao, ao_laplacian=lap, rdm1=rdm1)
+        return restricted_grid_response_variables(view, feature_kind=field_kind)
+
+    deriv = 0 if field_kind == "LDA" else 2 if field_kind == "MGGA_LAPL" else 1
+    return provider.map(fields, deriv=deriv)
+
+
+_physical_grid_fields_program = jax.jit(
+    _map_physical_grid_fields, static_argnames=("field_kind",))
+
+
+def _physical_grid_fields(provider, rdm1, *, field_kind):
+    # Keep geometry, basis parameters and density as dynamic JIT arguments.
+    # Reusing the complete map program avoids recompiling a fresh scan closure
+    # for every reference/model evaluation, without retaining numerical fields.
+    from ..integrals.grids.blocks import AOGrid, _CachedAOGrid, _LocalAOGrid
+
+    program = (_physical_grid_fields_program
+               if type(provider) in (AOGrid, _CachedAOGrid, _LocalAOGrid)
+               else _map_physical_grid_fields)
+    return program(provider, rdm1, field_kind=field_kind)
+
+
 
 def _spin_resolved_grid_features(molecule: Any) -> RestrictedFeatureBundle:
     return _spin_resolved_grid_features_with_gradients(molecule)[0]
@@ -494,8 +524,7 @@ def _spin_resolved_grid_features_with_gradients(
         rdm1 = jnp.asarray(molecule.rdm1)
         if rdm1.ndim == 2:
             rdm1 = jnp.stack((.5 * rdm1, .5 * rdm1))
-        return provider.map(lambda ao, dao, lap, coords, weights:
-                            _restricted_spin_channels_kernel(ao, dao, rdm1), deriv=1)
+        return _physical_grid_fields(provider, rdm1, field_kind="restricted")
     ao, ao_deriv1, rdm1 = _restricted_spin_inputs(molecule)
     return _restricted_spin_channels_kernel(ao, ao_deriv1, rdm1)
 
@@ -569,8 +598,7 @@ def grid_features_with_spin_gradients_for_molecule(
         rdm1 = jnp.asarray(molecule.rdm1)
         if rdm1.ndim == 2:
             rdm1 = jnp.stack((.5 * rdm1, .5 * rdm1))
-        return provider.map(lambda ao, dao, lap, coords, weights:
-                            _spin_resolved_channels_kernel(ao, dao, rdm1), deriv=1)
+        return _physical_grid_fields(provider, rdm1, field_kind="spin")
     ao, ao_deriv1, rdm1 = _restricted_spin_inputs(molecule)
     return _spin_resolved_channels_kernel(ao, ao_deriv1, rdm1)
 
@@ -597,12 +625,7 @@ def restricted_grid_response_variables(
     kind = normalize_response_feature_kind(feature_kind)
     provider = getattr(molecule, "grid_ao", None)
     if provider is not None:
-        def fields(ao, dao, lap, coords, weights):
-            view = SimpleNamespace(ao=ao, ao_deriv1=dao, ao_laplacian=lap,
-                                   rdm1=molecule.rdm1)
-            return restricted_grid_response_variables(view, feature_kind=kind)
-
-        return provider.map(fields, deriv=0 if kind == "LDA" else 2 if kind == "MGGA_LAPL" else 1)
+        return _physical_grid_fields(provider, jnp.asarray(molecule.rdm1), field_kind=kind)
     if kind == "LDA":
         ao, rdm1 = jnp.asarray(molecule.ao), jnp.asarray(molecule.rdm1)
         if rdm1.ndim == 2:
