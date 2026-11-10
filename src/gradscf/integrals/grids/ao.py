@@ -23,7 +23,21 @@ def _coordinate_power(base: Array, power: Array) -> Array:
     Clamping the lowered integer power avoids that undefined intermediate;
     the integer prefactor gives the exact zero derivative at every order.
     """
-    return base**power
+    power = jnp.asarray(power)
+    if not jnp.issubdtype(power.dtype, jnp.integer):
+        return base**power
+
+    def low_order(x):
+        square = x * x
+        return jnp.where(power == 0, jnp.ones_like(x),
+               jnp.where(power == 1, x,
+               jnp.where(power == 2, square,
+               jnp.where(power == 3, square * x, square * square))))
+
+    # s/p/d/f values and their spatial derivatives need powers at most four.
+    # Angular powers are discrete: this branch introduces no coordinate cutoff.
+    return jax.lax.cond(jnp.all((power >= 0) & (power <= 4)),
+                        low_order, lambda x: x**power, base)
 
 
 @_coordinate_power.defjvp
@@ -111,6 +125,11 @@ def _evaluate_cartesian_ao_kernel(
         jnp.arange(exponents.shape[1], dtype=jnp.int32)[None, None, :]
         < nprims[None, :, None]
     ).astype(dtype)
+    # Padding is not a physical primitive. Normalizing alpha=0 before its
+    # eventual zero mask introduces singular higher parameter derivatives.
+    # Keep every active exponent dynamic and use a finite dummy value only
+    # outside nprims, where the primitive contribution is identically zero.
+    exponents = jnp.where(prim_mask[0] != 0, exponents, 1.)
     norms = _primitive_cartesian_norm_array(exponents, angulars).astype(dtype)
 
     exp_term = jnp.exp(-exponents[None, :, :] * r2)

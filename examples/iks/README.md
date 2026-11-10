@@ -1,5 +1,12 @@
 # Inverse-reference functional assessment
 
+`fixed_reference.py` demonstrates the new orbital-reference/assessment layer
+with a manufactured two-AO system, an external analytic custom_xc and an
+external MLP. It reuses the existing fixed-density Trainer and exposes the same
+raw objective to an agent. No inverse solver, candidate SCF or molecular
+accuracy claim is involved. Run `PYTHONPATH=src JAX_PLATFORMS=cpu python
+examples/iks/fixed_reference.py`.
+
 Run from the repository root; scripts have no CLI. All inverse/electronic-
 structure algorithms are in `src/gradscf`, with the existing neural architecture
 under `model/neural_xc`. The example declares the system, external Dirac energy
@@ -80,3 +87,85 @@ The first unnormalized projection failed its unchanged density tolerance and
 correctly stopped before training; its evidence is preserved. A BSD time wrapper
 also failed a sandboxed sysctl after the child finished. A separate standard-
 library subprocess run records the successful final exit and source equality.
+
+
+## PBE analytic-functional design loop
+
+`wu_yang_pbe.py` verifies a known H2/PBE density -> inverse reference -> PBE
+round trip. `pbe_agent_functionals.py` contains the external c001/c002 analytic
+GGA proposals. `pbe_agent_loop.py` replays the measured parameter-AD diagnostic
+and plots the recorded search/test results, with no CLI or model invocation.
+
+The molecular pilot uses30distinct CAFES-QM9 species, one frozen frame each,
+with a20/5/5 train/adaptive-validation/sealed-test split. Labels are unrelaxed
+CCSD Lambda1RDMs and CCSD total energies including nuclear repulsion, from the
+published def2-SVP dataset. They are not FCI data. The documented spherical
+AO map is embedded in normalized Cartesian def2-SVP and checked against the
+source overlap. Grid level1 is fixed. All30local references meet relative
+density L2<=1e-3, gradient max<=1e-8 and occupied/virtual gap>1e-7Ha. These
+are approximate finite-basis density references, not unique exact potentials.
+
+The parent prepares/validates references and owns all code, scheduler work,
+training and scoring. GPT-5.6 Luna/high proposes formulas from public literature
+and receives only explicitly authorized anonymous train/validation feedback.
+Its raw proposals, formulas, bounds and parameter initial values are preserved.
+The pilot ran two scored formulas and one measured feedback iteration, within
+the authorized maximum of5rounds. It does not train LLM policy weights.
+
+For each molecule the shared `dft.Functional` scalar energy supplies both its
+AO potential and mixed parameter/density derivatives. The affine tables reuse
+PBE E/F and require no repeated SCF or ERI during correction fitting. The
+training objective is mean[(DeltaE/1Ha)^2+abs(DeltaE/1Ha)+.01*||kappa||^2],
+using the shared occupied-virtual response with a0.05Ha denominator floor.
+L-BFGS reports objective-change convergence; the stored point gradient of MAE
+at a zero-error kink is not a global-optimality certificate.
+
+The frozen reward uses validation WRMSD J in Hartree:
+R=(0.85*J_PBE)/max(J,1e-12Ha)*0.9^N_failed. Sampled checks cover finite
+first derivatives/HVP, spin interchange, a zero uniform-density correction,
+and finite actual fixed-reference response. A sampled pass is not a proof of
+all exact functional constraints. No test metric participates in selection.
+
+| Formula | Train WRMSD (mHa) | Validation WRMSD (mHa) | Validation rotation norm squared | Reward |
+| --- | ---: | ---: | ---: | ---: |
+| c000: PBE | 332.0686 | 370.4044 | 0.00780356 | 0.8500 |
+| c001: q,q^2,q*zeta^2 | 26.0310 | 21.5553 | 0.00794445 | 14.6063 |
+| c002: q^2,q^2*(1-q)^2 | 25.1142 | 20.0988 | 0.00795844 | 15.6648 |
+
+c001's polarization direction is exactly zero on restricted inputs and is
+not an identified spin response. c002 removes it and suppresses the leading
+small-gradient correction. Its validation energy improves, while its proposed
+stationarity improvement is not observed. c002 was frozen before one final
+5-species test. These are fixed-reference absolute total-energy results;
+self-consistent accuracy, atomization/reaction energies and broad transfer are
+not established. The fixed vacuum scale breaks strict coordinate scaling in
+the tail; exact exchange spin scaling and a global Lieb-Oxford bound are not
+enforced by either proposal.
+
+To replay a downloaded result bundle (BUNDLE.json, immutable references/caches,
+records and the final test), set its root explicitly:
+
+```bash
+GRADSCF_IKS_BUNDLE=/path/to/pbe_loop_results PYTHONPATH=src JAX_PLATFORMS=cpu python examples/iks/pbe_agent_loop.py
+```
+
+The bundle retains original file hashes. Explicit loader path overrides allow
+relocation without rewriting teacher JSON or cache metadata. The example
+checks a training-parameter directional AD derivative against finite differences
+at a regular point, then writes `figures/pbe_agent_loop.png` and `.pdf`.
+All molecular calculations were Slurm CPU jobs on jy_gpu_2 (CPU4,16GiB for
+baseline/candidates/finaltest, noGPU); JAX0.10.0 and float64. No GPU result is
+claimed. The data and numeric tables are external artifacts, not source files.
+
+Primary references: [PBE](https://doi.org/10.1103/PhysRevLett.77.3865),
+[agentic functional search](https://arxiv.org/abs/2605.05460),
+[stationarity constraints](https://arxiv.org/abs/2610.30022).
+
+Final held-out results (5species, opened once after freezing c002): PBE WRMSD
+0.386136810Ha and MAE0.382856646Ha;
+c002 WRMSD0.023639536Ha and MAE0.022795644Ha.
+The mean squared rotation response changes from0.010160658
+to0.010426151; density improvement is not demonstrated.
+The remote replay passed with empty stderr and directionalAD0.0758799152882
+versus finite difference0.0758799124055. All formula and per-molecule score
+records are retained separately; non-winner test results are not evaluated.

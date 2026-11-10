@@ -46,27 +46,46 @@ class IntegralPlan:
             self, parameters, active_shells=active_shells,
             separate_exponents=separate_exponents)
 
+    def _direct_inputs(self, parameters):
+        """Normalize once, retaining independent coefficient/exponent operands."""
+        fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
+                        nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
+        _, _, env, coefficients, exponents = self.coefficient_data(fixed, separate_exponents=True)
+        return env, coefficients, exponents
+
     def get_jk(self, parameters, density, *, screening_threshold=0., workers=1,
-               with_j=True, with_k=True, omega=0.):
+               with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None,
+               _inputs=None):
         """Native shell-direct J/K with density and coordinate response.
 
-        Coordinate AD requires zero screening cutoff. Numerical exponents
-        and coefficients remain separate unsupported differentiation inputs.
+        Density, first basis-parameter and first/second coordinate responses
+        are supported. Positive-cutoff AD follows the selected quartet mask
+        away from threshold changes. Mixed basis/coordinate products are
+        supported; pure/cross basis Hessians and third derivatives are not.
         A static positive omega selects erf(omega*r12)/r12 in inverse Bohr;
         omega=0 retains ordinary Coulomb, including its exact density response.
         """
         omega = _validate_omega(omega)
         from .backends.native.jk import direct_jk
-        fixed=replace(parameters,centers=jnp.zeros_like(parameters.centers),
-                      nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
-        atm,bas,env=self.pack(fixed)
+        if _inputs is None:
+            env, coefficients, exponents = self._direct_inputs(parameters)
+        else:
+            # Derived operands belong to this bound raw state, never a global
+            # numerical cache. Normalization retains its ordinary JAX graph.
+            check_parameter_shapes(self.topology, parameters)
+            env, coefficients, exponents = _inputs
+            if env.shape != (self.env_size,):
+                raise ValueError("Prepared direct ENV does not match the plan.")
+        atm, bas = self.atm, self.bas
         if omega:
             env=env.at[8].set(omega)  # libcint PTR_RANGE_OMEGA
         coordinates=jnp.concatenate((parameters.nuclear_coords,parameters.centers))
         if density.shape[-2:]!=(self.topology.nao,)*2:raise ValueError('Density AO dimensions do not match the plan.')
         return direct_jk(atm,bas,env,density,cart=self.topology.cart,
                          cutoff=screening_threshold,workers=workers,
-                         with_j=with_j,with_k=with_k,coordinates=coordinates)
+                         with_j=with_j,with_k=with_k,coordinates=coordinates,
+                         coefficients=coefficients, exponents=exponents,
+                         private_output_bytes=private_output_bytes, screen_density=screen_density)
 
     def evaluate(self, operator, parameters, *, origin=None, ecps=None, aosym='s1', omega=0.0,zeta=None,
                  shell_slice=None):

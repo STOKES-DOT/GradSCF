@@ -33,12 +33,15 @@ def xc_energy_and_potential_from_density(
     symmetrize: bool = True,
     has_aux: bool = False,
     density_weights: Array | None = None,
+    check_finite: bool = True,
 ) -> XCEnergyPotentialResult:
     """Differentiate a real scalar XC energy into the physical AO potential.
 
     For complex Hermitian densities, ``dE = Re sum_b w_b Tr(V_b dD_b)``.
     Conjugate JAX's gradient and divide by the supplied block weights (e.g.
     normalized k-point weights). Molecular densities use unit weights.
+    Assessment callers may set check_finite=False to return nonfinite raw
+    values and mark a candidate invalid themselves. No value is sanitized.
     """
 
     density_arr = jnp.asarray(density)
@@ -82,7 +85,7 @@ def xc_energy_and_potential_from_density(
     # get an explicit error. Model constraints belong in the model itself.
     for label, value in (("energy", xc_energy), ("potential", vxc_matrix),
                          ("extra Fock", extra_fock), ("exchange coefficient", alpha)):
-        if not isinstance(value, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(value))):
+        if check_finite and not isinstance(value, jax.core.Tracer) and not bool(jnp.all(jnp.isfinite(value))):
             raise FloatingPointError(f"Custom XC {label} must be finite.")
 
     return XCEnergyPotentialResult(

@@ -1,5 +1,135 @@
 # Inverse references and functional assessment
 
+## Supplied orbital references and shared fixed-density objectives
+
+`OrbitalReference(target, coefficients, occupations, energies, method=...)`
+accepts complete RKS, UKS or complex spinor orbitals. The input target may be a
+correlated AO 1-RDM; its real-space density is the inversion target, and it is
+not required to equal the reference orbitals' 1-RDM. Structural `valid` checks
+finite data, C^dagger S C=I and electron counts, not ground-state stability,
+local v-representability or a successful density inversion. `method` must
+identify where the supplied orbitals came from. Store and independently verify
+the source inversion's density error before admitting a production teacher.
+Supplying orbitals does not execute Wu-Yang or coupled inverse-GKS.
+
+```python
+score = iks.evaluate(reference, energy_fn, params, quantities=('energy',))
+value, score = iks.loss(reference, energy_fn, params,
+    weights={'energy': {'mse': 1., 'mae': 1.},
+             'stationarity': {'norm2': .1}})
+```
+
+`energy_fn(params, density)` returns TOTAL energy in Ha. Energy-only evaluation
+does not construct dE/dD. Operator/stationarity/density requests share one live
+Fock derivative. With an `OrbitalReference`, omitted quantities means energy
+only; omitted quantities on legacy thermal results preserves their old
+energy/operator/commutator behavior.
+
+Available objectives have deliberately different names and units:
+
+| Objective | Metric | Meaning |
+| --- | --- | --- |
+| energy | mse, mae | Total-energy error squared / absolute, Ha^2 / Ha |
+| operator | mse | Orthogonal-frame total Fock error after scalar gauge removal, Ha^2 |
+| xc_potential | mse | Same metric for an explicitly supplied AO XC teacher, Ha^2 |
+| stationarity | norm2 | Sum over occupied/virtual rotations abs(kappa_ai)^2, dimensionless |
+| predicted_density | norm2 | Integral of component density error squared, bohr^-3 |
+
+For `xc_potential`, supply both `reference.xc_potential` and an explicit
+`xc_energy_fn`; a total Fock must not be compared to an XC-only teacher.
+`energy_function(..., component='xc')` exposes supported scalar custom/neural
+XC and traditional R/U XC components. Its default is total energy, with nuclear
+repulsion required explicitly when absent from state metadata. Spinor custom
+models, separate spinor XC components, and ambiguous dispersion decompositions
+remain guarded rather than inferred from a scalar callback.
+
+For an analytic candidate that keeps a fixed exact-exchange fraction while
+fitting a parameterized custom semilocal component, use
+`hybrid_xc_energy_function(...)`. It is deliberately a fixed-reference-only
+callback: it returns XC energy in Hartree, contracts the existing AO/DF/direct
+JK representation, keeps custom parameters differentiable, and rejects GKS.
+It does not add a hybrid SCF binding, a coupled inverse-GKS response, or a
+Wu--Yang solver.
+
+For wavefunction-derived XC labels such as XC100 `Exc_TZ`, use
+`xc_energy_loss(..., target_xc_energy=...)`; do not place an XC-only label in
+`Target.energy`, whose contract remains total energy including nuclear
+repulsion.
+
+The integer occupied/virtual model uses kappa_ai=-F_ai/max(eps_a-eps_i,gap_floor).
+Default gap_floor=.05 Ha is an explicit uncoupled-response regularization,
+not an exact SCF Hessian or hidden broadening in an inverse derivative. RKS
+occupation factors and complex spinor density rotations are retained.
+Fractional reference occupations are valid for energy/operator evaluation;
+stationarity and predicted density reject that chart. Only a requested
+predicted-density metric constructs delta D.
+
+For predicted density, pass `grid=AOGrid(...)` or `(real_ao, weights)`.
+Density-norm quadrature requires real finite nonnegative weights with positive
+total weight; invalid quadratures cannot produce a valid loss.
+The metric compares n_s+delta n with n_target and reports the separate
+reference_density_norm2. It preserves alpha/beta or charge/magnetization
+components, including the original inversion residual. This is an approximate
+first-order diagnostic, not actual candidate SCF density error.
+
+`loss(..., scales={...})` divides each residual by an explicit scale before
+squaring/absolute value. Scales have units Ha for energy/operator/XC potential,
+dimensionless for rotation and bohr^-3/2 for density norm; defaults are 1 in
+these units. The returned raw Evaluation stays unnormalized. Invalid reference, nonfinite explicit parameters
+or model values produce invalid scores/nonfinite loss, never zero labels or a
+finite reward. The caller defines any reward transformation or RL policy.
+
+`potential_error` separately supports real, component-by-grid local potential
+data: `grid_l2` is the weighted grid point mean summed over components;
+`density_integral` squares each density-weighted integral before summing (the
+NNLap metric). These are different objectives. The latter requires a fixed
+common gauge; removing its weighted density mean would erase its signal.
+This metric helper does not invent a pointwise potential for nonlocal models.
+
+The old `Evaluation.stationarity_mse` is retained as a commutator diagnostic
+(`commutator_mse` alias). It is distinct from the new `rotation_norm2`; an AO
+commutator is not used as a substitute for the occupied/virtual objective.
+
+## Existing Trainer and agent integration
+
+```python
+sample = training.Sample(state, inverse=reference, nuclear_repulsion=enuc)
+trainer = training.Trainer(functional, params=params)
+trainer.mode = 'fixed_density'
+trainer.loss = {'energy': {'mse': 1., 'mae': 1.},
+                'stationarity': {'norm2': .1}}
+trainer.run(sample, steps=20)
+```
+
+The adapter copies the reference orbitals/density into the existing prepared
+state without SCF, checks the overlap and uses the existing Sample PyTree,
+Adam, parameter-gradient checks, atomic update rejection and history. An energy
+override on Sample is explicit. Source AO ordering must match the reference;
+overlap equality alone cannot prove basis identity. All three ordinary Trainer
+modes remain; inverse samples currently require fixed_density. Use ordinary
+samples with explicit/implicit for actual candidate SCF validation. Mixing
+ordinary and inverse samples in one dataset, additional training objectives,
+and per-electron/per-atom normalization are rejected in this initial adapter.
+For an inverse sample, xc_potential supervises its AO teacher, whereas ordinary
+samples retain their separate grid-potential target. No fourth training mode,
+optimizer or reward policy is introduced.
+
+When an inverse XC/predicted-density objective is active, a simultaneously
+supplied Sample grid-potential/density label is rejected as ambiguous. Put the
+inverse AO XC teacher and target density on OrbitalReference. Inactive labels
+do not affect energy-only objectives. Unperformed DFPT response diagnostics are
+None/NaN, not a failed solve or a measured zero error.
+
+Standalone `iks.loss` supports explicit per-objective scales/gap_floor. The
+initial Trainer adapter uses the documented unit scales and .05 Ha gap floor;
+its weights must be chosen accordingly. Missing actual SCF density diagnostics
+are NaN; unrequested inverse diagnostics are NaN in history and None in the
+raw Evaluation. scf_cycles=0 and scf_converged=None indicate no candidate SCF.
+
+See [the two-AO analytic/MLP example](../../../../examples/iks/fixed_reference.py).
+It is a manufactured reference/interface check, not a molecular inversion or
+accuracy benchmark. The same raw metrics can feed an external agent's reward.
+
 The package provides physical targets, block-local potential maps, SCF metadata
 snapshots, an explicitly selected finite-temperature matrix-reference generator
 and fixed-reference functional evaluation. Zero-temperature Wu–Yang and coupled
@@ -202,3 +332,15 @@ inner-state contracts remain separately guarded.
 See [the carbon example](../../../../examples/iks/carbon_fci.py) and its
 [independent FCI comparison](../../../../examples/iks/compare_carbon_fci_pyscf.py).
 Both are ordinary scripts with no CLI and reuse src implementations.
+
+## Offline Wu-Yang local inversion
+
+`iks.invert(..., method="wu_yang")` now implements real RKS/collinear-UKS
+zero-temperature forward reference generation. See [WU_YANG.md](WU_YANG.md)
+for the objective, gauge/rank and acceptance contracts, finite-basis limits,
+and the verified known-PBE molecular round trip. Earlier statements below or
+in historical experiment notes that all Wu-Yang work is unimplemented are
+superseded for this bounded forward path. Spinor/coupled inverse-GKS and the
+inverse-map backward remain unimplemented. Invalid inversions return no usable
+OrbitalReference. Existing fixed-reference analytic/neural assessment and all
+three ordinary training modes retain their contracts.

@@ -50,8 +50,13 @@ from .poles import screened_w_real_resolvent
 _BATCH_MEM_LIMIT = 1 << 31
 
 
-def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0):
-    """RPA response at one frequency + (1-Pi)^{-1} - I (complex)."""
+def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_scale=1.0,
+                        right=None, config=None):
+    """Complex RPA screened matrix, or its action on a supplied right vertex."""
+    if right is not None and config is not None and config.method == "gmres":
+        from .screened import screened_action
+        return screened_action(omega, channels, right, eta=eta, config=config,
+                                conjugate=conjugate, response_scale=response_scale)
     pi = None
     for e_spin, b_ov_spin, spin_factor in channels:
         contrib = rho_response_real(
@@ -60,7 +65,8 @@ def _response_solve_one(omega, channels, eta, naux, dtype, conjugate, response_s
         pi = contrib if pi is None else pi + contrib
     pi = response_scale * pi
     eye = jnp.eye(naux, dtype=dtype)
-    return jnp.linalg.solve(eye - pi, pi)
+    rhs = pi if right is None else jnp.dot(pi, right, precision=Precision.HIGHEST)
+    return jnp.linalg.solve(eye - pi, rhs)
 
 
 
@@ -169,6 +175,7 @@ def sigma_residue_part(
     resolvent_data: dict | None = None,
     g_indices: Array | None = None,
     del_w_static: Array | None = None,
+    execution_plan=None,
 ) -> Array:
     """Residue part of Sigma_p(omega) from poles inside the contour.
 
@@ -246,6 +253,27 @@ def sigma_residue_part(
 
     naux = b_pm.shape[0]
     dtype = jnp.complex128
+    if q0 is None and not conjugate and (execution_plan is None or execution_plan.projected_residue):
+        # A molecular residue needs a bilinear product, not an auxiliary
+        # matrix for every G pole. Keep even externally-vmapped inactive
+        # probes at a regular frequency, and rematerialize the factorization
+        # in reverse AD instead of saving NG dense dielectric/LU arrays.
+        def project(values):
+            frequency, left, right, enabled = values
+            def evaluate(_):
+                solved = _response_solve_one(frequency, channels, eta, naux,
+                    dtype, conjugate, response_scale, right=right,
+                    config=None if execution_plan is None else execution_plan.screening_config)
+                return jnp.dot(left, solved, precision=Precision.HIGHEST)
+            return jax.lax.cond(enabled, evaluate,
+                                lambda _: jnp.zeros((), dtype=dtype), None)
+        contrib = jax.lax.map(jax.checkpoint(project),
+            (probe_freqs, b_pm.T, b_mp.T, active))
+        if wmn_static is not None:
+            contrib = contrib - jnp.asarray(wmn_static)
+        result = jnp.sum(weights * contrib)
+        return result if wmn_static is not None else fm * result
+
     est_bytes = pole_freqs.shape[0] * naux * naux * 16 * 2
     solve_one = lambda w: _response_solve_one(
         w, channels, eta, naux, dtype, conjugate, response_scale
@@ -376,6 +404,9 @@ def sigma_cd(omega: float | Array, ctx: dict) -> Array:
         occupation_sign=ctx.get("occupation_sign"),
         del_w_static=ctx.get("del_w_static"),
     )
+    if "transition" in ctx:
+        from .conventional import residue
+        return sigma_i+residue(omega, ctx)
     sigma_r = sigma_residue_part(
         omega,
         ctx["mo_energy"],
@@ -390,6 +421,7 @@ def sigma_cd(omega: float | Array, ctx: dict) -> Array:
         occupation_sign=ctx.get("occupation_sign"),
         p_index=ctx.get("p_index"),
         resolvent_data=ctx.get("resolvent_data"),
+        execution_plan=ctx.get("execution_plan"),
         g_indices=ctx.get("g_indices"),
         del_w_static=ctx.get("del_w_static"),
     )

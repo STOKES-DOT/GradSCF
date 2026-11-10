@@ -9,7 +9,7 @@ import numpy as np
 
 from gradscf.scf.inputs.types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
-from ..dft.xc import hybrid_coeff, parse_xc
+from ..dft.xc import hybrid_coeff, parse_xc, xc_type
 from gradscf.dft.hfx import _local_hfx_features_from_basis_dm
 from gradscf.dft.pt2 import (
     _local_pt2_feature_and_fock_response_from_restricted_orbitals,
@@ -25,6 +25,12 @@ from .rsh import local_xc_spec, rsh_preset
 
 def _host_array(value: Any, dtype: Any | None = None) -> np.ndarray:
     return np.asarray(jax.device_get(value), dtype=dtype)
+
+
+def _reject_screened_reference(config):
+    if config.grid_screen_tol > 0 and xc_type(local_xc_spec(config.xc_spec)) != "HF":
+        raise NotImplementedError(
+            "Response export for screened XC is not implemented; use grid_screen_tol=0.")
 
 
 def _restricted_reference_array_packaging(
@@ -64,8 +70,35 @@ def _empty_rep_tensor_like(overlap: Any) -> np.ndarray:
     return np.zeros((0, 0, 0, 0), dtype=np.asarray(overlap).dtype)
 
 
-def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True):
-    """Add a missing dipole tensor without recomputing S/H/ERI/grid or SCF."""
+def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
+        require_grid=False, config=None, grids_level=0, max_l=3):
+    """Lazily complete reference data without replacing spatial SCF inputs.
+
+    Ordinary HF energies need no quadrature. Reference/feature consumers can
+    request the existing dense/streamed grid representation after SCF, retaining
+    S/H/ERI, RI factors, direct providers and the solved orbital state.
+    """
+    if require_grid and inputs.grid_weights.shape[0] == 0 and inputs.grid_ao is None:
+        from .inputs import assembly
+        from .._memory import tree_storage_bytes
+
+        cfg = RKSConfig(xc_spec="hf") if config is None else config
+        names = ("overlap", "hcore", "eri", "eri_pair_matrix", "df_factors",
+                 "direct_basis", "dipole_integrals", "init_density",
+                 "init_density_alpha", "init_density_beta", "init_mo_coeff",
+                 "init_mo_coeff_alpha", "init_mo_coeff_beta")
+        resident = tree_storage_bytes(*(getattr(inputs, name, None) for name in names))
+        laplacian = xc_type(local_xc_spec(cfg.xc_spec)) == "MGGA"
+        context = assembly._prepare_basis_grid_context(
+            spec=spec, basis=basis, max_l=max_l, grids_level=grids_level,
+            needs_ao_laplacian=laplacian, needs_grid=True,
+            grid_block_size=cfg.grid_block_size, grid_max_memory=cfg.grid_max_memory,
+            max_memory=cfg.max_memory, scf_max_cycle=cfg.max_cycle,
+            scf_history_matrices=6 if hasattr(inputs, "nalpha") else 2,
+            fixed_workspace_bytes=resident)
+        ao, derivative, lap = assembly._grid_ao_payload(context, needs_ao_laplacian=laplacian)
+        inputs = replace(inputs, coords=context.coords, grid_weights=context.grid_weights,
+            ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao)
     if inputs.dipole_integrals is not None:
         return inputs
     from ..integrals import prepare_basis, make_plan
@@ -115,6 +148,7 @@ def _build_restricted_reference(
     cfg = RKSConfig(xc_spec=xc_spec_resolved) if rks_config is None else rks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
+    _reject_screened_reference(cfg)
 
     rsh = rsh_preset(xc_spec_resolved)
     exact_exchange_fraction = (rsh.default_sr_hf_fraction if rsh is not None
@@ -142,9 +176,9 @@ def _build_restricted_reference(
             verbose=verbose,
             **mol_kwargs,
         )
-    if include_dipole_integrals and scf_inputs.dipole_integrals is None:
-        spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
-        scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis)
+    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "
@@ -439,37 +473,47 @@ def _build_unrestricted_reference(
     init_guess_sap_basis: Any | None = None,
     init_guess_chkfile_project: bool | None = None,
     verbose: int = 0,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
     **mol_kwargs: Any,
 ) -> UnrestrictedMolecule:
     """Build an unrestricted strict-JAX UKS reference directly from molecule specs."""
+
+    if scf_result is not None and scf_inputs is None:
+        raise ValueError('A cached SCF result requires the inputs from the same calculation.')
 
     xc_spec_resolved = str(xc_spec)
     parse_xc(local_xc_spec(xc_spec_resolved))
     cfg = UKSConfig(xc_spec=xc_spec_resolved) if uks_config is None else uks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
+    _reject_screened_reference(cfg)
 
-    scf_inputs = build_uks_integral_inputs(
-        atom=atom,
-        basis=basis,
-        config=cfg,
-        xc_spec=xc_spec_resolved,
-        unit=unit,
-        charge=charge,
-        spin=spin,
-        cart=cart,
-        grids_level=grids_level,
-        max_l=max_l,
-        grid_ao_backend=grid_ao_backend,
-        integral_backend=integral_backend,
-        libcint_geometry_grad_policy=libcint_geometry_grad_policy,
-        init_guess=init_guess,
-        chkfile=chkfile,
-        init_guess_sap_basis=init_guess_sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project,
-        verbose=verbose,
-        **mol_kwargs,
-    )
+    if scf_inputs is None:
+        scf_inputs = build_uks_integral_inputs(
+            atom=atom,
+            basis=basis,
+            config=cfg,
+            xc_spec=xc_spec_resolved,
+            unit=unit,
+            charge=charge,
+            spin=spin,
+            cart=cart,
+            grids_level=grids_level,
+            max_l=max_l,
+            grid_ao_backend=grid_ao_backend,
+            integral_backend=integral_backend,
+            libcint_geometry_grad_policy=libcint_geometry_grad_policy,
+            init_guess=init_guess,
+            chkfile=chkfile,
+            init_guess_sap_basis=init_guess_sap_basis,
+            init_guess_chkfile_project=init_guess_chkfile_project,
+            verbose=verbose,
+            **mol_kwargs,
+        )
+    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "
@@ -486,10 +530,9 @@ def _build_unrestricted_reference(
     ao_laplacian = scf_inputs.ao_laplacian
     dipole_integrals = scf_inputs.dipole_integrals
 
-    uks = run_uks_from_integrals(
-        **scf_inputs.as_uks_kwargs(),
-        config=cfg,
-    )
+    uks = scf_result
+    if uks is None:
+        uks = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=cfg)
     uks_is_traceable = _contains_jax_tracer(uks.total_energy)
     if not uks_is_traceable and not uks.converged:
         if not (
@@ -613,6 +656,8 @@ def build_unrestricted_reference_from_facade(
     hfx_omega_values: tuple[float, ...] = (0.0, 0.4),
     hfx_chunk_size: int = 512,
     reference_builder: Any | None = None,
+    scf_inputs: Any | None = None,
+    scf_result: Any | None = None,
 ) -> Any:
     if reference_builder is None:
         raise ValueError("reference_builder must be provided for unrestricted facade references.")
@@ -640,7 +685,37 @@ def build_unrestricted_reference_from_facade(
         init_guess_sap_basis=sap_basis,
         init_guess_chkfile_project=init_guess_chkfile_project,
         verbose=mol.verbose,
+        **({"scf_inputs": scf_inputs, "scf_result": scf_result} if scf_inputs is not None else {}),
     )
+
+
+def build_unrestricted_scf_result_from_facade(
+    spec: MoleculeSpec,
+    *,
+    mol: Any,
+    xc: str,
+    grids_level: int,
+    max_l: int,
+    integral_backend: str,
+    geometry_grad_policy: str,
+    grid_ao_backend: str,
+    uks_config: UKSConfig,
+    init_guess: Any,
+    chkfile: str | None,
+    sap_basis: Any | None,
+    init_guess_chkfile_project: bool | None,
+    return_inputs: bool = False,
+) -> Any:
+    """Prepare the energy inputs and solved UKS state without exporting a grid reference."""
+    scf_inputs = build_uks_integral_inputs(
+        atom=spec, basis=mol.basis, config=uks_config, xc_spec=xc,
+        unit=mol.unit, charge=mol.charge, spin=mol.spin, cart=mol.cart,
+        grids_level=grids_level, max_l=max_l, grid_ao_backend=grid_ao_backend,
+        integral_backend=integral_backend, libcint_geometry_grad_policy=geometry_grad_policy,
+        init_guess=init_guess, chkfile=chkfile, init_guess_sap_basis=sap_basis,
+        init_guess_chkfile_project=init_guess_chkfile_project, verbose=mol.verbose)
+    result = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=uks_config)
+    return (result, scf_inputs) if return_inputs else result
 
 
 __all__ = [
@@ -648,6 +723,7 @@ __all__ = [
     "build_restricted_reference_from_facade",
     "build_restricted_scf_result_from_facade",
     "build_unrestricted_reference_from_facade",
+    "build_unrestricted_scf_result_from_facade",
     "_build_restricted_reference",
     "_build_unrestricted_reference",
 ]

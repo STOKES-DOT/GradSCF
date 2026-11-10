@@ -48,6 +48,7 @@ def test_moving_hf_preflight_precedes_integrals():
 def test_molecular_solver_relays_original_mb_and_seed_owners(monkeypatch):
     energy = MolecularEnergy.__new__(MolecularEnergy)
     energy.unrestricted, energy.jk_backend = True, 'full'
+    energy.forward = 'minimize'
     energy.coefficients = jnp.stack((jnp.eye(2),)*2)
     energy.occupations = np.array([[1., 0.], [0., 0.]])
     energy.coordinates = jnp.zeros((1, 3))

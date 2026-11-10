@@ -34,9 +34,11 @@ def test_cache_budget_reserves_native_worker_and_transpose_arrays(system):
     per_vector = 8 * (60 * basis.nao**2 + 4 * 3)
     native_fixed = 3*_native_direct_workspace_bytes(basis, 8, 0.)
     assert native_fixed + 2*cache + plan.batch_size * per_vector <= 800_000
-    # Enough for the direct minimum, but not for the cache plus its workers.
-    small = plan_response_memory(basis.nao, 3, 1, np.float64, .225, direct_basis=basis)
-    assert small.eri_cache_bytes == 0
+    # Coordinate products reserve raised-shell scratch even without private
+    # J/K outputs. This obsolete 0.225 MB fixture cannot fit that fixed work.
+    assert 3*_native_direct_workspace_bytes(basis, 8, 0., private_output_bytes=0) > 180_000
+    with pytest.raises(ValueError, match='Response memory budget'):
+        plan_response_memory(basis.nao, 3, 1, np.float64, .225, direct_basis=basis)
     disabled = plan_response_memory(basis.nao, 3, 1, np.float64, 2.,
                                     direct_basis=basis, integral_cache="none")
     assert disabled.eri_cache_bytes == 0
@@ -157,6 +159,6 @@ def test_projected_and_cuda_plans_keep_direct_workspace(system, monkeypatch):
     projected = ProjectedNativeDirectBasis(basis, jnp.eye(basis.nao))
     assert plan_response_memory(4, 3, 1, np.float64, .2,
                                 direct_basis=projected).eri_cache_bytes == 0
-    assert plan_response_memory(4, 3, 1, np.float64, .25,
+    assert plan_response_memory(4, 3, 1, np.float64, 2.,
                                 direct_basis=basis,
                                 device=SimpleNamespace(platform="gpu", memory_stats=lambda: {})).eri_cache_bytes == 0

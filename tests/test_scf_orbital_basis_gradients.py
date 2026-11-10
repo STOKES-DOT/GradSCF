@@ -12,11 +12,12 @@ import pytest
 
 from gradscf import integrals
 from gradscf.scf import nuclear_repulsion_energy
-from gradscf.scf.orbital_optimization import minimize_uks_from_integrals
+from gradscf.scf.orbital_optimization import minimize_uks_from_integrals, minimize_roks_from_integrals
 
 
 @pytest.mark.parametrize('mode', ['implicit', 'unrolled'])
-def test_h2_321g_contraction_backward_matches_finite_difference(mode):
+@pytest.mark.parametrize('backend', ['full', 'direct', 'restricted_direct'])
+def test_h2_321g_contraction_backward_matches_finite_difference(mode, backend):
     from scipy.linalg import eigh
     from gradscf._memory import workspace_bytes
     from gradscf.integrals.basis.contraction import primitive_basis, contraction_matrix, contract_integrals
@@ -41,12 +42,19 @@ def test_h2_321g_contraction_backward_matches_finite_difference(mode):
         first = parameters.coefficients[0].at[0,0].set(theta)
         moving = replace(parameters,coefficients=(first,*parameters.coefficients[1:]))
         inputs = physical(moving)
-        return minimize_uks_from_integrals(overlap=inputs['overlap'],
+        options = {}
+        if backend != 'full':
+            from gradscf.integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
+            options['direct_basis'] = ProjectedNativeDirectBasis(
+                NativeDirectBasis(plan, primitive_parameters), contraction_matrix(topology, moving))
+        minimize = minimize_roks_from_integrals if backend == 'restricted_direct' else minimize_uks_from_integrals
+        return minimize(overlap=inputs['overlap'],
             hcore=inputs['kinetic']+inputs['nuclear'],
-            eri=inputs['eri'],nuclear_repulsion=enuc,
+            eri=inputs['eri'] if backend == 'full' else None,nuclear_repulsion=enuc,
             ao=jnp.zeros((0,len(coeff))),ao_deriv1=jnp.zeros((4,0,len(coeff))),grid_weights=jnp.zeros(0),
-            mo_coeff=seed,mo_occ=occ,max_iterations=100,gradient_tolerance=1e-9,
-            gradient_mode=mode,orthonormalize_initial=True)
+            mo_coeff=seed[0] if backend == 'restricted_direct' else seed,
+            mo_occ=occ,max_iterations=100,gradient_tolerance=1e-9,
+            gradient_mode=mode,orthonormalize_initial=True,**options)
 
     def observable(theta):
         result = calculate(theta)

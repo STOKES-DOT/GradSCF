@@ -9,7 +9,7 @@ from gradscf.dft.derivatives import xc_energy_and_potential_from_density
 def test_external_ks_response_matches_pyscf(xc):
     from gradscf import gto, scf, dfpt
     from gradscf.integrals.molecular.jk import build_j_from_eri_pair_matrix
-    from gradscf.scf.uks import run_unrestricted_scf_scan
+    from gradscf.scf.iteration import run_unrestricted_scf
     from pyscf import gto as pgto, dft as pdft
     from pyscf.scf import cphf
     atom = 'He 0 0 0; H 0 0 1.5'
@@ -41,7 +41,7 @@ def test_external_ks_response_matches_pyscf(xc):
         return f, f, e
 
     occ = jnp.stack([jnp.array([1.,0.])]*2)
-    result = run_unrestricted_scf_scan(fock_builder=builder,
+    result = run_unrestricted_scf(fock_builder=builder,
         density_spin=jnp.stack([mf.make_rdm1()/2]*2), mo_coeff_spin=jnp.stack([mf.mo_coeff]*2),
         mo_occ_spin=occ, mo_energy_spin=jnp.stack([mf.mo_energy]*2), overlap=data.overlap,
         max_cycle=100, damping=.1, conv_tol=1e-12, conv_tol_density=1e-11,

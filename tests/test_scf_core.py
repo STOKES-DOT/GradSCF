@@ -185,29 +185,14 @@ def test_rks_and_uks_build_molecule_like_pytree_states():
     assert len(jax.tree_util.tree_leaves(unrestricted_state)) > 0
 
 
-def test_rks_iteration_carry_is_a_pytree_dataclass():
-    nao = 2
-    carry = rks.RKSIterationCarry(
-        cycle=jnp.asarray(0, dtype=jnp.int32),
-        converged=jnp.asarray(False),
-        density=jnp.eye(nao),
-        mo_coeff=jnp.eye(nao),
-        mo_energy=jnp.asarray([-0.5, 0.2]),
-        energy=jnp.asarray(0.0),
-        xc_energy=jnp.asarray(0.0),
-        raw_fock=jnp.eye(nao),
-        j_mat=jnp.eye(nao),
-        k_mat=jnp.eye(nao),
-        fock_last=jnp.eye(nao),
-        fock_hist=jnp.zeros((8, nao, nao)),
-        err_hist=jnp.zeros((8, nao * nao)),
-        hist_head=jnp.asarray(0, dtype=jnp.int32),
-        hist_count=jnp.asarray(0, dtype=jnp.int32),
-    )
-    leaves = jax.tree_util.tree_leaves(carry)
-    assert len(leaves) == 15
-    rebuilt = jax.tree_util.tree_unflatten(jax.tree_util.tree_structure(carry), leaves)
-    assert isinstance(rebuilt, rks.RKSIterationCarry)
+def test_shared_scf_state_is_an_array_pytree():
+    from gradscf.solvers.scf import SCFState
+    state = SCFState(jnp.eye(2), jnp.eye(2), jnp.array([-.5, .2]),
+                     jnp.asarray(0.), jnp.eye(2), (jnp.asarray(0.), jnp.eye(2), jnp.eye(2)))
+    leaves, structure = jax.tree_util.tree_flatten(state)
+    assert len(leaves) == 8
+    rebuilt = jax.tree_util.tree_unflatten(structure, leaves)
+    assert isinstance(rebuilt, SCFState)
 
 
 def test_restricted_molecule_tree_flatten_keeps_dynamic_field_slots_stable():

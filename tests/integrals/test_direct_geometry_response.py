@@ -98,8 +98,7 @@ def test_direct_geometry_translation_sum_rule(problem):
 
 
 def test_direct_geometry_retains_requested_workers(problem, monkeypatch):
-    from gradscf.integrals.backends.native import jk
-    from gradscf.integrals.backends.native.autodiff import direct_jk as geometry
+    from gradscf.integrals.backends.native.autodiff import direct_basis as geometry
     plan, _, coords, density, _, at, _, _ = problem
     original = geometry.geometry_products
     observed = []
@@ -108,7 +107,7 @@ def test_direct_geometry_retains_requested_workers(problem, monkeypatch):
         observed.append(kwargs.get("workers"))
         return original(*args, **kwargs)
 
-    jk._direct_geometry_value.cache_clear()
+    geometry.basis_value.cache_clear()
     monkeypatch.setattr(geometry, "geometry_products", products)
 
     def energy(r):
@@ -133,10 +132,12 @@ def test_traced_geometry_cache_factory_uses_direct_response(problem, monkeypatch
         np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
-def test_screened_geometry_direction_is_explicitly_rejected(problem):
-    _, _, coords, density, direction, _, actual, _ = problem
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError), match="(?i)(cutoff|screen)"):
-        jax.jvp(lambda r: actual(r, density, cutoff=1e-12), (coords,), (direction,))
+def test_basis_screened_geometry_direction_matches_small_cutoff_oracle(problem):
+    _, _, coords, density, direction, _, actual, oracle = problem
+    expected = jax.jvp(lambda r: oracle(r, density), (coords,), (direction,))[1]
+    observed = jax.jvp(lambda r: actual(r, density, cutoff=1e-12), (coords,), (direction,))[1]
+    for result, reference in zip(observed, expected):
+        np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
 def test_real_third_direct_geometry_response_remains_explicitly_unsupported(problem):
@@ -148,13 +149,25 @@ def test_real_third_direct_geometry_response_remains_explicitly_unsupported(prob
 
 
 @pytest.mark.parametrize("field", ["exponents", "coefficients"])
-def test_direct_basis_parameter_derivatives_remain_explicitly_unsupported(problem, field):
+def test_direct_basis_parameter_derivatives_match_full_eri(problem, field):
     plan, parameters, _, density, _, _, _, _ = problem
     values = getattr(parameters, field)
-    with pytest.raises((NotImplementedError, ValueError, RuntimeError),
-                       match="(?i)(basis|exponent|coefficient)"):
-        jax.jvp(lambda value: plan.get_jk(replace(parameters, **{field: (value, *values[1:])}), density),
-                (values[0],), (jnp.ones_like(values[0]),))
+
+    def action(value, *, dense):
+        current = replace(parameters, **{field: (value, *values[1:])})
+        if not dense:
+            return plan.get_jk(current, density)
+        eri = plan.evaluate("eri", current)
+        return (jnp.einsum("pqrs,brs->bpq", eri, density),
+                jnp.einsum("prqs,brs->bpq", eri, density))
+
+    direction = jnp.ones_like(values[0])
+    expected = jax.jvp(lambda x: action(x, dense=True), (values[0],), (direction,))[1]
+    actual = jax.jit(lambda x, v: jax.jvp(
+        lambda y: action(y, dense=False), (x,), (v,))[1])(values[0], direction)
+    assert any(float(jnp.linalg.norm(matrix)) > 1e-6 for matrix in expected)
+    for result, reference in zip(actual, expected):
+        np.testing.assert_allclose(result, reference, atol=3e-10, rtol=2e-10)
 
 
 def test_projected_direct_geometry_and_transform_mixed_hvp(monkeypatch):
@@ -197,3 +210,27 @@ def test_projected_direct_geometry_and_transform_mixed_hvp(monkeypatch):
     for result, reference, a, b in zip(observed, expected, plus, minus):
         np.testing.assert_allclose(result, reference, atol=2e-9, rtol=2e-9)
         np.testing.assert_allclose(result, (a-b)/(2*step), atol=2e-7, rtol=3e-7)
+
+
+def test_zero_density_retains_nonzero_geometry_density_mixed_response(problem, monkeypatch):
+    _, _, coords, density, direction, _, actual, oracle = problem
+    zero = jnp.zeros_like(density)
+    density_direction = .13*jnp.sin(density)
+    expected = jax.jvp(lambda r: oracle(r, density_direction), (coords,), (direction,))[1]
+    _forbid_eri(monkeypatch)
+    def mixed(r, d):
+        slope = lambda q: jax.jvp(lambda dm: actual(q, dm), (d,), (density_direction,))[1]
+        return jax.jvp(slope, (r,), (direction,))[1]
+    observed = jax.jit(mixed)(coords, zero)
+    assert all(np.linalg.norm(np.asarray(x)) > 1e-8 for x in observed)
+    for result, reference in zip(observed, expected):
+        np.testing.assert_allclose(result, reference, atol=2e-9, rtol=2e-9)
+    # A central mixed difference at (coordinates, D=0), with both original steps.
+    for step in (1e-4, 3e-5):
+        pp = actual(coords+step*direction, step*density_direction)
+        pm = actual(coords+step*direction, -step*density_direction)
+        mp = actual(coords-step*direction, step*density_direction)
+        mm = actual(coords-step*direction, -step*density_direction)
+        fd = jax.tree.map(lambda a, b, c, d: (a-b-c+d)/(4*step**2), pp, pm, mp, mm)
+        for result, reference in zip(observed, fd):
+            np.testing.assert_allclose(result, reference, atol=2e-7, rtol=3e-7)

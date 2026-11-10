@@ -16,6 +16,7 @@ from .builders import (
     build_restricted_scf_result_from_facade,
     complete_restricted_response_inputs,
     build_unrestricted_reference_from_facade,
+    build_unrestricted_scf_result_from_facade,
     _build_restricted_reference,
     _build_unrestricted_reference,
 )
@@ -70,6 +71,7 @@ class _BaseKS:
     grid_ao_backend: Literal["jax"] = "jax"
     grid_block_size: int = 0
     grid_max_memory: float | None = None
+    grid_screen_tol: float = 0.
     max_memory: float = field(default=DEFAULT_MAX_MEMORY_MB, kw_only=True)
     execution_device: Literal["auto", "cpu", "gpu"] = "auto"
     init_guess: Any = "hcore"
@@ -355,15 +357,23 @@ class _BaseKS:
         reject_rsh_response(self)
         return self._ensure_reference()
 
-    def _check_reference_source(self) -> None:
-        if self.e_tot is None or not self.converged:
+    def _check_reference_source(self, *, allow_unconverged: bool = False) -> None:
+        if self.e_tot is None or (not self.converged and not allow_unconverged):
             raise RuntimeError('Run and converge ground-state SCF before preparing a reference.')
         if self._cached_scf_key is None or self._cached_scf_key != self._scf_signature():
             raise RuntimeError('Molecule or SCF configuration changed; run kernel() before preparing a reference.')
         if self._cached_orbital_key != self._orbital_signature():
             raise RuntimeError('Orbital state changed; run kernel() before preparing a reference.')
 
+    def _check_response_grid(self):
+        from ..dft.xc import xc_type
+        if (self.grid_screen_tol > 0 and not self._is_external_xc()
+                and xc_type(self._standard_xc_spec()) != 'HF'):
+            raise NotImplementedError(
+                "Response export for screened XC is not implemented; use grid_screen_tol=0.")
+
     def _ensure_reference(self) -> Any:
+        self._check_response_grid()
         self._check_reference_source()
         response_key = self._response_signature()
         if self.reference is not None and response_key == self._cached_response_key:
@@ -386,6 +396,7 @@ class RKS(_BaseKS):
     df_tol: float = 1e-10
     df_max_rank: int | None = None
     auxbasis: str | None = None
+    only_dfj: bool = False
     direct_scf_tol: float = 0.0
     direct_scf_workers: int = 1
     compute_local_hfx_features: bool = False
@@ -406,17 +417,23 @@ class RKS(_BaseKS):
             df_tol=self.df_tol,
             df_max_rank=self.df_max_rank,
             auxbasis=self.auxbasis,
+            only_dfj=self.only_dfj,
             direct_scf_tol=self.direct_scf_tol,
             direct_scf_workers=self.direct_scf_workers,
             max_memory=self.max_memory,
             grid_block_size=self.grid_block_size,
             grid_max_memory=self.grid_max_memory,
+            grid_screen_tol=self.grid_screen_tol,
         )
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
+        if self.only_dfj:
+            raise NotImplementedError("RI-J/direct-K response export is not implemented; SCF energies remain available.")
         with self._preparation_inputs(spec) as (spec, mol, init_guess):
             if self._scf_inputs is not None:
-                self._scf_inputs = complete_restricted_response_inputs(self._scf_inputs,spec,mol.basis)
+                self._scf_inputs = complete_restricted_response_inputs(
+                    self._scf_inputs, spec, mol.basis, require_grid=True,
+                    config=self._config(), grids_level=self.grids_level, max_l=self.max_l)
             reference = build_restricted_reference_from_facade(
                 spec,
                 **self._build_options(spec, mol, init_guess),
@@ -490,14 +507,16 @@ class RKS(_BaseKS):
 
         return stabilize_scf(self, **kwargs)
 
-    def density_fit(self, auxbasis: str | None = None) -> "RKS":
+    def density_fit(self, auxbasis: str | None = None, *, only_dfj: bool = False) -> "RKS":
         """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend = "df"
         self.auxbasis = auxbasis or 'def2-universal-jkfit'
+        self.only_dfj = bool(only_dfj)
         return self
 
     def direct_scf(self) -> "RKS":
         self.jk_backend = "direct"
+        self.only_dfj = False
         return self
 
 
@@ -522,18 +541,22 @@ class UKS(_BaseKS):
     conv_tol_grad: float = 1e-7
     jk_backend: Literal['full','df','direct'] = 'full'
     auxbasis: str | None = None
+    df_tol: float = 1e-10
+    only_dfj: bool = False
     direct_scf_tol: float = 0.0
     direct_scf_workers: int = 1
 
     def _response_signature(self):
-        # UKS builds the response container during SCF, without the optional
-        # restricted local-HFX feature controls.
+        # Unrestricted references have no optional restricted local-HFX controls.
         return _cache_signature((self.execution_device,self._response_device()))
 
     def _ensure_reference(self) -> Any:
+        if self.only_dfj:
+            raise NotImplementedError("RI-J/direct-K response export is not implemented; SCF energies remain available.")
+        self._check_response_grid()
         self._check_reference_source()
         if self.reference is None:
-            raise RuntimeError('Solved UKS reference is missing; run kernel() again.')
+            return super()._ensure_reference()
         response_key = self._response_signature()
         if self._cached_response_key != response_key:
             self.reference = self._put_on_requested_device(self.reference)
@@ -551,37 +574,63 @@ class UKS(_BaseKS):
             level_shift=self.level_shift,
             jk_backend=self.jk_backend,
             auxbasis=self.auxbasis,
+            df_tol=self.df_tol,
+            only_dfj=self.only_dfj,
             direct_scf_tol=self.direct_scf_tol,
             direct_scf_workers=self.direct_scf_workers,
             max_memory=self.max_memory,
             grid_block_size=self.grid_block_size,
             grid_max_memory=self.grid_max_memory,
+            grid_screen_tol=self.grid_screen_tol,
         )
+
+    def _sync_from_scf_result(self, result: Any) -> None:
+        super()._sync_from_scf_result(result)
+        for name in ('mo_coeff', 'mo_occ', 'mo_energy'):
+            setattr(self, name, jnp.stack([getattr(result, name+'_alpha'),
+                                         getattr(result, name+'_beta')]))
+        self._cached_orbital_key = self._orbital_signature()
+
+    def _build_options(self, spec, mol, init_guess):
+        return dict(mol=mol, xc=self._standard_xc_spec(), grids_level=self.grids_level,
+            max_l=self.max_l, integral_backend=self.integral_backend,
+            geometry_grad_policy=self.geometry_grad_policy, grid_ao_backend=self.grid_ao_backend,
+            uks_config=self._config(), init_guess=init_guess, chkfile=self.chkfile,
+            sap_basis=self.sap_basis, init_guess_chkfile_project=self.init_guess_chkfile_project)
+
+    def _build_scf_result(self, spec: MoleculeSpec) -> Any:
+        with self._preparation_inputs(spec) as (spec, mol, init_guess):
+            result, inputs = build_unrestricted_scf_result_from_facade(
+                spec, **self._build_options(spec, mol, init_guess), return_inputs=True)
+        self._scf_inputs = inputs
+        return result
 
     def _build_reference(self, spec: MoleculeSpec) -> Any:
         with self._preparation_inputs(spec) as (spec, mol, init_guess):
+            if self._scf_inputs is not None:
+                self._scf_inputs = complete_restricted_response_inputs(
+                    self._scf_inputs, spec, mol.basis, cart=mol.cart, require_grid=True,
+                    config=self._config(), grids_level=self.grids_level, max_l=self.max_l)
             return build_unrestricted_reference_from_facade(
-                spec,
-                mol=mol,
-                xc=self._standard_xc_spec(),
-                grids_level=self.grids_level,
-                max_l=self.max_l,
-                integral_backend=self.integral_backend,
-                geometry_grad_policy=self.geometry_grad_policy,
-                grid_ao_backend=self.grid_ao_backend,
-                uks_config=self._config(),
-                init_guess=init_guess,
-                chkfile=self.chkfile,
-                sap_basis=self.sap_basis,
-                init_guess_chkfile_project=self.init_guess_chkfile_project,
+                spec, **self._build_options(spec, mol, init_guess),
                 reference_builder=_build_unrestricted_reference,
-            )
+                scf_inputs=self._scf_inputs, scf_result=self.scf_result)
 
     def kernel(self) -> Any:
+        from ..dft.xc import xc_type
+        from .rsh import local_xc_spec
+
         self._configure_jax_cache()
-        self.converged = False
+        for name in _SCF_RESULT_FIELDS:
+            setattr(self, name, None)
         if self._is_external_xc():
             return self._run_external_xc()
+        if (self.grid_screen_tol > 0
+                or xc_type(local_xc_spec(self._standard_xc_spec())) == 'HF'):
+            result = self._build_scf_result(self._spec())
+            self._sync_from_scf_result(result)
+            self._cached_scf_key = self._scf_signature()
+            return self.e_tot
         reference = self._build_reference(self._spec())
         reference = self._put_on_requested_device(reference)
         self._sync_from_reference(reference)
@@ -599,14 +648,16 @@ class UKS(_BaseKS):
 
         return stabilize_scf(self, **kwargs)
 
-    def density_fit(self, auxbasis: str | None = None) -> "UKS":
+    def density_fit(self, auxbasis: str | None = None, *, only_dfj: bool = False) -> "UKS":
         """Use fixed-geometry auxiliary RI with CPU preparation and device response arrays."""
         self.jk_backend='df'
         self.auxbasis=auxbasis or 'def2-universal-jkfit'
+        self.only_dfj = bool(only_dfj)
         return self
 
     def direct_scf(self) -> "UKS":
         self.jk_backend = "direct"
+        self.only_dfj = False
         return self
 
 

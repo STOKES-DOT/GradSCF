@@ -97,7 +97,9 @@ def _reference_polarizability(b, energy, occupation, grid):
 
 def _screened(pi):
     eye = jnp.eye(pi.shape[-1], dtype=pi.dtype)
-    return jnp.linalg.solve(eye - pi, pi)
+    # Only one frequency factorization is live; reverse mode recomputes it.
+    # Full physical Pi/W outputs and the reference-tail definitions are intact.
+    return jax.lax.map(jax.checkpoint(lambda value: jnp.linalg.solve(eye-value, value)), pi)
 
 
 def _boson_product_sum(a, b, beta):

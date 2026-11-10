@@ -16,14 +16,16 @@ void eri_local_entries(const std::array<int,4>& dims, Consume consume) {
 struct ERIBasisTables {
   IntegralTables t;
   ERIWindow window;
-  ERICanonicalQuartets symmetry;
+  // One immutable call-scoped O(nshell^2) schedule, shared by worker copies.
+  std::shared_ptr<const ERICanonicalQuartets> symmetry;
   int active,first_shell=0,shell_stride=1;
-  std::vector<double> block,cache,contracted;
+  std::vector<double> block,cache,contracted,permuted;
 
   ERIBasisTables(ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
                  ffi::BufferR1<ffi::F64> env,int cart,
                  const int32_t* slice=nullptr,size_t count=0)
-      :t(atoms,basis,env,4,cart,true),window(t,slice,count),symmetry(window),active(t.nbas) {}
+      :t(atoms,basis,env,4,cart,true),window(t,slice,count),
+       symmetry(std::make_shared<const ERICanonicalQuartets>(window)),active(t.nbas) {}
 
   static void finite(const double* values,size_t size) {
     for (size_t i=0;i<size;++i)
@@ -42,7 +44,7 @@ struct ERIBasisTables {
   }
   template<class Consume>
   void quartets(Consume consume) {
-    symmetry.for_each([&](const auto& shells) {
+    symmetry->for_each([&](const auto& shells) {
       libcint_diagnostics::note(libcint_diagnostics::eri4c,libcint_diagnostics::scheduled_quartets);
       consume(shells);
     },first_shell,shell_stride);
@@ -81,7 +83,7 @@ struct ERIBasisTables {
       });
     });
   }
-  void shell(Intor intor,std::array<int,4> shells,const std::array<int,4>& dims) {
+  void shell(Intor intor,std::array<int,4> shells,const std::array<int,4>& dims,int components=1) {
     int64_t cartesian=1;size_t size=1;
     for (int leg=0;leg<4;++leg) {
       const int* row=t.bas.data()+shells[leg]*BAS_SLOTS;
@@ -90,8 +92,32 @@ struct ERIBasisTables {
     }
     // libcint contracts spherical output in Cartesian space too. A cache
     // query can wrap to a positive int, so reject this guaranteed overflow.
-    if (cartesian>=std::numeric_limits<int>::max()/3)
+    if ((components!=1 && components!=3) ||
+        cartesian>=std::numeric_limits<int>::max()/(3*components))
       throw std::invalid_argument("ERI basis internal Cartesian cache exceeds int32 indexing");
-    t.shell(intor,shells.data(),size,block,cache);
+    t.shell(intor,shells.data(),size_t(components)*size,block,cache);
+  }
+  void geometry_shell(Intor ip,const std::array<int,4>& original,
+                      const std::array<int,4>& dims,int leg) {
+    // Put the differentiated physical leg first for libcint ip1, then map
+    // its component blocks back to physical first-leg-fastest storage.
+    constexpr int modes[4][4]={{0,1,2,3},{1,0,2,3},{2,3,0,1},{3,2,0,1}};
+    if (leg<0 || leg>=4) throw std::invalid_argument("Invalid ERI geometry leg");
+    std::array<int,4> shells,ordered_dims;
+    size_t size=1;
+    for (int a=0;a<4;++a) {
+      shells[a]=original[modes[leg][a]];ordered_dims[a]=dims[modes[leg][a]];
+      size*=dims[a];
+    }
+    shell(ip,shells,ordered_dims,3);
+    permuted.resize(block.size());
+    eri_local_entries(dims,[&](const auto& local,size_t index) {
+      std::array<int,4> ordered;
+      for (int a=0;a<4;++a) ordered[a]=local[modes[leg][a]];
+      const size_t source=local_index(ordered_dims,ordered);
+      for (int axis=0;axis<3;++axis)
+        permuted[size_t(axis)*size+index]=-block[size_t(axis)*size+source];
+    });
+    block.swap(permuted);
   }
 };

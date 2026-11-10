@@ -29,32 +29,49 @@ class MolecularEnergy:
     The initial orbitals seed each forward solve; they are not a frozen density.
     Every call transports the AO metric and relaxes the orbitals again. The
     implicit backward follows this stationary branch, including in nested AD.
-    ``forward="scf"`` optionally prepares a stopped DIIS orbital seed for a
-    restricted implicit solve. The final stationary equations and response
-    remain the same live orbital minimization as ``forward="minimize"``.
+    ``forward="scf"`` uses DIIS as the numerical forward solve,
+    validates its stationarity without orbital optimization or Newton polishing,
+    and attaches the same live implicit response as ``forward="minimize"``.
+    ``forward="reference"`` attaches local implicit response to a supplied
+    numerical ``solution`` (orbital array), defaulting to the seed orbitals.
+    This separates an already completed SCF from response compilation. The
+    current stationarity/metric checks still apply; use a fresh solution at
+    each geometry. This mode retains orbital response rather than freezing it.
 
-    Full native ERIs are the default geometry-AD representation. HF may opt
-    into ``jk_backend="direct"`` to use moving native J/K without AO ERIs.
-    Direct calls inherit the seed's J/K worker count and retain zero screening.
-    The default requires a full-J/K seed; explicit direct accepts full or
-    direct HF seeds. Original omegaB97X-D carries full/LR ERIs and its
-    geometry-dependent CHG energy explicitly through the same solver.
+    The default representation inherits a direct seed; otherwise it uses full
+    J/K. An explicit ``jk_backend="direct"`` also accepts a full-J/K seed and
+    uses moving native J/K without full or long-range AO ERIs.
+    Direct calls inherit the seed's J/K workers and screening cutoff. Positive
+    cutoff response follows the selected quartet mask away from its thresholds;
+    convergence to the unscreened result remains an observable-specific check.
+    Full J/K requires a full-J/K seed; direct accepts full or direct seeds.
+    Direct workflows inherit the seed memory budget unless explicitly overridden.
+    DFT assembly inherits the seed's grid and memory controls;
+    an explicit max_memory overrides that assembly budget. Original
+    omegaB97X-D retains its geometry-dependent CHG energy in both backends.
     DFT grids and AO values move with R. Isolated state stability and numerical
     grid convergence must be checked for each demonstrated observable.
     """
 
     def __init__(self, mf, *, mode="implicit", forward="minimize", gradient_tolerance=1e-9,
-                 jk_backend="full", max_memory=None, reserved_bytes=0):
-        if forward not in ("minimize", "scf"):
-            raise ValueError("forward must be 'minimize' or 'scf'.")
+                 jk_backend=None, max_memory=None, reserved_bytes=0):
+        if forward not in ("minimize", "scf", "reference"):
+            raise ValueError("forward must be 'minimize', 'scf' or 'reference'.")
+        if jk_backend is None:
+            jk_backend = "direct" if getattr(mf, "jk_backend", "full") == "direct" else "full"
         if jk_backend not in ("full", "direct"):
             raise ValueError("jk_backend must be 'full' or 'direct'.")
+        if max_memory is None and jk_backend == "direct":
+            max_memory = getattr(mf, "max_memory", None)
         self.max_memory = None if max_memory is None else validate_memory_mb(max_memory)
         self.reserved_bytes = validate_reserved_bytes(reserved_bytes)
         if not jax.config.x64_enabled:
             raise ValueError("MolecularEnergy requires JAX float64.")
         if not bool(mf.converged):
             raise ValueError("Supply a converged molecular reference.")
+        check_grid = getattr(mf, "_check_response_grid", None)
+        if check_grid is not None:
+            check_grid()
         coefficients = np.asarray(mf.mo_coeff)
         occupations = np.asarray(mf.mo_occ)
         if np.iscomplexobj(coefficients) or coefficients.ndim not in (2, 3):
@@ -72,16 +89,15 @@ class MolecularEnergy:
             self.occupations = np.stack([occupations / 2] * 2)
         seed_backends = ("full", "direct") if jk_backend == "direct" else ("full",)
         if not mf.mol.cart or getattr(mf, "jk_backend", "full") not in seed_backends:
-            raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct HF J/K.")
+            raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct J/K.")
         self.jk_backend = jk_backend
         self.direct_scf_workers = getattr(mf, "direct_scf_workers", 1)
+        self.direct_scf_tol = getattr(mf, "direct_scf_tol", 0.)
         self.xc = mf.xc
         self.rsh = rsh_preset(self.xc)
         self.kind = xc_type(local_xc_spec(self.xc))
         if self.kind not in ("HF", "LDA", "GGA"):
-            raise NotImplementedError("This molecular adapter supports HF/LDA/GGA/global hybrids.")
-        if jk_backend == "direct" and (self.kind != "HF" or self.rsh is not None):
-            raise NotImplementedError("Direct molecular response currently supports HF only.")
+            raise NotImplementedError("This molecular adapter supports HF/LDA/GGA/hybrids, not MGGA.")
         self.spec = mf.mol.to_spec()
         self.basis = mf.mol.basis
         self.coordinates = jnp.asarray(self.spec.coords_bohr)
@@ -92,16 +108,26 @@ class MolecularEnergy:
         self.differentiation = scf.SCFDifferentiationConfig(
             mode=mode, tolerance=1e-10, max_iter=100, restart=40)
         self.forward = forward
+        if forward == "reference" and self.differentiation.mode != "implicit":
+            raise ValueError("forward='reference' requires implicit response.")
         if forward == "scf":
-            if self.unrestricted or self.differentiation.mode != "implicit":
-                raise ValueError("forward='scf' requires a restricted implicit solve.")
-            self.scf_config = replace(mf._config(), jk_backend=jk_backend, direct_scf_tol=0.0)
+            if self.differentiation.mode != "implicit":
+                raise ValueError("forward='scf' requires implicit response.")
+            if self.unrestricted:
+                self.nelectron = tuple(int(row.sum()) for row in occupations)
+                self.scf_order = tuple(tuple(int(i) for i in np.r_[np.flatnonzero(row),
+                    np.flatnonzero(row == 0)]) for row in occupations)
+                self.scf_inverse = tuple(tuple(int(i) for i in np.argsort(row)) for row in self.scf_order)
+            else:
+                self.nelectron = int(np.sum(occupations))
+                self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
+                                                            np.flatnonzero(occupations == 0)])
+                self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
+        if self.kind != "HF" or forward == "scf":
+            self.scf_config = replace(mf._config(), jk_backend=jk_backend,
+                                      direct_scf_tol=self.direct_scf_tol)
             if self.max_memory is not None:
                 self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
-            self.nelectron = int(np.sum(occupations))
-            self.scf_order = tuple(int(i) for i in np.r_[np.flatnonzero(occupations == 2),
-                                                        np.flatnonzero(occupations == 0)])
-            self.scf_inverse = tuple(int(i) for i in np.argsort(self.scf_order))
         topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
         self.plan = integrals.make_plan(topology)
         distances = np.linalg.norm(np.asarray(self.parameters.centers)[:, None]
@@ -151,8 +177,8 @@ class MolecularEnergy:
             if self.jk_backend == 'direct':
                 from gradscf.integrals.backends.native.jk import NativeDirectBasis
                 from gradscf.scf.orbital_optimization import _native_workspace
-                required += _native_workspace(NativeDirectBasis(self.plan, self.parameters),
-                                               self.direct_scf_workers)
+                required += _native_workspace(NativeDirectBasis(self.plan, None),
+                                               self.direct_scf_workers, self.direct_scf_tol)
             workspace_bytes(self.max_memory, resident_bytes=resident+required)
         moving = replace(self.parameters, centers=coordinates[self.owners],
                          nuclear_coords=coordinates)
@@ -178,14 +204,17 @@ class MolecularEnergy:
             options = {} if self.unrestricted else dict(include_dipole_integrals=False)
             data = build(
                 atom=replace(self.spec, coords_bohr=coordinates), basis=self.basis,
-                xc_spec=self.xc, grids_level=self.grids_level, max_l=self.max_l,
+                config=self.scf_config, xc_spec=self.xc,
+                grids_level=self.grids_level, max_l=self.max_l,
                 cart=True, **options)
             overlap, hcore = data.overlap, data.hcore
-            eri = data.eri if data.eri is not None else data.eri_pair_matrix
+            eri = data.eri if data.eri is not None else getattr(data, "eri_pair_matrix", None)
             enuc = data.nuclear_repulsion
             ao, dao, weights = data.ao, data.ao_deriv1, data.grid_weights
             if data.grid_ao is not None:
                 extra["grid_ao"] = data.grid_ao
+            if data.direct_basis is not None:
+                extra["direct_basis"] = data.direct_basis
             if self.rsh is not None:
                 extra.update(eri_lr=data.eri_lr, dispersion_energy=data.dispersion_energy)
         if potential is not None:
@@ -196,47 +225,64 @@ class MolecularEnergy:
         return dict(overlap=overlap, hcore=hcore, eri=eri, nuclear_repulsion=enuc,
                     ao=ao, ao_deriv1=dao, grid_weights=weights, **extra)
 
-    def solve(self, coordinates, field=None, *, potential=None):
+    def solve(self, coordinates, field=None, *, potential=None, solution=None):
         """Return the relaxed array-valued state, retaining its implicit response."""
-        return self.solve_with_inputs(coordinates, field, potential=potential)[0]
+        return self.solve_with_inputs(coordinates, field, potential=potential, solution=solution)[0]
 
     def _scf_seed(self, inputs):
-        """Use existing DIIS only for the numerical seed, before implicit AD."""
+        """Use existing DIIS for the numerical forward, before implicit AD."""
         from gradscf.scf.orbital_optimization import _orthonormalize
         from gradscf.scf.rks import run_rks_from_integrals_traceable
 
         numerical, coefficients = jax.tree.map(jax.lax.stop_gradient, (inputs, self.coefficients))
+        if self.unrestricted:
+            from gradscf.scf.uks import run_uks_from_integrals
+            coefficients = _orthonormalize(coefficients, numerical['overlap'])
+            ordered = tuple(c[:, jnp.asarray(order)] for c, order in zip(coefficients, self.scf_order))
+            state = run_uks_from_integrals(**numerical,
+                nalpha=self.nelectron[0], nbeta=self.nelectron[1],
+                init_mo_coeff_alpha=ordered[0], init_mo_coeff_beta=ordered[1], config=self.scf_config)
+            coefficients = jnp.stack([c[:, jnp.asarray(order)] for c, order in zip(
+                (state.mo_coeff_alpha, state.mo_coeff_beta), self.scf_inverse)])
+            return jax.lax.stop_gradient(jnp.where(state.converged, coefficients, jnp.nan))
         reordered = self.scf_order != tuple(range(coefficients.shape[-1]))
         if reordered:
             coefficients = coefficients[:, jnp.asarray(self.scf_order)]
         coefficients = _orthonormalize(coefficients[None], numerical["overlap"])[0]
-        coefficients = run_rks_from_integrals_traceable(
+        state = run_rks_from_integrals_traceable(
             **numerical, nelectron=self.nelectron,
-            init_mo_coeff=coefficients, config=self.scf_config).mo_coeff
+            init_mo_coeff=coefficients, config=self.scf_config)
+        coefficients = jnp.where(state.converged, state.mo_coeff, jnp.nan)
         if reordered:
             coefficients = coefficients[:, jnp.asarray(self.scf_inverse)]
         return jax.lax.stop_gradient(coefficients)
 
-    def solve_with_inputs(self, coordinates, field=None, *, potential=None):
+    def solve_with_inputs(self, coordinates, field=None, *, potential=None, solution=None):
         """Return ``(state, inputs)`` from one assembly for downstream response."""
+        if solution is not None and self.forward != "reference":
+            raise ValueError("A supplied solution requires forward='reference'.")
         inputs = self.inputs(coordinates, field, potential=potential)
-        coefficients = self._scf_seed(inputs) if self.forward == "scf" else self.coefficients
+        coefficients = self.coefficients if solution is None else jnp.asarray(solution)
+        if self.forward == "scf":
+            coefficients = self._scf_seed(inputs)
         minimize = scf.minimize_uks_from_integrals if self.unrestricted else scf.minimize_roks_from_integrals
-        options = dict(direct_scf_workers=self.direct_scf_workers) if self.jk_backend == "direct" else {}
+        options = (dict(direct_scf_workers=self.direct_scf_workers,
+                        direct_scf_tol=self.direct_scf_tol)
+                   if self.jk_backend == "direct" else {})
         if self.max_memory is not None:
             options.update(max_memory=self.max_memory,
                 reserved_bytes=self.reserved_bytes+tree_storage_bytes(
-                    self._memory_inputs(), coordinates, field, potential,
+                    self._memory_inputs(), coordinates, field, potential, solution,
                     exclude=(inputs, coefficients, self.occupations)))
         state = minimize(
             **inputs, xc_spec=self.xc,
             mo_coeff=coefficients, mo_occ=self.occupations,
-            orthonormalize_initial=True, max_iterations=300,
+            orthonormalize_initial=self.forward == "minimize", max_iterations=300 if self.forward == "minimize" else 0,
             gradient_tolerance=self.gradient_tolerance, differentiation=self.differentiation, **options)
         return state, inputs
 
-    def __call__(self, coordinates, field=None, *, potential=None):
-        state = self.solve(coordinates, field, potential=potential)
+    def __call__(self, coordinates, field=None, *, potential=None, solution=None):
+        state = self.solve(coordinates, field, potential=potential, solution=solution)
         return jnp.where(state.stationary, state.total_energy, jnp.nan)
 
     def dipole(self, coordinates, field=None, *, potential=None):

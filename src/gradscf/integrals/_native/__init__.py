@@ -47,11 +47,17 @@ def register_integrals():
                "gradscf_coefficient_hessian_jvp_cpu_v1": "GradSCFCoefficientHessianJVP",
                "gradscf_coefficient_hessian_vjp_cpu_v1": "GradSCFCoefficientHessianVJP",
                "gradscf_compact_cpu_v1": "GradSCFCompact",
-               "gradscf_direct_jk_cpu_v1": "GradSCFDirectJK",
+               "gradscf_direct_jk_cpu_v2": "GradSCFDirectJKBudget",
                "gradscf_direct_jk_geometry_jvp_cpu_v1": "GradSCFDirectJKGeometryJVP",
                "gradscf_direct_jk_geometry_vjp_cpu_v1": "GradSCFDirectJKGeometryVJP",
                "gradscf_direct_jk_geometry_vjp_cpu_v2": "GradSCFDirectJKGeometryVJPParallel",
                "gradscf_packed_jk_cpu_v1": "GradSCFPackedJK"}
+    targets.update({"gradscf_direct_jk_coefficient_geometry_cpu_v1": "GradSCFDirectJKCoefficientGeometry",
+                    "gradscf_direct_jk_exponent_geometry_cpu_v1": "GradSCFDirectJKExponentGeometry"})
+    targets.update({"gradscf_direct_jk_coefficient_jvp_cpu_v1": "GradSCFDirectJKCoefficientJVP",
+                    "gradscf_direct_jk_coefficient_vjp_cpu_v1": "GradSCFDirectJKCoefficientVJP",
+                    "gradscf_direct_jk_exponent_jvp_cpu_v1": "GradSCFDirectJKExponentJVP",
+                    "gradscf_direct_jk_exponent_vjp_cpu_v1": "GradSCFDirectJKExponentVJP"})
     targets.update({"gradscf_exponent_jvp_cpu_v1": "GradSCFExponentJVP",
                     "gradscf_exponent_vjp_cpu_v1": "GradSCFExponentVJP"})
     targets.update({"gradscf_eri_coefficient_jvp_cpu_v1": "GradSCFERICoefficientJVP",
@@ -66,10 +72,18 @@ def register_integrals():
                     "gradscf_eri_slice_coefficient_hessian_vjp_cpu_v1": "GradSCFERISliceCoefficientHessianVJP",
                     "gradscf_eri_slice_exponent_jvp_cpu_v1": "GradSCFERISliceExponentJVP",
                     "gradscf_eri_slice_exponent_vjp_cpu_v1": "GradSCFERISliceExponentVJP"})
+    # The optional operand has a separate ABI. Old libraries still serve the
+    # default operator; an explicit reference requires a rebuild at its call.
+    if hasattr(handle, "GradSCFDirectJKScreened"):
+        targets["gradscf_direct_jk_screened_cpu_v1"] = "GradSCFDirectJKScreened"
+    for suffix in ("JVP", "VJP"):
+        symbol = f"GradSCFDirectJKGeometryScreened{suffix}"
+        if hasattr(handle, symbol):
+            targets[f"gradscf_direct_jk_geometry_screened_{suffix.lower()}_cpu_v1"] = symbol
     for target, symbol in targets.items():
         if not hasattr(handle, symbol):
-            raise RuntimeError("Native integral library is stale; rebuild with "
-                               "python -m gradscf.integrals._native.build")
+            raise RuntimeError(f"The libcint library is stale (missing {symbol}); rebuild with "
+                               "python -m gradscf.integrals._native.build and restart the process")
         jax.ffi.register_ffi_target(target, jax.ffi.pycapsule(getattr(handle, symbol)),
                                     platform="cpu", api_version=1)
     return handle

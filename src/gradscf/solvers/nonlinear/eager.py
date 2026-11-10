@@ -79,3 +79,66 @@ def iterate_eager(physical_map, initial, *, config=None, valid_state=None,
 
 
 __all__ = ['EagerIterationResult', 'iterate_eager']
+
+
+def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1e-8,
+                   callback=None, hessian=None):
+    """Checked L-BFGS with optional AD-Jacobian stationarity refinement; no inverse-map AD/JIT contract.
+
+    The callback returns a scalar and its real vector gradient. Keep physical
+    objectives and JAX compilation in the caller; this shared driver owns only
+    host optimization and rejects invalid objective/gradient evaluations.
+    """
+    import numpy as np
+    from scipy.optimize import minimize, root
+
+    if any(isinstance(a, jax.core.Tracer) for a in jax.tree.leaves(initial)):
+        raise NotImplementedError('minimize_eager is offline; inverse-map AD/JIT is unsupported')
+    x = np.asarray(initial)
+    if x.ndim != 1 or np.iscomplexobj(x) or not np.isfinite(x).all():
+        raise ValueError('Use a finite real vector as the initial state')
+    if not isinstance(maxiter, int) or maxiter < 1 or not isfinite(gradient_tolerance) or gradient_tolerance <= 0:
+        raise ValueError('Positive maxiter and gradient_tolerance are required')
+
+    def objective(vector):
+        value, gradient = value_and_grad(jnp.asarray(vector))
+        value, gradient = np.asarray(value), np.asarray(gradient)
+        if value.shape != () or gradient.shape != vector.shape or np.iscomplexobj(value) or np.iscomplexobj(gradient):
+            raise ValueError('The objective requires a real scalar and matching real gradient')
+        if not np.isfinite(value).all() or not np.isfinite(gradient).all():
+            raise ValueError('The objective and gradient must be finite')
+        return float(value), np.asarray(gradient, dtype=float)
+
+    reserve = min(100, maxiter//4) if hessian is not None else 0
+    result = minimize(objective, np.asarray(x, dtype=float), jac=True, method='L-BFGS-B',
+                      callback=callback, options={'maxiter': maxiter-reserve, 'gtol': gradient_tolerance,
+                      'ftol': 1e-15, 'maxls': 50, 'maxcor': 20})
+    result['method'] = 'L-BFGS-B'
+    # Preserve the stable quasi-Newton trajectory on flat/semi-definite
+    # objectives. Actual curvature is used only to polish unresolved residuals.
+    if hessian is not None and np.max(np.abs(result.jac)) > gradient_tolerance and result.nit < maxiter:
+        def curvature(vector):
+            value = np.asarray(hessian(jnp.asarray(vector)))
+            if value.shape != (vector.size, vector.size) or np.iscomplexobj(value) or not np.isfinite(value).all():
+                raise ValueError('The Hessian must be a finite real square matrix')
+            return .5*(value+value.T)
+        # Near stationarity, an energy decrease can be smaller than one ULP.
+        # Solve the gradient residual with its actual AD Jacobian instead of
+        # accepting a false energy-change convergence certificate.
+        refined = root(lambda vector: (objective(vector)[1], curvature(vector)), result.x,
+                       jac=True, method='lm', options={'maxiter': maxiter-result.nit,
+                       'ftol': 1e-12, 'xtol': 1e-12, 'gtol': 1e-12})
+        refined_value, refined_gradient = objective(refined.x)
+        allowance = 64*np.finfo(x.dtype).eps*max(1., abs(result.fun))
+        result['refinement_evaluations'] = int(refined.nfev)
+        result['nfev'] += int(refined.nfev)+1
+        result['njev'] += int(getattr(refined, 'njev', 0))
+        if np.max(np.abs(refined_gradient)) < np.max(np.abs(result.jac)) and refined_value <= result.fun+allowance:
+            result.update(x=refined.x, fun=refined_value, jac=refined_gradient,
+                          success=bool(np.max(np.abs(refined_gradient)) <= gradient_tolerance),
+                          message='Quasi-Newton objective followed by checked stationarity refinement',
+                          method='L-BFGS-B+stationary-lm')
+    return result
+
+
+__all__ += ['minimize_eager']

@@ -140,7 +140,8 @@ def test_dfpt_adapter_preserves_grid_provider(monkeypatch):
     np.testing.assert_allclose(streamed_energy, expected_energy, rtol=2e-12, atol=2e-12)
 
 
-def test_gks_facade_keeps_explicit_dense_assembly(monkeypatch):
+@pytest.mark.parametrize('block_size', [-1, 0, 2])
+def test_gks_facade_preserves_requested_grid_execution(monkeypatch, block_size):
     from gradscf import gto
     from gradscf.scf import gks
 
@@ -148,15 +149,13 @@ def test_gks_facade_keeps_explicit_dense_assembly(monkeypatch):
         pass
 
     def capture(**kwargs):
-        assert kwargs['config'].grid_block_size == -1
+        assert kwargs['config'].grid_block_size == block_size
         raise Captured
 
     monkeypatch.setattr(gks, 'build_uks_integral_inputs', capture)
     method = gks.GKS(gto.M(atom='H 0 0 0; H 0 0 1.4', unit='Bohr', basis='sto-3g'), xc='pbe')
+    method.grid_block_size = block_size
     with pytest.raises(Captured):
-        method.kernel()
-    method.grid_block_size = 2
-    with pytest.raises(NotImplementedError, match='(?i)grid|stream'):
         method.kernel()
 
 

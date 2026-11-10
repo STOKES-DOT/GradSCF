@@ -75,9 +75,12 @@ class MolecularTrainingDatum:
     weight: float = 1.0
     response_potential: Array | None = None
     target_density_response: Array | None = None
+    inverse: Any | None = None
+    inverse_nuclear_repulsion: Array | None = None
 
     def __post_init__(self) -> None:
         _require_scalar("target_e0_total_h", self.target_e0_total_h)
+        _require_scalar("inverse_nuclear_repulsion", self.inverse_nuclear_repulsion)
         _require_scalar("target_s1_total_h", self.target_s1_total_h)
         _require_vector("target_excitation_gaps_h", self.target_excitation_gaps_h)
         _require_vector("target_oscillator_strengths", self.target_oscillator_strengths)
@@ -179,6 +182,9 @@ class MolecularTrainingConfig:
     scf_implicit_diff_regularization: float = 0.0
     response_mse_weight: float = 0.0
     response_mae_weight: float = 0.0
+    inverse_operator_mse_weight: float = 0.0
+    inverse_stationarity_weight: float = 0.0
+    inverse_density_weight: float = 0.0
 
     def requires_scf_convergence(self, functional: Any) -> bool:
         if self.scf_require_converged is not None:
@@ -218,7 +224,8 @@ class MolecularTrainingConfig:
 def Sample(molecule, *, energy=None, density=None, s1_energy=None,
            excitation_energies=None, oscillator_strengths=None,
            orbital_energies=None, orbital_occupations=None, spectrum=None,
-           xc_potential=None, xc_kernel=None, response=None, weight=1.):
+           xc_potential=None, xc_kernel=None, response=None, weight=1.,
+           inverse=None, nuclear_repulsion=None):
     """Construct a training sample using the existing validated PyTree record.
 
     The source is a solved molecular/periodic HF/KS object or an AO/grid state.
@@ -230,13 +237,33 @@ def Sample(molecule, *, energy=None, density=None, s1_energy=None,
     depends on AO basis and perturbation units; no hidden normalization is used.
     Periodic samples currently accept energy (internal E/cell) and spin-summed
     grid-density targets, with the same fixed/explicit/implicit Trainer modes.
+    inverse=OrbitalReference binds supplied orbitals without a candidate SCF;
+    it currently supports fixed_density objectives only. nuclear_repulsion is
+    an explicit inverse-sample override when the prepared state lacks it.
     """
     from gradscf.scf.reference import as_reference
-    molecule = as_reference(molecule)
+    molecule = as_reference(molecule, allow_range_separated=inverse is not None)
+    if inverse is not None:
+        from gradscf.dft.iks import OrbitalReference
+        from gradscf.dft.iks.types import _check
+        from gradscf.scf.differentiable import _replace_molecule
+        if not isinstance(inverse, OrbitalReference):
+            raise TypeError('inverse requires a declared OrbitalReference, not an auxiliary matrix fit')
+        overlap = jnp.asarray(molecule.overlap_matrix)
+        expected = inverse.overlap if overlap.shape == inverse.overlap.shape else inverse.target.overlap
+        if overlap.shape != expected.shape:
+            raise ValueError('Inverse sample and state use different AO overlap dimensions')
+        _check(jnp.allclose(overlap, expected, atol=1e-10, rtol=1e-10),
+               'Inverse sample and state have different overlap metrics')
+        molecule = _replace_molecule(molecule, rdm1=inverse.density,
+            mo_coeff=inverse.coefficients, mo_occ=inverse.occupations, mo_energy=inverse.energies)
+        if energy is None: energy = inverse.target.energy
+    elif nuclear_repulsion is not None:
+        raise ValueError('A nuclear_repulsion override here requires an inverse reference')
     from gradscf.pbc.training import Reference
     if isinstance(molecule,Reference) and any(value is not None for value in
             (s1_energy,excitation_energies,oscillator_strengths,orbital_energies,
-             orbital_occupations,spectrum,xc_potential,xc_kernel,response)):
+             orbital_occupations,spectrum,xc_potential,xc_kernel,response,inverse)):
         raise NotImplementedError('Periodic samples support energy and grid density targets.')
     grid, curve = (None, None) if spectrum is None else spectrum
     potential, density_response = (None, None) if response is None else response
@@ -248,4 +275,5 @@ def Sample(molecule, *, energy=None, density=None, s1_energy=None,
         target_orbital_occupations=orbital_occupations,
         target_spectrum_grid_ev=grid, target_spectrum_curve=curve,
         target_xc_potential=xc_potential, target_xc_kernel=xc_kernel, weight=weight,
-        response_potential=potential, target_density_response=density_response)
+        response_potential=potential, target_density_response=density_response,
+        inverse=inverse, inverse_nuclear_repulsion=nuclear_repulsion)

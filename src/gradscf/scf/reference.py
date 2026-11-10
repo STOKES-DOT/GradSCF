@@ -59,6 +59,8 @@ def unrestricted_reference_from_source(source, *, max_memory=None, reserved_byte
     else:
         ref = source.reference
         if ref is None:
+            ref = source._ensure_reference()
+        if ref is None:
             raise RuntimeError("Run the UHF SCF before post-HF")
         nocc = (ref.nocc_alpha, ref.nocc_beta)
         coeff = source.mo_coeff

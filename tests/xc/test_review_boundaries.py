@@ -107,14 +107,14 @@ def test_noncollinear_xc_preserves_invalid_local_energy_and_potential(monkeypatc
 
 
 def test_unrestricted_energy_only_scan_does_not_certify_nonfinite_orbitals():
-    from gradscf.scf.uks import run_unrestricted_scf_scan
+    from gradscf.scf.iteration import run_unrestricted_scf
     density = jnp.tile(jnp.diag(jnp.asarray([1., 0.])), (2, 1, 1))
     coeff = jnp.tile(jnp.eye(2), (2, 1, 1))
     orbital_energy = jnp.tile(jnp.asarray([-1., 1.]), (2, 1))
     def builder(*args):
         fock = jnp.full_like(density, jnp.nan)
         return fock, fock, jnp.asarray(0.)
-    result = run_unrestricted_scf_scan(fock_builder=builder,
+    result = run_unrestricted_scf(fock_builder=builder,
         density_spin=density, mo_coeff_spin=coeff,
         mo_occ_spin=jnp.asarray([[1., 0.], [1., 0.]]),
         mo_energy_spin=orbital_energy, overlap=jnp.eye(2),

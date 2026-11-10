@@ -17,6 +17,7 @@ from ..solvers.nonlinear import stationary_value
 from .autodiff import SCFDifferentiationConfig, attach_scf_backward, normalize_scf_gradient_mode
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
 from ..dft.xc import hybrid_coeff, xc_type
+from ..integrals.backends.native.jk import NativeDirectBasis, ProjectedNativeDirectBasis
 from .rsh import local_xc_spec, rsh_preset, validate_rsh_inputs
 from .._memory import (jaxpr_temporary_bytes, tree_storage_bytes,
     validate_memory_mb, validate_reserved_bytes, workspace_bytes)
@@ -55,10 +56,14 @@ class OrbitalOptimizationResult:
     gradient_mode: str
 
 
-def _orthonormalize(coeff, metric):
+def _orthonormalize(coeff, metric, *, reference_metric=None):
     """Cholesky transport includes the moving AO metric without eigengauge AD."""
     def transport(c):
-        gram = c.conj().T @ metric @ c
+        gram = c.conj().T @ (metric if reference_metric is None else metric-reference_metric) @ c
+        if reference_metric is not None:
+            # A validated numerical SCF origin is already orthonormal within
+            # roundoff. Keep it fixed at S=S0; the live S-S0 retains Pulay AD.
+            gram = gram+jnp.eye(gram.shape[-1], dtype=gram.dtype)
         lower = jnp.linalg.cholesky(.5*(gram+gram.conj().T))
         return solve_triangular(lower.conj(), c.T, lower=True).T
     return jax.vmap(transport)(coeff)
@@ -169,14 +174,36 @@ def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_confi
                 raise NotImplementedError('Generalized orbital minimization requires dense grid AO data.')
             total, _, fock = generalized_energy_and_fock(density=density[0],
                 hcore=args['hcore'], eri=args['eri'], nuclear_repulsion=args['nuclear_repulsion'],
-                ao=args['ao'], ao_deriv1=args['ao_deriv1'], grid_weights=args['grid_weights'], config=cfg)
-            return total, fock[None]
+                ao=args['ao'], ao_deriv1=args['ao_deriv1'], grid_weights=args['grid_weights'], config=cfg,
+                compute_potential=compute_potential)
+            return total, fock[None] if compute_potential else None
     else:
         kind = xc_type(local_xc_spec(xc_spec))
         if kind not in {'HF','LDA','GGA'}:
             raise NotImplementedError('Orbital minimization supports HF, LDA and GGA/global hybrids.')
         cfg = uks_config or UKSConfig(xc_spec=xc_spec)
         def evaluate(density, args, *, compute_potential=True):
+            if (compute_potential and method == 'roks' and cfg.jk_backend == 'direct'
+                    and occupation_rows[0] == occupation_rows[1]
+                    and type(args.get('direct_basis')) in (NativeDirectBasis, ProjectedNativeDirectBasis)):
+                # The shared-orbital tangent remains spin unpolarized. Reuse
+                # the SCF one-density builder instead of two identical spins.
+                from .rks import RKSConfig, _make_jk_builder, _energy_and_raw_fock_for_density
+                restricted = RKSConfig(xc_spec=xc_spec, jk_backend='direct',
+                    direct_scf_tol=cfg.direct_scf_tol, direct_scf_workers=cfg.direct_scf_workers,
+                    density_floor=cfg.density_floor, potential_clip=cfg.potential_clip)
+                alpha = 1. if rsh_preset(xc_spec) is not None else float(hybrid_coeff(xc_spec))
+                builder = _make_jk_builder(None, restricted, direct_basis=args['direct_basis'],
+                                           with_k=abs(alpha) > 1e-14)
+                total, _, fock, _, _ = _energy_and_raw_fock_for_density(
+                    density=density.sum(axis=0), mo_coeff=None, mo_occ=None, mo_energy=None,
+                    jk_builder=builder, ao=args['ao'], ao_deriv1=args['ao_deriv1'],
+                    weights=args['grid_weights'], h=args['hcore'], enuc=args['nuclear_repulsion'],
+                    alpha=jnp.asarray(alpha, dtype=density.dtype), cfg=restricted, xc_kind=kind,
+                    grid_ao=args.get('grid_ao'))
+                if args.get('dispersion_energy') is not None:
+                    total = total+args['dispersion_energy']
+                return total, jnp.stack([fock, fock]) if compute_potential else None
             total, _, fa, fb = _raw_fock_and_energy_for_state(
                 density_a=density[0], density_b=density[1], ao=args['ao'],
                 ao_deriv1=args['ao_deriv1'], weights=args['grid_weights'], h=args['hcore'],
@@ -191,6 +218,29 @@ def _problem_functions(method, xc_spec, collinear, occupation_rows, *, uks_confi
     def energy(angles, base, args):
         return evaluate(density_from(rotate(angles, base)), args, compute_potential=False)[0]
     return dimension, rotate, density_from, evaluate, energy
+
+
+def _brillouin_gradient(method, occupation_rows, coeff, density_from, evaluate, args, *,
+                       known_variational=False):
+    """Body-frame residual packed into the real orbital-rotation coordinates."""
+    density = density_from(coeff)
+    fock = (evaluate(density, args)[1] if known_variational else
+            jax.grad(lambda d: evaluate(d, args, compute_potential=False)[0])(density))
+    if method == 'gks' and not known_variational:
+        # JAX's complex scalar gradient is conjugate to the physical Fock.
+        fock = fock.conj()
+    fock = .5*(fock+jnp.swapaxes(fock.conj(), -1, -2))
+    blocks = jnp.broadcast_to(coeff, fock.shape)
+    fock_mo = jnp.einsum('spi,spq,sqj->sij', blocks.conj(), fock, blocks, precision='highest')
+    occupations = jnp.asarray(occupation_rows)
+    gradient = 2*(occupations[:, None, :]-occupations[:, :, None])*fock_mo
+    pairs = _rotation_pairs(method, occupation_rows)
+    if method == 'roks':
+        return gradient.sum(axis=0)[pairs[0]]
+    if method == 'gks':
+        packed = gradient[0][pairs[0]]
+        return jnp.concatenate([packed.real, packed.imag])
+    return jnp.concatenate([block[pair] for block, pair in zip(gradient, pairs)])
 
 
 def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
@@ -217,9 +267,12 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
                               jk_backend=jk_backend, direct_basis=direct_basis)
     if rsh is not None and method == 'gks':
         raise NotImplementedError('Range-separated GKS orbital minimization is not supported.')
-    if max_iterations < 1 or gradient_tolerance <= 0:
-        raise ValueError('Optimizer iterations and gradient tolerance must be positive.')
     config = differentiation or SCFDifferentiationConfig(mode=gradient_mode or 'implicit')
+    preserve_seed = (max_iterations == 0 and not orthonormalize_initial and method != 'gks'
+                     and config.require_converged and config.regularization == 0.)
+    if (max_iterations < 0 or gradient_tolerance <= 0
+            or (max_iterations == 0 and config.mode != 'implicit')):
+        raise ValueError('Optimizer iterations must be positive (zero requires implicit mode), and gradient tolerance positive.')
     if gradient_mode is not None and normalize_scf_gradient_mode(gradient_mode) != config.mode:
         raise ValueError('gradient_mode and differentiation.mode disagree.')
     s, c = jnp.asarray(overlap), jnp.asarray(mo_coeff)
@@ -259,13 +312,16 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     if maximum is not None:
         resident = reserved+tree_storage_bytes(sources, coeff, metric)
         workspace_bytes(maximum, resident_bytes=resident)
-        native = _native_workspace(direct_basis, direct_scf_workers, direct_scf_tol)
         # Initial transport, density/Fock outputs and returned coefficients
         # are complete mandatory matrices, including a zero-angle space.
         matrix = jax.ShapeDtypeStruct(coeff.shape, coeff.dtype)
         spin = jax.ShapeDtypeStruct((2, n, n), coeff.dtype)
         outputs = tree_storage_bytes(matrix)+2*tree_storage_bytes(spin)
         transport = jaxpr_temporary_bytes(jax.make_jaxpr(_orthonormalize)(coeff, metric))
+        from ..integrals.backends.native.workspace import bind_jk_workspace
+        direct_basis = bind_jk_workspace(direct_basis, workers=direct_scf_workers,
+            max_memory=maximum, resident_bytes=resident+outputs+transport, cutoff=direct_scf_tol)
+        native = _native_workspace(direct_basis, direct_scf_workers, direct_scf_tol)
         workspace_bytes(maximum, resident_bytes=resident+native+outputs+transport)
     gram = coeff.conj().swapaxes(-1,-2) @ metric @ coeff
     concrete = _concrete(gram)
@@ -275,6 +331,8 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
     topology = tuple(tuple(float(x) for x in row) for row in occ)
     uks_config = UKSConfig(xc_spec=xc_spec, jk_backend=jk_backend,
                            direct_scf_tol=direct_scf_tol, direct_scf_workers=direct_scf_workers)
+    known_variational = (method != 'gks' and
+        type(direct_basis) in (NativeDirectBasis, ProjectedNativeDirectBasis))
     dimension, rotate, density_from, evaluate, energy = _problem_functions(
         method, xc_spec, collinear, topology, uks_config=uks_config)
     diagonal = (_gap_function(method, topology, density_from, evaluate)
@@ -289,13 +347,14 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         # A native direct provider supplies LR exchange without an ERI array.
         args.update(eri_lr=None if eri_lr is None else jnp.asarray(eri_lr),
                     dispersion_energy=None if dispersion_energy is None else jnp.asarray(dispersion_energy))
-    initial = _orthonormalize(coeff, metric)
+    initial = coeff if preserve_seed else _orthonormalize(coeff, metric)
     if maximum is None:
         initial_energy = evaluate(density_from(initial),args)[0]
     solve_args, solve_coeff = args, initial
     if config.mode == 'implicit':
         solve_args, solve_coeff = jax.tree.map(jax.lax.stop_gradient, (args,initial))
-    if dimension:
+    forward = None
+    if dimension and max_iterations:
         memory = ({} if maximum is None else dict(max_memory=maximum,
             reserved_bytes=reserved+tree_storage_bytes(sources, coeff, metric,
                 exclude=(args, initial)), operator_min_bytes=native))
@@ -305,27 +364,49 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         final, norm = forward.coeff, forward.gradient_norm
         iterations, evaluations, stages, history = forward.iterations, forward.evaluations, forward.stages, forward.polishing
     else:
-        final, norm = solve_coeff, jnp.asarray(0., dtype=coeff.real.dtype)
+        final = solve_coeff
+        origin = jnp.zeros(dimension, dtype=coeff.real.dtype)
+        norm = jnp.asarray(0., dtype=coeff.real.dtype)
+        if dimension:
+            gradient = _brillouin_gradient(method, topology, final, density_from, evaluate, solve_args,
+                                           known_variational=known_variational)
+            norm = .5*jnp.linalg.norm(gradient)
         iterations, evaluations, stages, history = jnp.asarray(0), jnp.asarray(1), (), ()
     if maximum is not None:
         # The same initial observable follows the fixed-buffer preflight;
         # immutable `initial` and live physical args keep its original AD.
         initial_energy = evaluate(density_from(initial),args)[0]
     stationary = jnp.isfinite(norm) & (norm <= gradient_tolerance)
+    if preserve_seed:
+        stationary &= jnp.all(jnp.isfinite(gram)) & jnp.all(
+            jnp.abs(gram-jnp.eye(coeff.shape[-1], dtype=gram.dtype)) <= 1e-8)
     if config.mode == 'implicit' and dimension:
         anchor = jax.lax.stop_gradient(final)
         origin = jnp.zeros(dimension, dtype=coeff.real.dtype)
+        reference_metric = solve_args['metric'] if preserve_seed else None
+        root_inputs = args, anchor, reference_metric
         def tangent_energy(angles, root_inputs):
-            parameters, anchor = root_inputs
-            return energy(angles, _orthonormalize(anchor,parameters['metric']), parameters)
+            parameters, anchor, reference = root_inputs
+            return energy(angles, _orthonormalize(anchor, parameters['metric'],
+                                                reference_metric=reference), parameters)
+        def tangent_residual(angles, root_inputs):
+            parameters, anchor, reference = root_inputs
+            current = rotate(angles, _orthonormalize(anchor, parameters['metric'],
+                                                    reference_metric=reference))
+            return _brillouin_gradient(method, topology, current, density_from, evaluate, parameters,
+                                       known_variational=known_variational)
+        # Unchecked/regularized response retains its original chart semantics.
+        use_brillouin = config.require_converged and config.regularization == 0.
+        residual = tangent_residual if use_brillouin else jax.grad(tangent_energy)
         memory = ({} if maximum is None else dict(max_memory=maximum,
             reserved_bytes=reserved+tree_storage_bytes(sources, coeff, metric, initial, initial_energy, forward,
-                exclude=(args, anchor, origin)), operator_min_bytes=native))
-        angles = attach_scf_backward((args, anchor), solution=origin, residual=jax.grad(tangent_energy),
+                exclude=(args, anchor, origin, reference_metric)), operator_min_bytes=native))
+        angles = attach_scf_backward(root_inputs, solution=origin, residual=residual,
                                      config=config, converged=stationary, **memory)
-        final = rotate(angles, _orthonormalize(anchor,metric))
+        final = rotate(angles, _orthonormalize(anchor, metric, reference_metric=reference_metric))
     elif config.mode == 'implicit':
-        final = _orthonormalize(jax.lax.stop_gradient(final),metric)
+        final = _orthonormalize(jax.lax.stop_gradient(final), metric,
+            reference_metric=solve_args['metric'] if preserve_seed else None)
     density = density_from(final)
     total, fock = evaluate(density,args)
     stationary &= jnp.isfinite(total)
@@ -334,7 +415,7 @@ def _minimize(*, method, overlap, hcore, eri, nuclear_repulsion, ao, ao_deriv1,
         # Its partial input derivative retains metric transport (Pulay terms).
         # Only the reported energy uses this rule; state response and the
         # optimizer/residual callbacks remain unchanged, including failures.
-        total = stationary_value(tangent_energy, angles, (args, anchor), converged=stationary)
+        total = stationary_value(tangent_energy, angles, root_inputs, converged=stationary)
     polishing_steps = sum((row['accepted'].astype(jnp.int32) for row in history), jnp.asarray(0))
     allowance = (jnp.max(jnp.stack([row['energy_allowance'] for row in history]))
                  if history else jnp.asarray(0., dtype=coeff.real.dtype))
@@ -361,13 +442,18 @@ def minimize_uks_from_integrals(*, overlap, hcore, eri, nuclear_repulsion, ao, a
 
     Supply static ``mo_occ`` of shape (2,nao), and float64 coefficients of shape
     (2,nao,nao). Set ``orthonormalize_initial=True`` when varying an overlap with
-    a fixed seed. Both modes use identical forward iterations. Unrolled follows
+    a fixed seed. Positive iteration limits use the same forward in both modes.
+    Implicit ``max_iterations=0`` validates the supplied seed without L-BFGS or
+    Newton polishing, then attaches the same response to a stationary seed.
+    With ``orthonormalize_initial=False``, checked real zero-step states keep
+    the supplied origin and use a local moving-metric chart for Pulay response.
+    A nonstationary seed retains nonfinite derivatives. Unrolled follows
     finite iterates, including initial-orbital dependence; implicit follows the
     stationary branch and returns nonfinite gradients if it has not converged.
     A JAX-pytree AO J/K ``direct_basis`` replaces ERIs; pass ``eri=None``.
     Native providers retain moving coordinates in the stationary response.
-    Geometry AD requires ``direct_scf_tol=0``; primitive exponent
-    and coefficient derivatives remain unsupported by native direct J/K.
+    Positive-cutoff geometry AD follows the selected quartet mask away from
+    threshold changes. Basis-parameter orders follow the direct provider contract.
     Optional decimal-MB planning covers known forward and implicit-response
     arrays; explicit outer AD, compilation and opaque library storage are not
     a process cap. None retains the original numerical path.

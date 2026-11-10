@@ -14,9 +14,10 @@ from .core import _build_density_from_occ, _contains_jax_tracer, _host_float_unl
 from .core import _diagonalize_fock, _orthogonalizer, _validate_density_matrix
 from .facade import _BaseKS
 from gradscf.scf.inputs.assembly import build_uks_integral_inputs
-from .convergence import convergence_reached
-from .rks import RKSResult, _PYSCF_LIKE_DIIS_SPACE, _diis_extrapolate
-from .rks import _apply_level_shift, _orthonormal_diis_error
+from ..solvers.scf.metrics import convergence_reached
+from ..solvers.nonlinear.diis import DIIS_SPACE as _PYSCF_LIKE_DIIS_SPACE, diis_extrapolate as _diis_extrapolate
+from .rks import RKSResult
+from .iteration import apply_level_shift as _apply_level_shift, orthonormal_diis_error as _orthonormal_diis_error
 from .uks import UKSConfig, _raw_fock_and_energy_for_state
 
 

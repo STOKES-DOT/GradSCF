@@ -19,3 +19,13 @@ def test_explicit_custom_exchange_coefficient_is_not_silently_clipped():
         xc_energy_fn=lambda params, molecule, density: jnp.sum(density**2),
         exact_exchange_fraction=1.1)
     assert float(result.exact_exchange_fraction) == pytest.approx(1.1)
+
+
+def test_assessment_can_propagate_nonfinite_contributions_without_sanitizing():
+    result = xc_energy_and_potential_from_density({}, molecule=None, density=jnp.eye(2),
+        xc_energy_fn=lambda params, molecule, density: jnp.nan*jnp.sum(density), check_finite=False)
+    assert jnp.isnan(result.xc_energy)
+    assert jnp.all(jnp.isnan(result.vxc_matrix))
+    with pytest.raises(FloatingPointError, match='finite'):
+        xc_energy_and_potential_from_density({}, molecule=None, density=jnp.eye(2),
+            xc_energy_fn=lambda params, molecule, density: jnp.nan*jnp.sum(density))

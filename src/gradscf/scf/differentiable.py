@@ -24,10 +24,10 @@ from .energy import (XCContribution, restricted_energy, restricted_fock,
 from .rks import (
     RKSConfig,
     _build_jk,
-    _run_scf_iterations_lax_core,
     _vxc_matrix_from_grid_potential,
 )
-from .uks import _spin_jk_matrices, run_unrestricted_scf_scan
+from .uks import _spin_jk_matrices
+from .iteration import run_restricted_scf, run_unrestricted_scf
 
 
 _GRID_PAYLOAD_DEPENDENCY_FIELDS = frozenset(
@@ -1187,7 +1187,7 @@ class DifferentiableSCF:
             orthogonalization_eps=self.config.orthogonalization_eps,
             convergence_metric=self.config.convergence_metric,
         )
-        return _run_scf_iterations_lax_core(
+        return run_restricted_scf(
             h=problem.ctx.h1e,
             s=problem.ctx.overlap,
             x=problem.ctx.x,
@@ -1465,7 +1465,7 @@ class DifferentiableSCF:
             best_cycle,
             selected_rms,
             best_rms,
-        ) = run_unrestricted_scf_scan(
+        ) = run_unrestricted_scf(
             fock_builder=fock_builder,
             density_spin=density_spin0,
             mo_coeff_spin=mo_coeff_spin0,

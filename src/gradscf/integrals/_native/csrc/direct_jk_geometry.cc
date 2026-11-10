@@ -11,7 +11,9 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
     ffi::BufferR3<ffi::F64> density,ffi::BufferR1<ffi::F64> direction,
     ffi::Buffer<ffi::F64> vector,Output result,
     int32_t order,int32_t cart,int32_t with_j,int32_t with_k,
-    int first_shell=0,int last_shell=-1) {
+    int first_shell=0,int last_shell=-1,int first_task=0,int task_stride=1,
+    const ERIQuartetScreen* screen=nullptr,
+    const ERICanonicalQuartets* prepared_schedule=nullptr) {
     if ((order!=1 && order!=2) || (with_j!=0 && with_j!=1) ||
         (with_k!=0 && with_k!=1) || !(with_j || with_k))
       throw std::invalid_argument("Invalid direct J/K geometry product");
@@ -86,7 +88,8 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
       auto add=[&](size_t index,int coordinate,double value) {
         consume(index,coordinate,transpose ? value:value*u[coordinate]);
       };
-      for_each_eri_geometry_entry(t,cart,add,nullptr,first_shell,last_shell);
+      for_each_eri_geometry_entry(t,cart,add,nullptr,first_shell,last_shell,first_task,task_stride,
+                                  screen,prepared_schedule);
     } else {
       auto evaluate=[&](Intor kernel,int* shells,size_t size,
                         std::vector<double>& block,std::vector<double>& cache,int) {
@@ -95,7 +98,8 @@ static void DirectJKGeometryCompute(ffi::BufferR2<ffi::S32> atoms,
       auto add=[&](size_t index,int a,int b,double value) {
         consume(index,a,transpose ? value*u[b]:value*u[a]*input[b]);
       };
-      for_each_geometry_hessian_entry(t,4,cart,evaluate,add,nullptr,first_shell,last_shell);
+      for_each_geometry_hessian_entry(t,4,cart,evaluate,add,nullptr,
+                                      first_shell,last_shell,first_task,task_stride,screen,prepared_schedule);
     }
 }
 
@@ -119,17 +123,31 @@ static ffi::Error DirectJKGeometry(ffi::BufferR2<ffi::S32> atoms,
 
 // A coordinate VJP returns only ENV, so worker-private reductions stay linear
 // in the basis metadata. No worker owns a full J/K matrix or an AO ERI tensor.
-static ffi::Future ParallelDirectJKGeometryVJP(ffi::ThreadPool pool,
+static ffi::Future ParallelDirectJKGeometryVJPImpl(ffi::ThreadPool pool,
     ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
     ffi::BufferR1<ffi::F64> environment,ffi::BufferR3<ffi::F64> density,
     ffi::BufferR1<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
     ffi::ResultBuffer<ffi::F64> result,int32_t order,int32_t cart,
-    int32_t with_j,int32_t with_k,int32_t requested_workers) {
+    int32_t with_j,int32_t with_k,int32_t requested_workers,
+    double cutoff=0.,const ffi::BufferR3<ffi::F64>* reference=nullptr) {
   ffi::Promise promise;
   ffi::Future future(promise);
   try {
     if (requested_workers<1)
       throw std::invalid_argument("Direct J/K geometry workers must be positive");
+    std::shared_ptr<ERIQuartetScreen> screen;
+    std::shared_ptr<const ERICanonicalQuartets> schedule;
+    {
+      IntegralTables t(atoms,basis,environment,4,cart,true);
+      if (cutoff!=0. || reference) {
+        // A zero-batch reference is the explicit basis-only screening sentinel.
+        if (reference && (reference->dimensions()[1]!=t.n || reference->dimensions()[2]!=t.n))
+          throw std::invalid_argument("Direct J/K screen reference shape mismatch");
+        const auto* density_reference=reference && reference->dimensions()[0] ? reference:nullptr;
+        screen=std::make_shared<ERIQuartetScreen>(t,cart,cutoff,with_j,with_k,density_reference);
+      }
+      schedule=std::make_shared<const ERICanonicalQuartets>(ERIWindow(t));
+    }
     const int shells=basis.dimensions()[0];
     const int workers=int(std::max<int64_t>(1,std::min<int64_t>(
         requested_workers,std::min<int64_t>(pool.num_threads(),shells))));
@@ -151,7 +169,7 @@ static ffi::Future ParallelDirectJKGeometryVJP(ffi::ThreadPool pool,
           } local{*result,(*partials)[worker].data()};
           DirectJKGeometryCompute<true>(atoms,basis,environment,density,direction,
               vector,&local,order,cart,with_j,with_k,
-              worker*shells/workers,(worker+1)*shells/workers);
+              0,-1,worker,workers,screen.get(),schedule.get());
         } catch(const std::invalid_argument& error) {
           (*errors)[worker]={true,error.what()};
         } catch(const std::exception& error) {
@@ -181,6 +199,48 @@ static ffi::Future ParallelDirectJKGeometryVJP(ffi::ThreadPool pool,
   return future;
 }
 
+static ffi::Future ParallelDirectJKGeometryVJP(ffi::ThreadPool pool,
+    ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
+    ffi::BufferR1<ffi::F64> environment,ffi::BufferR3<ffi::F64> density,
+    ffi::BufferR1<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
+    ffi::ResultBuffer<ffi::F64> result,int32_t order,int32_t cart,
+    int32_t with_j,int32_t with_k,int32_t workers) {
+  return ParallelDirectJKGeometryVJPImpl(pool,atoms,basis,environment,density,
+      direction,vector,result,order,cart,with_j,with_k,workers);
+}
+
+static ffi::Error DirectJKGeometryScreenedJVP(ffi::BufferR2<ffi::S32> atoms,
+    ffi::BufferR2<ffi::S32> basis,ffi::BufferR1<ffi::F64> environment,
+    ffi::BufferR3<ffi::F64> density,ffi::BufferR3<ffi::F64> reference,
+    ffi::BufferR1<ffi::F64> direction,ffi::Buffer<ffi::F64> vector,
+    ffi::ResultBuffer<ffi::F64> result,int32_t order,int32_t cart,
+    int32_t with_j,int32_t with_k,double cutoff) {
+  try {
+    IntegralTables t(atoms,basis,environment,4,cart,true);
+    if (reference.dimensions()[1]!=t.n || reference.dimensions()[2]!=t.n)
+      throw std::invalid_argument("Direct J/K screen reference shape mismatch");
+    const auto* density_reference=reference.dimensions()[0] ? &reference:nullptr;
+    ERIQuartetScreen screen(t,cart,cutoff,with_j,with_k,density_reference);
+    DirectJKGeometryCompute<false>(atoms,basis,environment,density,direction,
+        vector,result,order,cart,with_j,with_k,0,-1,0,1,&screen);
+    return ffi::Error::Success();
+  } catch(const std::invalid_argument& error) {
+    return ffi::Error::InvalidArgument(error.what());
+  } catch(const std::exception& error) {
+    return ffi::Error::Internal(error.what());
+  }
+}
+
+static ffi::Future DirectJKGeometryScreenedVJP(ffi::ThreadPool pool,
+    ffi::BufferR2<ffi::S32> atoms,ffi::BufferR2<ffi::S32> basis,
+    ffi::BufferR1<ffi::F64> environment,ffi::BufferR3<ffi::F64> density,
+    ffi::BufferR3<ffi::F64> reference,ffi::BufferR1<ffi::F64> direction,
+    ffi::Buffer<ffi::F64> vector,ffi::ResultBuffer<ffi::F64> result,
+    int32_t order,int32_t cart,int32_t with_j,int32_t with_k,double cutoff,int32_t workers) {
+  return ParallelDirectJKGeometryVJPImpl(pool,atoms,basis,environment,density,
+      direction,vector,result,order,cart,with_j,with_k,workers,cutoff,&reference);
+}
+
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKGeometryJVP(XLA_FFI_CallFrame*);
 extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKGeometryVJP(XLA_FFI_CallFrame*);
 #define DIRECT_GEOMETRY_BIND ffi::Ffi::Bind().Arg<ffi::BufferR2<ffi::S32>>() \
@@ -199,3 +259,17 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKGeometryVJPParallel,ParallelDirectJ
       .Arg<ffi::Buffer<ffi::F64>>().Ret<ffi::Buffer<ffi::F64>>()
       .Attr<int32_t>("order").Attr<int32_t>("cart")
       .Attr<int32_t>("with_j").Attr<int32_t>("with_k").Attr<int32_t>("workers"));
+
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKGeometryScreenedJVP(XLA_FFI_CallFrame*);
+extern "C" __attribute__((visibility("default"))) XLA_FFI_Error* GradSCFDirectJKGeometryScreenedVJP(XLA_FFI_CallFrame*);
+#define SCREENED_DIRECT_GEOMETRY_BIND \
+    .Arg<ffi::BufferR2<ffi::S32>>().Arg<ffi::BufferR2<ffi::S32>>() \
+    .Arg<ffi::BufferR1<ffi::F64>>().Arg<ffi::BufferR3<ffi::F64>>() \
+    .Arg<ffi::BufferR3<ffi::F64>>().Arg<ffi::BufferR1<ffi::F64>>() \
+    .Arg<ffi::Buffer<ffi::F64>>().Ret<ffi::Buffer<ffi::F64>>() \
+    .Attr<int32_t>("order").Attr<int32_t>("cart") \
+    .Attr<int32_t>("with_j").Attr<int32_t>("with_k").Attr<double>("cutoff")
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKGeometryScreenedJVP,DirectJKGeometryScreenedJVP,
+    ffi::Ffi::Bind() SCREENED_DIRECT_GEOMETRY_BIND);
+XLA_FFI_DEFINE_HANDLER_SYMBOL(GradSCFDirectJKGeometryScreenedVJP,DirectJKGeometryScreenedVJP,
+    ffi::Ffi::Bind().Ctx<ffi::ThreadPool>() SCREENED_DIRECT_GEOMETRY_BIND .Attr<int32_t>("workers"));
