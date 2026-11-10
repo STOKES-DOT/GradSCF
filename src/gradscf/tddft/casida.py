@@ -303,8 +303,11 @@ class RestrictedCasidaTDDFT:
             occupation_tolerance=self.occupation_tolerance,
             response_kernel_options=self.response_kernel_options,
         )
+        delta_eps = getattr(vind_tdhf, "delta_eps", None)
+        if delta_eps is None:
+            delta_eps = _restricted_delta_eps(self.molecule, self.occupation_tolerance)
         result = solve_casida_from_tdhf_operator(
-            _restricted_delta_eps(self.molecule, self.occupation_tolerance),
+            delta_eps,
             vind_tdhf,
             nstates=nstates,
             excitation_threshold=self.excitation_threshold,

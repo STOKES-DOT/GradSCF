@@ -1097,12 +1097,19 @@ def _build_restricted_response_operator_data(
         # otherwise construct a useless grid-by-occupied-by-virtual tensor.
         hybrid_fraction = resolved_xc.exact_exchange_fraction
     elif resolved_xc is not None:
-        total_density = _density_on_grid(molecule)
-        hybrid_fraction = _strict_hybrid_fraction(
-            resolved_xc,
-            molecule,
-            total_density,
-        )
+        # The standard adapter already evaluates density for its grid tensor
+        # and declares a constant HF fraction. Arbitrary adapters may use the
+        # density in local-kernel or local-HF callbacks, so retain it for them.
+        if type(resolved_xc) is SemilocalResponseFunctional:
+            total_density = None
+            hybrid_fraction = resolved_xc.exact_exchange_fraction
+        else:
+            total_density = _density_on_grid(molecule)
+            hybrid_fraction = _strict_hybrid_fraction(
+                resolved_xc,
+                molecule,
+                total_density,
+            )
         grid_response_tensor = getattr(resolved_xc, "grid_response_tensor", None)
         grid_response_hvp = getattr(resolved_xc, "grid_response_hvp", None)
         ao_kernel_action = getattr(resolved_xc, "ao_kernel_action", None)
@@ -1326,6 +1333,12 @@ def _restricted_tdhf_action(
     x: Array,
     y: Array,
 ) -> tuple[Array, Array]:
+    # Both TDHF rows contain the same local XC sum. Fixed grid tensors are
+    # linear; opaque callbacks can clip or couple complete fields and must
+    # retain their separate X/Y evaluations.
+    xc_response = (_restricted_xc_action(data, x + y)
+                   if data.linear_xc_response else
+                   _restricted_xc_action(data, x) + _restricted_xc_action(data, y))
     if (data.ao_mo_response_action_fn is None
             and data.nonlocal_xc_a_action_fn is None
             and data.nonlocal_xc_b_action_fn is None):
@@ -1336,20 +1349,16 @@ def _restricted_tdhf_action(
             + _restricted_transition_density(data.orbo, data.orbv, y, bottom=True)
         )
         response = data.ao_response_action_fn(density)
-        # Fixed grid tensors give linear actions. Opaque callbacks can clip
-        # their output, so retain their separate X/Y evaluations.
-        xc_response = (_restricted_xc_action(data, x + y)
-                       if data.linear_xc_response else
-                       _restricted_xc_action(data, x) + _restricted_xc_action(data, y))
         return (
             _restricted_fock_action(data, x) + _restricted_project_response(
                 response, data.orbo, data.orbv, bottom=False) + xc_response,
             _restricted_fock_action(data, y) + _restricted_project_response(
                 response, data.orbo, data.orbv, bottom=True) + xc_response,
         )
+    data_without_xc = replace(data, xc_response_action_fn=None)
     return (
-        _restricted_a_action(data, x) + _restricted_b_action(data, y),
-        _restricted_b_action(data, x) + _restricted_a_action(data, y),
+        _restricted_a_action(data_without_xc, x) + _restricted_b_action(data_without_xc, y) + xc_response,
+        _restricted_b_action(data_without_xc, x) + _restricted_a_action(data_without_xc, y) + xc_response,
     )
 
 
@@ -1434,6 +1443,7 @@ def build_restricted_tdhf_operator(
         return _map_response_vectors(block_action, rows, plan.batch_size)
 
     vind.memory_plan = plan
+    vind.delta_eps = delta_eps
     return vind
 
 
