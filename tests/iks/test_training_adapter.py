@@ -130,3 +130,20 @@ def test_inverse_does_not_silently_ignore_an_active_sample_label(label, objectiv
     trainer.loss = {objective: {'mse' if objective == 'xc_potential' else 'norm2': 1.}}
     with pytest.raises(ValueError, match='label|target|reference'):
         trainer.evaluate(sample)
+
+
+def test_inverse_array_parameters_do_not_enter_flax_mapping_specific_update(monkeypatch):
+    from collections.abc import Mapping
+    from flax.training.train_state import TrainState
+    original=TrainState.apply_gradients
+    def mapping_only(self,*,grads,**kwargs):
+        if not isinstance(grads,Mapping):
+            raise TypeError('Mapping-specific Flax update received an array')
+        return original(self,grads=grads,**kwargs)
+    monkeypatch.setattr(TrainState,'apply_gradients',mapping_only)
+    ref,state,model=state_and_model()
+    sample=training.Sample(state,inverse=ref,nuclear_repulsion=0.)
+    trainer=training.Trainer(model,params=jnp.array([.1,.2]))
+    trainer.run(sample,steps=1)
+    assert trainer.history['update_accepted'][-1]
+    assert isinstance(trainer.params,jax.Array)

@@ -32,9 +32,11 @@ def iterate_eager(physical_map, initial, *, config=None, valid_state=None,
     legacy_clean = getattr(jax.core, 'trace_state_clean', None)
     if legacy_clean is None:
         from jax.extend import core
-        active_trace = core.get_opaque_trace_state()
-        with core.take_current_trace():
-            eager_trace = core.get_opaque_trace_state()
+        trace_state = getattr(core, 'get_opaque_trace_state', None) or jax.core.get_opaque_trace_state
+        take_trace = getattr(core, 'take_current_trace', None) or jax.core.take_current_trace
+        active_trace = trace_state()
+        with take_trace():
+            eager_trace = trace_state()
         eager = active_trace == eager_trace
     else:
         eager = legacy_clean()

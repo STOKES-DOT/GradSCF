@@ -169,3 +169,27 @@ to0.010426151; density improvement is not demonstrated.
 The remote replay passed with empty stderr and directionalAD0.0758799152882
 versus finite difference0.0758799124055. All formula and per-molecule score
 records are retained separately; non-winner test results are not evaluated.
+
+## Standard finite-lambda ZMP
+
+`zmp.py` uses only GradSCF to generate small PBE targets and perform restricted
+HeH+ and unrestricted Li ZMP inversions. The Coulomb callback reuses the packed
+J-only integral action. It may be replaced by a direct/DF action without
+changing the inversion implementation. All model evaluation/training ports
+continue to accept the resulting valid `OrbitalReference`.
+
+The independent `compare_kspies_zmp.py` uses only KSPies/PySCF/NumPy on saved
+targets, checking densities and physical Fock matrices at lambda1,5,10,20,50,100.
+Neither example defines a CLI. Set `GRADSCF_IKS_VALIDATION` to the shared result
+directory. KSPies is an optional external reference, never a runtime dependency
+of `gradscf.dft.iks`. See [the theory and method boundary](../../src/gradscf/dft/iks/KSPies.md).
+
+
+CPU verification2026-11-10:159tests pass and12KSPies comparisons pass. Maximum
+AO-density difference across both systems/lambdas is3.71e-10, maximum physical
+Fock difference4.86e-10Ha. Atlambda100, relative density reconstruction errors
+are4.07464e-4 (HeH+) and6.04270e-4 (Li, spin-resolved); both meet1e-3.
+These are finite-lambda/known-PBE validation results, not an exact-density claim.
+The independent comparison uses a process-local legacy SciPy angular-function
+alias and documented small-history/level-shift controls, with upstream ZMP
+source unchanged. No performance-equivalence claim is attached.

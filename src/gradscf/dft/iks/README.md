@@ -344,3 +344,14 @@ superseded for this bounded forward path. Spinor/coupled inverse-GKS and the
 inverse-map backward remain unimplemented. Invalid inversions return no usable
 OrbitalReference. Existing fixed-reference analytic/neural assessment and all
 three ordinary training modes retain their contracts.
+
+### Finite-penalty ZMP and fixed local guides
+
+`invert(target, base_fock=base, method='zmp', coulomb=apply_j, ...)` accepts a
+spatial Coulomb action, with no fitted potential basis. RKS and collinear UKS
+use the conventional lambda and2lambda factors respectively. Lambda stages,
+SCF residual, Coulomb density error and optional relative grid-density error
+are separate diagnostics. Only a valid inverse exports an `OrbitalReference`.
+`guide_fock` supports no guide, Fermi-Amaldi, and local classic/external scalar
+XC guides using shared AD. Details, units and the explicit inverse-GKS/WY
+regularization boundary are documented in [KSPies.md](KSPies.md).

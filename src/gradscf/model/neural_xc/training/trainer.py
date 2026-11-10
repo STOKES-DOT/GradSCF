@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
+from collections.abc import Mapping
 from math import isfinite
 
 import jax
@@ -160,6 +161,16 @@ def make_molecular_eval(
     return evaluate
 
 
+def _apply_gradients(state, grads):
+    # Flax's overwrite-with-gradient collection applies only to mapping params.
+    # External scalar/vector/PyTree callbacks use the same Optax transformation.
+    if isinstance(grads, Mapping):
+        return state.apply_gradients(grads=grads)
+    updates, opt_state = state.tx.update(grads, state.opt_state, state.params)
+    return state.replace(step=state.step+1,
+        params=optax.apply_updates(state.params, updates), opt_state=opt_state)
+
+
 def make_molecular_train_step(
     functional: Any,
     training_config: MolecularTrainingConfig | None = None,
@@ -183,7 +194,7 @@ def make_molecular_train_step(
         if config.requires_scf_convergence(functional):
             valid = valid & jnp.all(metrics["scf_converged"] == 1)
         new_state = jax.lax.cond(valid,
-            lambda s: s.apply_gradients(grads=cleaned_grads), lambda s: s, state)
+            lambda s: _apply_gradients(s, cleaned_grads), lambda s: s, state)
         param_delta = jax.tree_util.tree_map(lambda new, old: new - old, new_state.params, state.params)
         metrics = dict(metrics)
         metrics["update_accepted"] = valid
