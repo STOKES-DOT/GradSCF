@@ -52,7 +52,7 @@ def main():
                     time_ratio_candidate_parent=medians[1]/medians[0] if accepted else None))
     if summaries:
         with (args.report/'timings.csv').open('w') as stream:
-            writer=csv.DictWriter(stream, fieldnames=summaries[0].keys()); writer.writeheader(); writer.writerows(summaries)
+            writer=csv.DictWriter(stream, fieldnames=summaries[0].keys(), lineterminator="\n"); writer.writeheader(); writer.writerows(summaries)
     (args.report/'response_parity.json').write_text(json.dumps(parity, indent=2)+'\n')
     compile_path=raw/'candidate-compile'/'compile_events.jsonl'
     if compile_path.exists():
@@ -74,7 +74,7 @@ def main():
             sample_seconds=row['sample_seconds']))
     if memory:
         with (args.report/'process_memory.csv').open('w') as stream:
-            writer=csv.DictWriter(stream,fieldnames=memory[0].keys());writer.writeheader();writer.writerows(memory)
+            writer=csv.DictWriter(stream,fieldnames=memory[0].keys(), lineterminator="\n");writer.writeheader();writer.writerows(memory)
     suites=[]
     for path in sorted(raw.glob('*.xml')):
         root=ET.parse(path).getroot()
