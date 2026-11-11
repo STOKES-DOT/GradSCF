@@ -1,11 +1,12 @@
-# Gas-phase anthracene: full TDDFT FC/HT absorption
+# Gas-phase anthracene: eight-state full TDDFT FC/HT absorption
 
-This example targets the **lowest isolated singlet vibronic absorption band**,
-with a separate eight-singlet vertical stick spectrum. It uses GradSCF for the
+The current calculation includes **FC/linear-HT corrections for S1 through S8**,
+with individual bands and their absolute-intensity sum on one photon-energy axis. It uses GradSCF for the
 SCF, native integrals, nuclear response and full TDDFT. PySCF checks were explicitly skipped by the user; existing diagnostic logs
 are retained, with no accepted external-reference claim or production dependency.
 
-Inputs are fixed in `input.json`: neutral anthracene C14H10, PubChem CID8418
+The original one-band input remains `input.json`; the active eight-state input
+is `input_eight_states.json`: neutral anthracene C14H10, PubChem CID8418
 conformer as an initial guess, Cartesian def2-SVP, B3LYP (including VWN-RPA),
 grid level3, float64. Geometry optimization requires max|gradient|<=3e-6
 Ha/bohr. The allocated resource is one NV5090/64 logical CPU/256GiB, job119234
@@ -26,12 +27,13 @@ The stages are:
    individually checkpointed columns, raw symmetry/translation checks and
    all 66 positive internal modes. No imaginary frequency is clipped.
 5. `03_mode_response.py`: recompute SCF and full TDDFT at each +/- normal
-   coordinate. Cross-geometry AO transition-density overlaps identify S1;
-   signed overlaps align its phase. Each displaced solve requests four low
-   roots to track the isolated S1; the baseline retains eight vertical sticks,
-   and every solve retains all occupied/virtual orbitals. Complete energy-gap and transition-dipole
+   coordinate. Signed cross-geometry AO transition-density overlaps and a joint Hungarian
+   assignment track all eight targets, including dark states. Each baseline
+   and displaced solve requests twelve candidates, retaining four guard roots
+   above the eight target states. Every solve retains all occupied/virtual orbitals. Complete energy-gap and transition-dipole
    slopes are central finite differences, including orbital and X/Y response.
-   A second step checks important HR and HT modes. All 66 modes are retained.
+   A second step checks the union of each state's strongest HR and HT mode
+   (at most 16 modes/32 additional points). All 66 modes are retained for every state.
 6. `04_spectrum.py`: call the tested `gradscf_tools.vibronic` oscillator
    product and plot FC, HT, signed interference and the coherent total.
 
@@ -64,7 +66,9 @@ checkpoints; incompatible source or parameters require a fresh run directory.
 
 ## Outputs and evidence
 
-Outputs go to `reports/anthracene_ht/20261110-b3lyp-def2svp/`. The raw directory
+Ground data and the canceled one-band run remain under
+`reports/anthracene_ht/20261110-b3lyp-def2svp/raw/`. New eight-state outputs go
+to `reports/anthracene_ht/20261110-b3lyp-def2svp/eight_states/`. The raw directory
 contains native/source provenance, geometries, Hessian columns, signed mode
 points, numerical gates and per-stage progress. A running or completed
 preliminary SCF is not a completed vibronic spectrum. The final state is only
@@ -99,3 +103,36 @@ The first optimization process reported a nonfatal persistent-cache atime write
 warning from JAX's disk cache. Numerical force/FD gates still passed. Later
 stages disable the persistent disk cache and retain ordinary in-process program
 reuse, avoiding cache-file eviction/I/O coupling; physical inputs are unchanged.
+
+## Eight-state execution and accepted boundaries
+
+The source/native/geometry-identified ground structure, all72Hessian columns
+and66positive modes are immutable inputs. The oldS1 points contain only one
+aligned dipole, so their missing seven-state data cannot be recovered. New
+points share one SCF/12-root full TDDFT solve, store every candidate C/X/Y/μ/E
+and compare oldS1 signed observables after baseline phase alignment. They do
+not perform eight independent SCF solves or rerun the ground Hessian.
+
+Eight-state configuration/output selection uses two environment variables,
+without a Python CLI:
+
+```sh
+export GRADSCF_ANTHRACENE_INPUT="$PWD/examples/tdscf/anthracene_ht/input_eight_states.json"
+export GRADSCF_ANTHRACENE_OUTPUT="$PWD/reports/anthracene_ht/20261110-b3lyp-def2svp/eight_states/raw"
+PYTHONPATH=src python examples/tdscf/anthracene_ht/03_mode_response.py
+```
+
+Run only inside the authorized allocation. Current queue23 checks36 regressions;
+queue24 computes eight-state mode derivatives, queue25 plots, queue26 releases.
+The old single-state process was stopped and its queued spectrum disabled.
+No PySCF was resumed. Test receipts distinguish synthetic spectrum fixtures
+from actual molecular derivatives, which remain running.
+
+Per-state isolated-energy, overlap, margin and guard-boundary checks remain
+strict; near-degenerate mixing is rejected rather than rotating distinct
+energies to improve tracking. The model is still0K independent equal-curvature
+VG with linearHT: no excited-state Hessians/Duschinsky, thermal populations or
+inter-electronic-state vibronic Hamiltonian is introduced. Electronic-state
+intensities are added incoherently on the common absolute energy axis; only
+within each state is the signed FC×HT interference retained. Every band and
+the sum preserve optical-area gates, without per-band peak normalization.

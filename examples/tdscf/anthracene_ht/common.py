@@ -1,5 +1,6 @@
 """Shared inputs and bookkeeping for the gas-phase anthracene calculation."""
 import json
+import os
 from pathlib import Path
 from time import perf_counter
 
@@ -10,8 +11,10 @@ jax.config.update("jax_enable_x64", True)
 from gradscf import dft, gto, tdscf
 
 ROOT = Path(__file__).resolve().parents[3]
-SETTINGS = json.loads(Path(__file__).with_name("input.json").read_text())
-OUTPUT = ROOT / "reports/anthracene_ht/20261110-b3lyp-def2svp/raw"
+SETTINGS_PATH = Path(os.environ.get("GRADSCF_ANTHRACENE_INPUT", Path(__file__).with_name("input.json")))
+SETTINGS = json.loads(SETTINGS_PATH.read_text())
+BASE_OUTPUT = ROOT / "reports/anthracene_ht/20261110-b3lyp-def2svp/raw"
+OUTPUT = Path(os.environ.get("GRADSCF_ANTHRACENE_OUTPUT", BASE_OUTPUT))
 OUTPUT.mkdir(parents=True, exist_ok=True)
 SYMBOLS = [row.split()[0] for row in SETTINGS['atom'].split(';')]
 
