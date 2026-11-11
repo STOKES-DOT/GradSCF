@@ -97,6 +97,12 @@ def singlet_cis_ntos(coefficients, amplitude, *, nocc, degeneracy_tolerance=1e-8
     return CISNTOs(weights, holes, particles, tuple(groups))
 
 
+def _project_transition_amplitudes(left, right, candidates, cross_overlap, nocc):
+    occupied = left[:, :nocc].T @ cross_overlap @ right[:, :nocc]
+    virtual = left[:, nocc:].T @ cross_overlap @ right[:, nocc:]
+    return occupied @ candidates @ virtual.T
+
+
 def transition_density_overlaps(reference_coefficients, reference_amplitude,
                                 coefficients, amplitudes, cross_overlap, *, nocc):
     """Compare C_occ X C_vir.T in the cross-geometry AO overlap metric.
@@ -107,13 +113,94 @@ def transition_density_overlaps(reference_coefficients, reference_amplitude,
     """
     left, right = np.asarray(reference_coefficients), np.asarray(coefficients)
     previous, candidates = np.asarray(reference_amplitude), np.asarray(amplitudes)
-    occupied = left[:, :nocc].T @ np.asarray(cross_overlap) @ right[:, :nocc]
-    virtual = left[:, nocc:].T @ np.asarray(cross_overlap) @ right[:, nocc:]
-    projected = np.einsum("ij,sjb,ab->sia", occupied, candidates, virtual)
+    projected = _project_transition_amplitudes(
+        left, right, candidates, np.asarray(cross_overlap), nocc)
     denominator = np.linalg.norm(previous)*np.linalg.norm(candidates, axis=(1, 2))
     if np.any(denominator <= 0) or not np.isfinite(denominator).all():
         raise ValueError("State amplitudes must have finite nonzero norms.")
     return np.abs(np.einsum("ia,sia->s", previous, projected))/denominator
+
+
+def match_transition_states(reference_coefficients, reference_amplitudes, coefficients,
+                            amplitudes, cross_overlap, energies, *, nocc,
+                            reference_metric=None, metric=None, minimum_overlap=.90,
+                            minimum_margin=.20, minimum_gap=1e-4):
+    """Match isolated real transitions one-to-one, retaining their signed phase.
+
+    Reference/candidate amplitudes have shape (nstate,nocc,nvir); full TDDFT
+    uses X+Y. Cross overlap has reference AOs on the left. Without self metrics,
+    each MO frame must be metric-orthonormal. Supplying both self metrics uses
+    physical transition-density norms, also allowing nonorthogonal MO charts.
+    Hungarian assignment maximizes absolute normalized overlap. A forced bad
+    second choice, ambiguous match or gap to ANY candidate below minimum_gap
+    (Hartree) is rejected; isolated energies are never mixed into a new frame.
+    Dipoles are not involved, so a dark state retains a transition-density phase.
+    Returned roots are zero-based in reference order. This host-side diagnostic
+    is not a many-electron wavefunction overlap or a differentiable state chart.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    arrays = tuple(np.asarray(value) for value in (reference_coefficients,
+        reference_amplitudes, coefficients, amplitudes, cross_overlap, energies))
+    if any(np.iscomplexobj(value) or not np.isfinite(value).all() for value in arrays):
+        raise ValueError("Tracking inputs must be finite real arrays.")
+    left, previous, right, candidates, cross, energy = arrays
+    if (left.ndim != 2 or right.ndim != 2 or previous.ndim != 3 or candidates.ndim != 3
+            or not isinstance(nocc, (int, np.integer)) or nocc < 1
+            or min(left.shape[1], right.shape[1]) <= nocc
+            or previous.shape[1:] != (nocc, left.shape[1]-nocc)
+            or candidates.shape[1:] != (nocc, right.shape[1]-nocc)
+            or cross.shape != (left.shape[0], right.shape[0])):
+        raise ValueError("Inconsistent MO, amplitude or cross-overlap dimensions.")
+    nref, count = len(previous), len(candidates)
+    if nref < 1 or count < max(nref, 2) or energy.shape != (count,):
+        raise ValueError("Tracking needs enough candidate states and at least one gap companion.")
+    thresholds = np.asarray((minimum_overlap, minimum_margin, minimum_gap))
+    if (not np.isfinite(thresholds).all() or not 0 < minimum_overlap <= 1
+            or minimum_margin < 0 or minimum_gap <= 0):
+        raise ValueError("Overlap/margin/gap thresholds must be finite and physically admissible.")
+    if (reference_metric is None) != (metric is None):
+        raise ValueError("Both self metrics must be supplied together.")
+
+    def norms(c, states, overlap):
+        if overlap is None:
+            return np.linalg.norm(states, axis=(1, 2))
+        overlap = np.asarray(overlap)
+        if (overlap.shape != (c.shape[0], c.shape[0]) or np.iscomplexobj(overlap)
+                or not np.isfinite(overlap).all()
+                or not np.allclose(overlap, overlap.T, atol=1e-12, rtol=1e-10)):
+            raise ValueError("Self metrics must be finite, real symmetric AO matrices.")
+        occupied = c[:, :nocc].T @ overlap @ c[:, :nocc]
+        virtual = c[:, nocc:].T @ overlap @ c[:, nocc:]
+        squared = np.einsum('sia,ij,sjb,ab->s', states, occupied, states, virtual, optimize=True)
+        if np.any(squared <= 0) or not np.isfinite(squared).all():
+            raise ValueError("Transition amplitudes need finite nonzero physical norms.")
+        return np.sqrt(squared)
+
+    left_norm, right_norm = norms(left, previous, reference_metric), norms(right, candidates, metric)
+    denominator = left_norm[:, None]*right_norm[None, :]
+    if np.any(denominator <= 0) or not np.isfinite(denominator).all():
+        raise ValueError("Transition amplitudes need finite nonzero norms.")
+    projected = _project_transition_amplitudes(left, right, candidates, cross, nocc)
+    signed = np.einsum('ria,sia->rs', previous, projected, optimize=True)/denominator
+    overlaps = np.abs(signed)
+    rows, roots = linear_sum_assignment(-overlaps)
+    matched = overlaps[rows, roots]
+    alternatives = overlaps.copy()
+    alternatives[rows, roots] = -np.inf
+    margins = matched-np.max(alternatives, axis=1)
+    distances = np.abs(energy[roots, None]-energy[None, :])
+    distances[rows, roots] = np.inf
+    gaps = np.min(distances, axis=1)
+    if np.any(matched < minimum_overlap):
+        raise RuntimeError("Assigned transition overlap is below minimum_overlap.")
+    if np.any(margins < minimum_margin):
+        raise RuntimeError("Transition assignment is ambiguous: overlap margin is too small.")
+    if np.any(gaps < minimum_gap):
+        raise RuntimeError("Tracked-state energy gap is too small for isolated-state response.")
+    return dict(roots=roots, phases=np.where(signed[rows, roots] >= 0, 1., -1.),
+                signed_overlaps=signed, overlaps=overlaps, matched_overlap=matched,
+                margins=margins, gaps_hartree=gaps)
 
 
 def select_tracked_root(overlaps, energies, *, minimum_overlap=.85,
