@@ -1,3 +1,9 @@
+> **Current run — 2026-11-12 13:19:23+08:00:** job **122200** is running on
+> n006 with one NV5090/64 logical CPU/256 GiB. The dynamic-pullback mechanism
+> test passed and the unchanged native B3LYP geometry check is reused with
+> exact source hashes. Actual anthracene AD started **13:19:20+08:00**;
+> 0/32 Cartesian components at launch, no completed AD spectrum.
+
 # Anthracene AD-HT — implementation and bounded acceptance report
 
 日期：2026-11-12（Asia/Shanghai）。基线 `9b087fad`，分支
@@ -157,3 +163,40 @@ CSV/NPZ 与 PNG/PDF 的实际内容和渲染，取得 spectrum/status/process re
 
 该报告验收的是已列实现和窄测试范围；实际蒽 32 pullbacks、66 模结果、最终谱、
 耗时／内存及 allocation 结束状态，保留为 [固定计划](PLAN.md) 的未完成项。
+
+## Restart after the first reverse compilation memory failure
+
+The first actual shared AD forward completed in 2422.243 s. The original
+`jit(lambda weight: pullback(weight)[0])` then captured112.57 GB in lowering;
+its process-group sampled RSS reached236708753408 bytes, exceeding220 GiB.
+The process stopped11:43:58; job122119 released11:58:59. This was not a
+logged eigensolver convergence failure. Original logs and failed process
+receipt remain in `raw/anthracene-ad.*`; no failed result is accepted.
+
+The minimal repair is `cartesian_pullback(pullback, weight)`: saved residuals
+enter JIT as dynamic PyTree inputs, remain available for all32 adjoints, and
+are not donated or frozen. No integral/grid/SCF/XC/root/normal-mode precision
+or physical dependency changes. `pullback_residual_bytes` is a sum of logical
+leaf sizes, potentially including aliases; it is not a measured RSS value.
+
+The actual B3LYP/H2 geometry JVP/VJP/FD check passed in job122195 with the new
+boundary. The separate diagnostic initially assumed constants appeared in
+the outer ClosedJaxpr, which was false for nested JIT; the corrected test uses
+actual MLIR lowering warnings at4096 bytes. It reproduces24.60KB captured in
+the old closure and no large-constant warning for the dynamic path, and finds
+four vector residuals among lowered dynamic inputs. Two numerical origins
+and two cotangents agree to2e-12. The same pullback reuses compilation for
+different cotangents. Distinct pullbacks have different PyTree definitions;
+the test records their additional compilation instead of claiming cross-
+linearization executable reuse. These two diagnostic assertion errors were
+preserved, not hidden as scientific failures or used to loosen tolerances.
+The corrected mechanism test passed in2.001s (job122200).
+
+The restart script verifies the exact production and B3LYP-test hashes before
+reusing its passed XML testcase; it does not repeat the four-minute geometry
+check. Native SHA and all physical settings are unchanged. The run uses a
+fresh output, reuses immutable ground/Hessian/FD archives through explicit
+paths, and rebuilds the in-memory VJP tape lost with the old process. Its
+220 GiB RSS guard remains active. Final32 pullbacks and spectrum remain
+unverified; preventing literal capture alone does not prove total workspace
+will fit. Runtime boundary, raw receipts and status are in `restart_122200.json`.

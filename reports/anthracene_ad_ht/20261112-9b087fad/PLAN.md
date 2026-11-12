@@ -23,7 +23,7 @@
   - [x] `/proc` 进程退出竞争先复现后修复；保持 process-group RSS 的页数到字节语义，归档命令、环境与退出码。
 
 - [ ] **TODO 3 — 验收实际蒽 32 个 pullback 与 66 模导数。**
-  - [ ] job `122119` 的正式 AD 阶段已于 `2026-11-12 10:58:55+08:00` 启动；取得同一次 shared VJP 的全部 32 个有限、同签名 Cartesian 分量 checkpoint 与成功进程 receipt。
+  - [ ] job `122200` 在动态残差修复及窄验证后，于 `2026-11-12 13:19:20+08:00` 重启正式 AD 阶段；取得同一次 shared VJP 的全部 32 个有限、同签名 Cartesian 分量 checkpoint 与成功进程 receipt。
   - [ ] 核对 8 个目标态的有符号锚定、完整占据／虚轨道空间、第 9 个 guard root、原生库及 ground/harmonic/input/source hashes；逐项检查响应有限性。
   - [ ] 通过 Cartesian 平移检查，保存 `(8,66)` gap gradients 与 `(8,3,66)` dipole derivatives，保留全部 66 个正频率模。
   - [ ] 以旧 FD 数据中四个完整正负方向独立核验 gap／有符号 dipole 导数；FD 不回填模型导数。取得 `mode_response_status.json: complete=true` 后才勾选本项。
@@ -34,7 +34,7 @@
   - [ ] 生成 CSV/NPZ/PNG/PDF，实际查看总谱、2×4 态谱、8×66 Huang–Rhys 图及 8 个目标垂直跃迁棒图；记录实际耗时与 RSS。
   - [ ] 取得 final spectrum/status/process receipts 并更新最终报告；确认 Slurm 退出／资源释放后才记录交付完成。
 
-资源固定为远端 `122119`：`n006`、64 logical CPU、256 GiB、1 张 NV5090，
+当前资源固定为远端 `122200`：`n006`、64 logical CPU、256 GiB、1 张 NV5090，
 24 h allocation 上限；同 allocation 顺序执行。实际几何 AD 由示例显式选择 CPU，
 不会因 allocation 包含 GPU 或 `JAX_PLATFORMS=cuda,cpu` 就成为 GPU 原生几何计算。
 正式 AD guard 为 72000 s／220 GiB RSS；后续谱步骤受前一步成功退出约束。
