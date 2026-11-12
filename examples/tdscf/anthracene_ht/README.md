@@ -1,19 +1,19 @@
 # Gas-phase anthracene: eight-state full TDDFT FC/HT absorption
 
-The current calculation includes **FC/linear-HT corrections for S1 through S8**,
+The calculation targets **FC/linear-HT corrections for S1 through S8**,
 with individual bands and their absolute-intensity sum on one photon-energy axis. It uses GradSCF for the
 SCF, native integrals, nuclear response and full TDDFT. PySCF checks were explicitly skipped by the user; existing diagnostic logs
 are retained, with no accepted external-reference claim or production dependency.
 
-The original one-band input remains `input.json`; the active eight-state input
-is `input_eight_states.json`: neutral anthracene C14H10, PubChem CID8418
+The original one-band input remains `input.json`; the eight-state FD validation
+input is `input_eight_states.json`: neutral anthracene C14H10, PubChem CID8418
 conformer as an initial guess, Cartesian def2-SVP, B3LYP (including VWN-RPA),
 grid level3, float64. Geometry optimization requires max|gradient|<=3e-6
-Ha/bohr. The allocated resource is one NV5090/64 logical CPU/256GiB, job119234
-on jy_gpu_2. Run scripts from the repository root inside that allocation;
+Ha/bohr. The original FD allocation was one NV5090/64 logical CPU/256GiB,
+job119234 on jy_gpu_2. Run scripts from the repository root inside an authorized allocation;
 there is no Python CLI or local scientific testing.
 
-The stages are:
+The shared preparation and retained FD validation stages are:
 
 1. `00_initial.py`: actual SCF/full-TDDFT capability, dimensions and cost at
    the initial conformer. This is explicitly **not** an equilibrium spectrum.
@@ -37,10 +37,39 @@ The stages are:
 6. `04_spectrum.py`: call the tested `gradscf_tools.vibronic` oscillator
    product and plot FC, HT, signed interference and the coherent total.
 
-The existing default full-TDDFT facade attaches AD only to excitation energies
-and stops X/Y amplitude derivatives. Consequently `jacrev(transition_dipole)`
-would be incomplete here. This example explicitly uses **FD-HT**, not such an
-incomplete AD derivative. Ground-state gradients/Hessian remain implicit AD.
+The default full-TDDFT facade attaches AD only to excitation energies and stops
+X/Y amplitude derivatives. The AD route below explicitly enables
+`tda_gradient_mode="implicit_eigenvector"`; the retained `03_mode_response.py`
+route supplies independent signed FD validation. Ground-state gradients/Hessian
+remain implicit AD.
+
+## AD route
+
+`05_ad_response.py` uses `input_ad_eight_states.json` and a separate output
+directory. This step sets the default device to CPU for SCF and native geometry
+AD; an explicit GPU reference-export boundary does not establish GPU SCF execution.
+One shared geometry linearization supplies
+32 scalar pullbacks (eight excitation gaps and 24 transition-dipole components),
+whose Cartesian gradients are projected onto all 66 existing normal modes.
+It reuses the validated ground Hessian and aligns state phases to the archived
+vertical anchor. The 39 archived FD points are validation data only; they do
+not supply derivatives for the AD spectrum.
+
+Run inside the authorized allocation, from the repository root:
+
+```sh
+export GRADSCF_ANTHRACENE_INPUT="$PWD/examples/tdscf/anthracene_ht/input_ad_eight_states.json"
+export GRADSCF_ANTHRACENE_OUTPUT="$PWD/reports/anthracene_ht/20261110-b3lyp-def2svp/ad_eight_states/raw"
+export GRADSCF_ANTHRACENE_FD_OUTPUT="$PWD/reports/anthracene_ht/20261110-b3lyp-def2svp/eight_states/raw"
+PYTHONPATH=src python examples/tdscf/anthracene_ht/05_ad_response.py
+PYTHONPATH=src python examples/tdscf/anthracene_ht/04_spectrum.py
+```
+
+The actual anthracene AD run has not yet completed. Check
+`ad_eight_states/raw/mode_response_status.json` for all 32 completed pullbacks
+and passed translation/FD gates; `04_spectrum.py` accepts only a completed mode
+response. Final spectrum acceptance additionally requires
+`ad_eight_states/raw/spectrum_status.json` to report `complete=true`.
 
 ## Model and units
 
@@ -104,7 +133,7 @@ warning from JAX's disk cache. Numerical force/FD gates still passed. Later
 stages disable the persistent disk cache and retain ordinary in-process program
 reuse, avoiding cache-file eviction/I/O coupling; physical inputs are unchanged.
 
-## Eight-state execution and accepted boundaries
+## Retained eight-state FD validation route and accepted boundaries
 
 The source/native/geometry-identified ground structure, all72Hessian columns
 and66positive modes are immutable inputs. The oldS1 points contain only one
@@ -122,11 +151,13 @@ export GRADSCF_ANTHRACENE_OUTPUT="$PWD/reports/anthracene_ht/20261110-b3lyp-def2
 PYTHONPATH=src python examples/tdscf/anthracene_ht/03_mode_response.py
 ```
 
-Run only inside the authorized allocation. Current queue23 checks36 regressions;
-queue24 computes eight-state mode derivatives, queue25 plots, queue26 releases.
+Run only inside the authorized allocation. The archived FD controller assigned
+queue23 to36 regressions, queue24 to eight-state mode derivatives, queue25 to
+plots and queue26 to release.
 The old single-state process was stopped and its queued spectrum disabled.
 No PySCF was resumed. Test receipts distinguish synthetic spectrum fixtures
-from actual molecular derivatives, which remain running.
+from actual molecular derivatives; current AD completion is recorded in the
+status files described above.
 
 Per-state isolated-energy, overlap, margin and guard-boundary checks remain
 strict; near-degenerate mixing is rejected rather than rotating distinct
