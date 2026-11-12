@@ -22,19 +22,19 @@
   - [x] 单独 GPU 数组 AD 2 passed；谱 fixture/provenance 5 passed。GPU 数组结果不扩展为 GPU 原生几何 AD。
   - [x] `/proc` 进程退出竞争先复现后修复；保持 process-group RSS 的页数到字节语义，归档命令、环境与退出码。
 
-- [ ] **TODO 3 — 验收实际蒽 32 个 pullback 与 66 模导数。**
-  - [ ] job `122200` 在动态残差修复及窄验证后，于 `2026-11-12 13:19:20+08:00` 重启正式 AD 阶段；取得同一次 shared VJP 的全部 32 个有限、同签名 Cartesian 分量 checkpoint 与成功进程 receipt。
-  - [ ] 核对 8 个目标态的有符号锚定、完整占据／虚轨道空间、第 9 个 guard root、原生库及 ground/harmonic/input/source hashes；逐项检查响应有限性。
-  - [ ] 通过 Cartesian 平移检查，保存 `(8,66)` gap gradients 与 `(8,3,66)` dipole derivatives，保留全部 66 个正频率模。
-  - [ ] 以旧 FD 数据中四个完整正负方向独立核验 gap／有符号 dipole 导数；FD 不回填模型导数。取得 `mode_response_status.json: complete=true` 后才勾选本项。
+- [x] **TODO 3 — 验收实际蒽 32 个 pullback 与 66 模导数。**
+  - [x] job `122200` 在动态残差修复及窄验证后，于 `2026-11-12 13:19:20+08:00` 重启正式 AD 阶段；取得同一次 shared VJP 的全部 32 个有限、同签名 Cartesian 分量 checkpoint 与成功进程 receipt。
+  - [x] 核对 8 个目标态的有符号锚定、完整占据／虚轨道空间、第 9 个 guard root、原生库及 ground/harmonic/input/source hashes；逐项检查响应有限性。
+  - [x] 通过 Cartesian 平移检查，保存 `(8,66)` gap gradients 与 `(8,3,66)` dipole derivatives，保留全部 66 个正频率模。
+  - [x] 以旧 FD 数据中四个完整正负方向独立核验 gap／有符号 dipole 导数；FD 不回填模型导数。取得 `mode_response_status.json: complete=true` 后才勾选本项。
 
-- [ ] **TODO 4 — 生成、检查并交付物理谱。**
-  - [ ] 仅在 TODO 3 成功后组装 S1–S8 各态 FC/HT/有符号干涉与非相干总强度；共用绝对 photon-energy 轴，不做逐态峰值归一化或经验能量平移。
-  - [ ] 验证每态及总光学面积误差不超过 `1e-5`，检查 guard roots 不进入 8 态谱，并保留上游 AD `derivative_method` 与签名。
-  - [ ] 生成 CSV/NPZ/PNG/PDF，实际查看总谱、2×4 态谱、8×66 Huang–Rhys 图及 8 个目标垂直跃迁棒图；记录实际耗时与 RSS。
-  - [ ] 取得 final spectrum/status/process receipts 并更新最终报告；确认 Slurm 退出／资源释放后才记录交付完成。
+- [x] **TODO 4 — 生成、检查并交付物理谱。**
+  - [x] 仅在 TODO 3 成功后组装 S1–S8 各态 FC/HT/有符号干涉与非相干总强度；共用绝对 photon-energy 轴，不做逐态峰值归一化或经验能量平移。
+  - [x] 验证每态及总光学面积误差不超过 `1e-5`，检查 guard roots 不进入 8 态谱，并保留上游 AD `derivative_method` 与签名。
+  - [x] 生成 CSV/NPZ/PNG/PDF，实际查看总谱、2×4 态谱、8×66 Huang–Rhys 图及 8 个目标垂直跃迁棒图；记录实际耗时与 RSS。
+  - [x] 取得 final spectrum/status/process receipts 并更新最终报告；确认 Slurm 退出／资源释放后才记录交付完成。
 
-当前资源固定为远端 `122200`：`n006`、64 logical CPU、256 GiB、1 张 NV5090，
+已完成作业 `122200` 的资源配置为：`n006`、64 logical CPU、256 GiB、1 张 NV5090，
 24 h allocation 上限；同 allocation 顺序执行。实际几何 AD 由示例显式选择 CPU，
 不会因 allocation 包含 GPU 或 `JAX_PLATFORMS=cuda,cpu` 就成为 GPU 原生几何计算。
 正式 AD guard 为 72000 s／220 GiB RSS；后续谱步骤受前一步成功退出约束。
@@ -43,3 +43,7 @@
 模型边界固定为 0 K、独立同曲率 VG surfaces 与每态 linear HT；未包含
 Duschinsky 旋转、激发态完整 Hessian、热布居、态间振电耦合。未取得实际蒽
 32 pullbacks、66 模导数与最终谱成功证据前，不将本任务标为完成。
+
+最终验收：2026-11-12 22:28+08，四个 TODO 全部完成。job122200 的两个阶段
+exit0，32 分量与66模通过全部门槛，四张实际结果图已查看，资源释放。
+完整证据与范围见 [FINAL_RESULTS.md](FINAL_RESULTS.md)。

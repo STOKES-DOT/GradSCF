@@ -1,8 +1,8 @@
-> **Current run — 2026-11-12 13:19:23+08:00:** job **122200** is running on
-> n006 with one NV5090/64 logical CPU/256 GiB. The dynamic-pullback mechanism
-> test passed and the unchanged native B3LYP geometry check is reused with
-> exact source hashes. Actual anthracene AD started **13:19:20+08:00**;
-> 0/32 Cartesian components at launch, no completed AD spectrum.
+> **Accepted final run — 2026-11-12 22:28+08:** All32 AD gradients,66 modes,
+> four FD directions,translation and optical-area gates passed. Spectrum
+> generated and all four PNGs inspected; job122200 finished and resources
+> released. [FINAL_RESULTS.md](FINAL_RESULTS.md) is the final acceptance entry.
+> Running/incomplete descriptions below are historical development snapshots.
 
 # Anthracene AD-HT — implementation and bounded acceptance report
 

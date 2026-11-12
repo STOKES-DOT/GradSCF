@@ -65,11 +65,12 @@ PYTHONPATH=src python examples/tdscf/anthracene_ht/05_ad_response.py
 PYTHONPATH=src python examples/tdscf/anthracene_ht/04_spectrum.py
 ```
 
-The actual anthracene AD run has not yet completed. Check
-`ad_eight_states/raw/mode_response_status.json` for all 32 completed pullbacks
-and passed translation/FD gates; `04_spectrum.py` accepts only a completed mode
-response. Final spectrum acceptance additionally requires
-`ad_eight_states/raw/spectrum_status.json` to report `complete=true`.
+The eight-state AD run completed on **2026-11-12** (job122200). All32
+pullbacks,66-mode projection,four independent signed FD directions and
+translation checks passed. Both `mode_response_status.json` and
+`spectrum_status.json` report `complete=true`. Four generated plots were
+visually reviewed. See the [accepted results](../../../reports/anthracene_ad_ht/20261112-9b087fad/FINAL_RESULTS.md).
+The model and device boundaries below remain unchanged.
 
 ## Model and units
 
@@ -96,8 +97,9 @@ checkpoints; incompatible source or parameters require a fresh run directory.
 ## Outputs and evidence
 
 Ground data and the canceled one-band run remain under
-`reports/anthracene_ht/20261110-b3lyp-def2svp/raw/`. New eight-state outputs go
-to `reports/anthracene_ht/20261110-b3lyp-def2svp/eight_states/`. The raw directory
+`reports/anthracene_ht/20261110-b3lyp-def2svp/raw/`. The old eight-state FD validation archives remain under
+`reports/anthracene_ht/20261110-b3lyp-def2svp/eight_states/`. Accepted AD outputs
+are under `reports/anthracene_ht/20261110-b3lyp-def2svp/ad_eight_states/`. The raw directory
 contains native/source provenance, geometries, Hessian columns, signed mode
 points, numerical gates and per-stage progress. A running or completed
 preliminary SCF is not a completed vibronic spectrum. The final state is only

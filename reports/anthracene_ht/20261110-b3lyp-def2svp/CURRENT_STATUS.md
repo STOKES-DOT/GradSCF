@@ -1,28 +1,26 @@
-# Current status — restarted actual AD run
+# Completed — eight-state anthracene AD FC/HT spectrum
 
-Verified **2026-11-12 13:19:23+08:00**. Job **122200** runs on jy_gpu_2/n006:
-one NV5090,64 logical CPU,256 GiB. Actual anthracene AD began **13:19:20**.
-Native geometry AD remains CPU execution. Same B3LYP/Cartesian def2-SVP,
-grid3,8 target states,all occupied/virtual orbitals and66 normal modes.
+Verified **2026-11-12 22:28:08+08:00**. Job122200 completed its AD stage at
+22:12:35 and spectrum stage at22:12:50; both process receipts report exit0.
+The allocation is no longer in squeue. Resources are released.
 
-The reverse JIT now receives the saved pullback as dynamic PyTree inputs.
-The mechanism test passed (actual lowering warning positive control,
-dynamic residual inputs,numerical derivatives and same-pullback compilation
-reuse). Native B3LYP/H2 geometry AD passed and was reused with exact hashes.
-Two over-specific diagnostic test assumptions were corrected and retained
-in the receipts. No numerical tolerance was relaxed.
+- All32 finite Cartesian gradients:8 excitation energies and24 signed dipole components.
+- All66 modes retained; four independent FD directions and translation gates passed.
+- Final eight-state FC/HT/interference spectra,common-axis area checks and AD provenance passed.
+- All four actual PNG figures were opened locally for visual review.
 
-**0/32 derivatives at launch; no completed AD spectrum.** The job rebuilds
-the lost in-memory AD tape; validated ground geometry,Hessian and modes are
-reused. Translation and four existing signed FD-direction gates remain
-mandatory before spectral generation. The process RSS guard stays220 GiB.
+AD process wall:31993.843s (8h53min14s),including startup,compile,shared
+linearization,32 pullbacks and validation. Process-group RSS sampled peak:
+176860991488 bytes (164.7146GiB,0.2s sampling),below220GiB guard.
+Spectrum process wall:6.301s. Native geometry AD ran on CPU; the allocated
+5090 is not evidence of GPU native geometry execution.
 
-Previous job122119 completed its shared forward in2422.243s, then exceeded
-the guard during reverse compilation (112.57GB captured constants;
-220.452GiB sampled peak). It stopped11:43:58 and released11:58:59. Those
-logs and the vertical result are preserved; no FD production restart occurs.
+Local outputs: [total spectrum](ad_eight_states/anthracene_fc_ht.png),
+[state spectra](ad_eight_states/anthracene_fc_ht_states.png),
+[CSV data](ad_eight_states/spectrum.csv),[band table](ad_eight_states/bands.csv).
+Final evidence: [summary](../../anthracene_ad_ht/20261112-9b087fad/FINAL_RESULTS.md).
 
-Remote root:
-`/home/user_yuanjiao/private/homefile/gradscf-ad-ht-restart-20261112-1306`.
-See [restart manifest](../../anthracene_ad_ht/20261112-9b087fad/restart_122200.json)
-and [fixed plan](../../anthracene_ad_ht/20261112-9b087fad/PLAN.md).
+Scope:0K independent equal-curvature VG surfaces and linear HT; no
+Duschinsky,excited-state Hessians,thermal populations or coupled electronic-
+state vibronic Hamiltonian. No empirical alignment or external experimental
+agreement is claimed. Old FD data supplied validation only.
