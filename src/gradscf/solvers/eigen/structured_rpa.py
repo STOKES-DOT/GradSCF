@@ -19,8 +19,13 @@ from .response import _spectral_inputs
 from .stable_rpa import solve_stable_rpa
 
 
-def _initial(diagonal, width, count, seed):
-    k = min(width, max(count + 1, 2 * count))
+def _initial(diagonal, width, count, seed, initial_guess_count=None):
+    roots = count
+    if initial_guess_count is not None:
+        # Retain a full-support random column unless the canonical frame
+        # already spans the complete problem.
+        count = max(count, min(initial_guess_count, max(1, width - 1)))
+    k = min(width, max(count + 1, 2 * roots))
     canonical = jax.nn.one_hot(
         jnp.argsort(diagonal)[:count], diagonal.size, dtype=diagonal.dtype
     ).T
@@ -104,7 +109,7 @@ def _attach_response(apply_h, values, vectors, diagonal, config, response_config
 
 
 def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
-              response_config=None):
+              response_config=None, h_operator=None, matrix_eps=1e-10):
     """Real symmetric A/B RPA, matrix-free Davidson or bounded dense reference.
 
     Operator callers assert symmetry. Davidson screens A-B and A+B using
@@ -114,6 +119,11 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
     Requested/guard physical residuals and positive metric norm are checked.
     First-order AD applies only to an entirely isolated requested root set.
     Vector-response solves are attached lazily and run only under AD.
+    h_operator optionally supplies the exact coupled H=[[A,B],[B,A]] action.
+    Its caller asserts equality for the complete parameter family, not merely
+    at one numerical point. Stability, forward and AD then reuse this single
+    fused product instead of separately applying A/B. No dense H is requested.
+    matrix_eps controls the existing Davidson metric regularization only.
     response_config optionally configures the shared response linear solve.
     Its direct capacity is n for dense reduction and 2*n for the structured
     metric equation; it does not change the forward eigensolver or gaps.
@@ -128,7 +138,7 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
     if cfg.value_min is not None:
         raise ValueError("value_min is a Hermitian interval control, not an RPA frequency window")
 
-    if any(not isfinite(t) or t <= 0 for t in (gap_tol, stability_tol)):
+    if any(not isfinite(t) or t <= 0 for t in (gap_tol, stability_tol, matrix_eps)):
         raise ValueError("RPA tolerances must be finite and positive")
     if not isinstance(seed, Integral) or seed < 0:
         raise ValueError("seed must be a nonnegative integer")
@@ -140,14 +150,24 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
     n = ao.shape[0]
     if cfg.nroots > n:
         raise ValueError("nroots exceeds RPA dimension")
-    dtype = jnp.result_type(ao.dtype, bo.dtype)
+    hop = None if h_operator is None else as_operator(h_operator)
+    if hop is not None:
+        validate_real_square(hop)
+        if hop.shape != (2*n, 2*n):
+            raise ValueError("Coupled RPA operator shape must be (2*n, 2*n)")
+    dtype = jnp.result_type(ao.dtype, bo.dtype, ao.dtype if hop is None else hop.dtype)
     if cfg.method == "dense":
         if n > cfg.max_dense:
             raise ValueError("Dense RPA exceeds max_dense")
         eye = jnp.eye(n, dtype=dtype)
+        if hop is None:
+            dense_a, dense_b = ao.apply(eye), bo.apply(eye)
+        else:
+            blocks = hop.apply(jnp.concatenate((eye, jnp.zeros_like(eye)), axis=0))
+            dense_a, dense_b = blocks[:n], blocks[n:]
         return solve_stable_rpa(
-            ao.apply(eye),
-            bo.apply(eye),
+            dense_a,
+            dense_b,
             config=cfg,
             gap_tol=gap_tol,
             stability_tol=stability_tol,
@@ -174,13 +194,12 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
     margins, residuals, checks = [], [], []
     for sign in (-1, 1):
         diag = ao.diagonal + sign * bo.diagonal
-        op = LinearOperator(
-            ao.shape,
-            dtype,
-            lambda x: ao.apply(x) + sign * bo.apply(x),
-            diagonal=diag,
-            matmat=lambda x: ao.apply(x) + sign * bo.apply(x),
-        )
+        def stability_action(x):
+            if hop is not None:
+                return hop.apply(jnp.concatenate((x, sign*x), axis=0))[:n]
+            return ao.apply(x) + sign*bo.apply(x)
+        op = LinearOperator(ao.shape, dtype, stability_action,
+                            diagonal=diag, matmat=stability_action)
         state = solve_hermitian(
             op,
             config=replace(
@@ -200,6 +219,8 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
     )
 
     def h(v):
+        if hop is not None:
+            return hop.apply(v)
         return jnp.concatenate(
             [ao.apply(v[:n]) + bo.apply(v[n:]), bo.apply(v[:n]) + ao.apply(v[n:])],
             axis=0,
@@ -217,7 +238,8 @@ def solve_rpa(a, b, *, config=None, gap_tol=1e-8, stability_tol=1e-10, seed=0,
         max_iter=cfg.maxiter,
         max_subspace=width,
         orth_eps=min(1e-10, 0.01 * cfg.atol),
-        initial_vectors=_initial(ao.diagonal, width, nsolve, seed),
+        matrix_eps=matrix_eps,
+        initial_vectors=_initial(ao.diagonal, width, nsolve, seed, cfg.initial_guess_count),
     )
     metric_norm = jnp.sum(x * x - y * y, axis=0)
     z = (
