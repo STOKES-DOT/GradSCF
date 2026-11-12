@@ -176,5 +176,5 @@ save('spectrum_status.json', dict(complete=True, state_count=nstates, mode_count
     integrated_oscillator_strengths=summed_area.tolist(),
     per_state_integrated_oscillator_strengths=state_areas.tolist(),
     thermal_populations=False, duschinsky=False, electronic_state_coupling=False,
-    empirical_energy_shift_ev=0., derivative_method='Complete displaced SCF and full TDDFT central differences',
+    empirical_energy_shift_ev=0., derivative_method=status.get('derivative_method', 'Complete displaced SCF and full TDDFT central differences'),
     figures=figures))

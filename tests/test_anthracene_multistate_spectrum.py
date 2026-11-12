@@ -109,3 +109,14 @@ def test_incomplete_mode_responses_are_rejected_before_spectrum(tmp_path, monkey
     with pytest.raises(RuntimeError, match='(?i)(complete|validated)'):
         runpy.run_path(str(SCRIPT), run_name='__main__')
     assert not (output/'spectrum.npz').exists()
+
+
+def test_ad_response_provenance_is_preserved_in_final_spectrum(tmp_path, monkeypatch):
+    output, _ = problem(tmp_path, monkeypatch, nstates=2)
+    path = output/'mode_response_status.json'
+    status = json.loads(path.read_text())
+    status['derivative_method'] = 'AD of native geometry, implicit SCF and full-TDDFT eigenvectors'
+    path.write_text(json.dumps(status))
+    runpy.run_path(str(SCRIPT), run_name='__main__')
+    final = json.loads((output/'spectrum_status.json').read_text())
+    assert final['derivative_method'] == status['derivative_method']
