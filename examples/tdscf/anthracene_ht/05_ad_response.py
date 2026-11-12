@@ -1,6 +1,6 @@
 """S1-S8 VG/HT derivatives from one shared full-TDDFT geometry linearization.
 
-Set GRADSCF_ANTHRACENE_INPUT to input_eight_states.json and
+Set GRADSCF_ANTHRACENE_INPUT to input_ad_eight_states.json and
 GRADSCF_ANTHRACENE_OUTPUT to .../ad_eight_states/raw. The immutable ground
 geometry and 66 modes come from BASE_OUTPUT. Previously converged, signed
 displacements under .../eight_states/raw validate four mode directions;
@@ -42,6 +42,12 @@ def checkpoint(path, **arrays):
 
 def file_hash(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@jax.jit
+def cartesian_pullback(pullback, weight):
+    """Keep saved AD residuals dynamic and reusable across all 32 adjoints."""
+    return pullback(weight)[0]
 
 
 def moving_response(model, coordinates, coefficients, count):
@@ -121,8 +127,8 @@ def validate_directions(coordinates, modes, mass_ratio, gradients, slopes, signa
 
 def main():
     started = perf_counter()
-    # Native integral/J-K geometry primitives currently lower on CPU. The one
-    # numerical SCF seed uses common.mean_field's explicit GPU execution.
+    # Native integral/J-K geometry primitives and this numerical SCF run on
+    # CPU; common.mean_field's GPU reference export does not move the SCF.
     jax.config.update('jax_default_device', jax.devices('cpu')[0])
     count, fd_candidates = SETTINGS['ht_states'], SETTINGS['tracking_roots']
     if (count != 8 or fd_candidates < count+2 or OUTPUT.resolve() in
@@ -193,8 +199,11 @@ def main():
     auxiliary = jax.tree.map(np.asarray, auxiliary)
     if not bool(auxiliary['valid']) or not np.isfinite(values).all():
         raise RuntimeError('The stationary ground state or structured full TDDFT failed.')
+    residuals = jax.tree.leaves(pullback)
+    residual_bytes = sum(getattr(value, 'nbytes', 0) for value in residuals)
     event('ad_shared_vjp_forward', seconds=perf_counter()-forward_started,
-        ground_gradient_norm=float(auxiliary['gradient_norm']))
+        ground_gradient_norm=float(auxiliary['gradient_norm']),
+        pullback_residual_bytes=residual_bytes)
     engine = NativeRHF(list(zip(SYMBOLS, coordinates)), SETTINGS['basis'], unit='Bohr')
     nocc = int(np.count_nonzero(anchor['mo_occ']))
     matched = match_transition_states(anchor['mo_coeff'], anchor['x'][:count]+anchor['y'][:count],
@@ -223,7 +232,12 @@ def main():
     # One retained linearization, one compiled pullback, 32 scalar adjoints.
     # Discarding the seed cotangent is valid: C supplies the numerical origin,
     # while the attached stationarity response supplies dC/dR.
-    reverse = jax.jit(lambda weight: pullback(weight)[0])
+    # Passing the pullback as a PyTree avoids embedding the complete tape
+    # as HLO constants during the first reverse compilation.
+    save('mode_response_status.json', dict(complete=False, stage='cartesian_components',
+        signature=signature, identity=identity, derivative_method=METHOD,
+        state_count=count, completed_components=0, cartesian_component_count=4*count,
+        pullback_residual_bytes=residual_bytes))
     rows, timings = [], []
     for index, (component, sign) in enumerate(zip(selected, signs)):
         path = components/f'component_{index:02d}.npz'
@@ -235,7 +249,7 @@ def main():
         else:
             row_started = perf_counter()
             weight = jnp.zeros(4*count).at[component].set(sign)
-            gradient = np.asarray(reverse(weight))
+            gradient = np.asarray(cartesian_pullback(pullback, weight))
             seconds = perf_counter()-row_started
             if gradient.shape != coordinates.shape or not np.isfinite(gradient).all():
                 raise RuntimeError(f'The full geometry pullback is invalid for component {index}.')

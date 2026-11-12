@@ -96,6 +96,9 @@ def test_full_tddft_gap_and_signed_transition_dipole_geometry_ad(xc, record_prop
     np.testing.assert_allclose(value, jnp.vdot(cotangent, values), atol=2e-11, rtol=0.)
     np.testing.assert_allclose(gradient, jnp.vdot(cotangent, tangent), atol=3e-8, rtol=2e-6)
     np.testing.assert_allclose(reverse, gradient, atol=3e-8, rtol=2e-6)
+    if xc == "b3lyp":
+        np.testing.assert_allclose(jax.jit(lambda pb, weight: pb(weight)[0])(backward, cotangent),
+                                   reverse, atol=3e-8, rtol=2e-6)
     assert np.isfinite(tangent).all()
 
     engine = NativeRHF(list(zip(symbols, np.asarray(coordinates))), "sto-3g", unit="Bohr", charge=charge)
