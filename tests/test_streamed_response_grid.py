@@ -23,6 +23,7 @@ from gradscf.tddft._unrestricted_semilocal_response import (
     UnrestrictedSemilocalResponseFunctional,
     build_unrestricted_semilocal_response_action,
 )
+from gradscf.tools import features as feature_tools
 from gradscf.tools.features import (
     grid_features_with_spin_gradients_for_molecule,
     restricted_grid_response_variables,
@@ -210,14 +211,16 @@ def test_global_hvp_keeps_complete_fields_with_planned_adaptive_blocks(unrestric
 @pytest.mark.parametrize("adaptive", [False, True])
 def test_restricted_response_preparation_obeys_planned_grid_block(adaptive, monkeypatch):
     molecule = _reference(.04, streamed=True, adaptive=adaptive)
+    dense = _reference(.04, streamed=False)
     molecule.grid_ao = replace(molecule.grid_ao, block_size=7)
-    molecule.mo_coeff = jnp.eye(3)
-    molecule.mo_occ = jnp.array([2., 0., 0.])
-    molecule.mo_energy = jnp.array([-.6, .2, .7])
-    molecule.nocc = 1
-    molecule.rep_tensor = jnp.zeros((0, 0, 0, 0))
-    molecule.direct_basis = SimpleNamespace(
-        get_jk=lambda density: (density, jnp.zeros_like(density)))
+    for reference in (molecule, dense):
+        reference.mo_coeff = jnp.eye(3)
+        reference.mo_occ = jnp.array([2., 0., 0.])
+        reference.mo_energy = jnp.array([-.6, .2, .7])
+        reference.nocc = 1
+        reference.rep_tensor = jnp.zeros((0, 0, 0, 0))
+        reference.direct_basis = SimpleNamespace(
+            get_jk=lambda density: (density, jnp.zeros_like(density)))
     sizes = []
     original = AOGrid.block
 
@@ -226,6 +229,13 @@ def test_restricted_response_preparation_obeys_planned_grid_block(adaptive, monk
         return original(provider, start, size, **kwargs)
 
     monkeypatch.setattr(AOGrid, "block", block)
+    # The width observer runs while tracing. A test-local function identity
+    # observes preparation without invalidating the shared program's cache.
+    def observed_fields(provider, rdm1, *, field_kind):
+        return feature_tools._map_physical_grid_fields(provider, rdm1, field_kind=field_kind)
+
+    monkeypatch.setattr(feature_tools, "_physical_grid_fields_program",
+                        jax.jit(observed_fields, static_argnames=("field_kind",)))
     vind = response.build_restricted_tdhf_operator(
         molecule, SemilocalResponseFunctional("pbe"), response_kernel_options={
             "two_electron_mode": "direct", "integral_cache": "none", "grid_block_size": 3})
@@ -233,7 +243,12 @@ def test_restricted_response_preparation_obeys_planned_grid_block(adaptive, monk
     assert molecule.grid_ao.block_size == 7, "Response planning must not mutate the SCF reference"
     assert sizes and max(sizes) <= 3, "Density and XC kernel preparation must obey the response plan"
     values = jnp.array([[.2, -.3, -.1, .4]])
-    assert np.isfinite(np.asarray(jax.jit(vind)(values))).all()
+    actual = jax.jit(vind)(values)
+    dense_vind = response.build_restricted_tdhf_operator(
+        dense, SemilocalResponseFunctional("pbe"), response_kernel_options={
+            "two_electron_mode": "direct", "integral_cache": "none", "grid_block_size": 3})
+    assert np.isfinite(np.asarray(actual)).all()
+    np.testing.assert_allclose(actual, dense_vind(values), atol=2e-11, rtol=2e-11)
 
 
 @pytest.mark.parametrize("unrestricted", [False, True])

@@ -14,3 +14,9 @@ __all__ = ['Target', 'Potential', 'constant_potential', 'Reference', 'OrbitalRef
            'evaluate_xc_energy', 'xc_energy_loss', 'energy_function',
            'hybrid_xc_energy_function',
            'loss', 'potential_error']
+
+from .guides import guide_fock
+__all__ += ['guide_fock']
+
+from .reward import Reward, reward
+__all__ += ['Reward', 'reward']

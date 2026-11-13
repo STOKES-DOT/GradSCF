@@ -2,8 +2,8 @@
 
 Only immutable driver controls enter the cache key. Reference arrays and
 external model parameters are ordinary dynamic arguments, never cache values.
-Opaque/mutable callbacks and shell-direct providers retain their existing
-execution path rather than being captured as static physical state.
+Opaque/mutable callbacks retain their existing execution path. Shell-direct
+providers enter only when tracing preserves the eager integral-cache policy.
 """
 from dataclasses import fields
 from functools import lru_cache
@@ -34,10 +34,23 @@ def _cacheable(driver):
                    ('nocc_alpha', 'nocc_beta'))
     if any(getattr(molecule, name) is None for name in occupations):
         return False
-    if getattr(molecule, 'direct_basis', None) is not None:
-        # Preparing a shell-direct action outside tracing can select a bounded
-        # exact ERI cache. Do not change that algorithm by tracing its provider.
-        return False
+    direct_basis = getattr(molecule, 'direct_basis', None)
+    if direct_basis is not None:
+        from ..integrals.backends.native.jk import NativeDirectBasis
+        # This provider's parameters are dynamic PyTree leaves. An eager
+        # auto policy may choose an exact packed cache, so retain that route
+        # unless the requested policy already guarantees direct shell work.
+        if type(direct_basis) is not NativeDirectBasis:
+            return False
+        options = normalize_response_kernel_options(
+            driver.response_kernel_options, default_max_memory=molecule.max_memory)
+        if options.integral_cache != 'none' and options.direct_tol == 0:
+            # The planner reserves two copies before admitting an exact ERI
+            # cache. If even that exceeds the entire requested budget, eager
+            # preparation must remain shell-direct as well. Ambiguous smaller
+            # auto caches retain their existing eager selection.
+            if 2 * direct_basis.eri_cache_nbytes <= options.max_memory * 1_000_000:
+                return False
     try:
         metadata = molecule.tree_flatten()[1]
         hash(metadata)

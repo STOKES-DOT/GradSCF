@@ -12,9 +12,11 @@ import time
 
 def rss_group(pid):
     total = 0
-    for path in Path("/proc").glob("[0-9]*/stat"):
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
         try:
-            stat = path.read_text().split(") ", 1)[1].split()
+            stat = (process/"stat").read_text().split(") ", 1)[1].split()
             if int(stat[2]) == pid:
                 total += int(stat[21])*os.sysconf("SC_PAGE_SIZE")
         except (OSError, IndexError, ValueError):

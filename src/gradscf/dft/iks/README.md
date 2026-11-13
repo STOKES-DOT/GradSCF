@@ -344,3 +344,157 @@ superseded for this bounded forward path. Spinor/coupled inverse-GKS and the
 inverse-map backward remain unimplemented. Invalid inversions return no usable
 OrbitalReference. Existing fixed-reference analytic/neural assessment and all
 three ordinary training modes retain their contracts.
+
+### Finite-penalty ZMP and fixed local guides
+
+`invert(target, base_fock=base, method='zmp', coulomb=apply_j, ...)` accepts a
+spatial Coulomb action, with no fitted potential basis. RKS and collinear UKS
+use the conventional lambda and2lambda factors respectively. Lambda stages,
+SCF residual, Coulomb density error and optional relative grid-density error
+are separate diagnostics. Only a valid inverse exports an `OrbitalReference`.
+`guide_fock` supports no guide, Fermi-Amaldi, and local classic/external scalar
+XC guides using shared AD. Details, units and the explicit inverse-GKS/WY
+regularization boundary are documented in [KSPies.md](KSPies.md).
+
+
+## Single-sample reward without candidate SCF
+
+Prepare a density-qualified `OrbitalReference` once, for example with
+`invert(..., method='wu_yang')`. The reference stores a complete metric-
+orthonormal orbital frame, integer occupations and orbital energies. A
+correlated target AO 1-RDM is allowed; it need not equal the KS 1-RDM. Reference
+validation checks representation and Aufbau filling, but does not certify a
+local inverse or enforce a universal density-error tolerance. Admit teachers
+using the source inversion's independently recorded density error.
+
+```python
+energy = iks.energy_function(state, candidate_functional, layout='rks',
+                             nuclear_repulsion=nuclear_repulsion)
+score = iks.reward(reference, energy, params, grid=grid,
+    energy_scale=.01, density_scale=.01, weights={'gap': 1., 'density': 1.})
+print(score.value, score.valid, score.density_error)
+```
+
+`candidate_functional` uses the same traditional/custom/neural energy contract
+as DFT. A direct `energy_fn(params, density)` must return **total** energy in
+Hartree, including kinetic, external, Hartree and XC terms. Passing XC energy
+alone would diagonalize an XC-only operator and is physically incorrect. No
+reference energy label is needed for this density-based reward. The optional
+`score.total_energy` is evaluated at the frozen reference, not at the one-shot
+or converged candidate density.
+
+### Why a Wu-Yang evaluation needs a one-electron solve
+
+For a fixed local base operator `h0`, write `F(v)=h0+v`. Define
+
+\[
+ E_s(F)=\min_{D\in\mathcal D_N}\operatorname{Tr}(FD),\qquad
+ W_t[v]=E_s(h_0+v)-\operatorname{Tr}(vD_t).
+\]
+
+Here the minimization fills the lowest orbitals at fixed integer electron/spin
+counts; it is a linear eigenproblem, not an SCF iteration. The potential is
+held fixed during this solve. Its first variation is
+
+\[
+ \delta W_t=\operatorname{Tr}[(D_v-D_t)\delta v]
+            =\int [n_v(\mathbf r)-n_t(\mathbf r)]\delta v(\mathbf r)d\mathbf r.
+\]
+
+Thus maximizing the concave potential functional recovers the target density
+within the declared potential/orbital spaces when that density is representable.
+This is the offline inversion. Each subsequent candidate evaluation performs
+only:
+
+1. Compute `E_theta[D0]` and the physical Hermitian derivative
+   `F_theta = dE_theta/dD | D0` through the existing functional AD module.
+2. Transform with the complete reference orbitals: `H=C0^dagger F_theta C0`.
+   Since `C0^dagger S C0=I`, no new overlap diagonalization is needed.
+3. Fill the lowest orbitals of this frozen operator once to obtain `D1`.
+4. Reduce the density errors on the original grid, using bounded grid blocks.
+   There is no evaluation of `F_theta[D1]` and no candidate SCF loop.
+
+The implementation reports two different energy-like quantities:
+
+\[
+ G_{\rm var}=\operatorname{Tr}(F_\theta D_0)-E_s(F_\theta)\geq0,
+\]
+
+\[
+ \Delta W_t=\operatorname{Tr}(F_0D_0)-E_s(F_\theta)
+             -\operatorname{Tr}[(F_0-F_\theta)D_t].
+\]
+
+`variational_gap` is the first expression. It is nonnegative because `D0` is a
+feasible determinant with the same electron/spin counts as `D1`. It detects
+incorrect Aufbau occupation even when every occupied-virtual Fock residual
+vanishes. `wu_yang_gap` is the **signed** second expression. For a common local
+base and an exact density inverse, the expressions agree: their difference is
+`Tr[(F0-Ftheta)(D0-Dt)]`, which vanishes for matching real-space densities.
+Approximate inverses, incomplete potential spaces or nonlocal operators can
+break that equality. The signed quantity is retained without clipping and is
+not automatically a nonnegative error or an XC energy.
+
+The relative density errors are
+
+\[
+ e_1^2=\frac{\int \sum_c|n_c[D_1]-n_c[D_t]|^2}
+                  {\int \sum_c|n_c[D_t]|^2},\qquad
+ e_0^2=\frac{\int \sum_c|n_c[D_0]-n_c[D_t]|^2}
+                  {\int \sum_c|n_c[D_t]|^2}.
+\]
+
+The quadrature and units are atomic. Components are spin-summed RKS density,
+separate alpha/beta UKS densities, or GKS charge and three magnetization
+components. Both errors and their common normalization use one grid pass.
+A zero target grid norm is invalid. `density_error=e1` and
+`reference_density_error=e0`; the reference baseline is **not subtracted**.
+
+### Reward convention, invariance and AD
+
+\[
+ L=w_G\frac{\max(G_{\rm var},0)}{s_E}
+      +w_n\frac{e_1^2}{s_n^2},\qquad R=\frac1{1+L}.
+\]
+
+Default weights are one each; `energy_scale=sE=.01 Ha` and
+`density_scale=sn=.01` are explicit workflow scales, not universal accuracy
+thresholds. Callers can set different positive scales and nonnegative weights.
+Negative numerical roundoff in `G_var` is suppressed only when assembling the
+reward; its raw diagnostic is retained. The exact zero branch keeps the
+physical second parameter derivative. An invalid candidate returns `value=0`,
+`loss=NaN`, `valid=False`; raw energy/Fock data are preserved. Invalid concrete
+references, including fractional occupations or excited Aufbau filling, are
+rejected rather than converted to poor candidate scores.
+
+The score is invariant to an additive energy constant and to an additive
+constant potential `c*S` per fixed spin channel. Consequently it cannot assess
+absolute functional energies: add the separate energy-label objective when
+energy accuracy matters. A good score also does not establish candidate SCF
+convergence, stability, or its final self-consistent density error. It measures
+the fixed-reference/one-shot defect of the candidate only.
+
+RKS, UKS and Hermitian complex GKS **operator assessment** use the shared
+isolated-subspace eigensolver. Complex matrices are realified, doubling matrix
+dimension and occupied rank; complete internal degenerate pairs are retained.
+The external occupied/virtual gap must exceed `gap_tolerance` (default `1e-8 Ha`).
+JIT and parameter gradients use subspace invariants rather than individual
+eigenvectors. This does not add a spinor inverse solver or a missing custom
+spinor energy adapter: direct GKS total-energy callbacks can be assessed, while
+`energy_function` retains its documented adapter restrictions.
+
+See `examples/iks/single_sample_reward.py` for a qualified cached CCSD/Wu-Yang
+reference -> external analytic functional -> reward example. Input preparation,
+JIT compilation, warm candidate evaluation and the AD/finite-difference check
+are timed or reported separately; no new SCF or inversion is run. All candidate formulas, parameters, scales,
+raw metrics and validity flags are saved to the example's JSON output.
+
+The definition of the potential functional and its density-mismatch derivative
+can also be inspected in the pinned [KSPies Wu-Yang implementation](https://github.com/ssnam92/KSPies/blob/cd99703ae588d3e081e97c8caec5c2aeff66d546/kspies/wy.py).
+
+A failed offline inverse is not admitted as a reward reference. In small
+Gaussian orbital spaces, a correlated density can require ensemble occupations;
+a very flexible AO-product potential basis can drive the occupied/virtual gap
+toward zero instead of producing a valid integer-occupation teacher. Gradient
+convergence alone is insufficient. Retain the independent density and gap
+checks, and use a qualified, balanced-potential-space reference for evaluation.

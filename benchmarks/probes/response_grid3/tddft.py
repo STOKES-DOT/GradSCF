@@ -104,16 +104,41 @@ def main():
     spec.loader.exec_module(helpers)
     ready, plain = helpers.ready, helpers.plain
     log = helpers.Recorder(cfg, out)
+    from benchmarks.probes.tddft_execution.worker import compile_counter, workload_counter
+    if cfg.get("compile_diagnostic"):
+        jax.config.update("jax_log_compiles", True)
+        jax.config.update("jax_explain_cache_misses", True)
+    if cfg.get("solver_diagnostic"):
+        workload_counter(out)
 
     def record_json(name, value):
         (out / name).write_text(json.dumps(plain(value), indent=2, allow_nan=False) + "\n")
 
     def active(stage, repeat):
-        record_json("active_stage.json", dict(stage=stage, repeat=repeat,
-            started_monotonic=time.monotonic(), solve_budget_seconds=6000))
+        state = dict(stage=stage, repeat=repeat, started_monotonic=time.monotonic(),
+            process_budget_seconds=cfg.get("process_budget_seconds", 6000))
+        record_json("active_stage.json", state)
+        print(json.dumps(state), flush=True)
+        if cfg["device"] == "gpu":
+            stats = target.memory_stats() or {}
+            log.add("device_memory_snapshot", None, repeat, active_stage=stage,
+                gpu_memory_bytes=stats.get("bytes_in_use"),
+                gpu_memory_metric_kind="JAX allocator snapshot; not a sampled process peak",
+                gpu_peak_bytes_in_use=stats.get("peak_bytes_in_use"),
+                gpu_pool_bytes=stats.get("pool_bytes"))
 
     def finite(*values):
         return all(np.isfinite(np.asarray(value)).all() for value in values)
+
+    if cfg.get("solver_diagnostic"):
+        from gradscf.tddft import response
+        original_builder = response._build_restricted_response_operator_data
+        def observed_builder(*args, **kwargs):
+            data = original_builder(*args, **kwargs)
+            with (out / "kernel_plans.jsonl").open("a") as stream:
+                stream.write(json.dumps(dict(data.memory_plan._asdict())) + "\n")
+            return data
+        response._build_restricted_response_operator_data = observed_builder
 
     source_root = Path(gradscf.__file__).resolve().parent
     sources = ("scf/facade.py", "scf/gks.py", "tdscf/api.py", "tddft/execution.py",
@@ -149,7 +174,7 @@ def main():
                 conv_tol=cfg["scf_tol"], conv_tol_density=cfg["density_tol"],
                 conv_tol_grad=cfg["gradient_tol"], max_cycle=cfg["max_cycle"],
                 max_memory=cfg["max_memory"], grid_block_size=cfg["grid_block_size"],
-                init_guess="hcore")
+                init_guess=cfg.get("init_guess", "hcore"), grid_screen_tol=cfg.get("grid_screen_tol", 0.))
             if cfg["representation"] == "direct":
                 mf.direct_scf_workers, mf.direct_scf_tol = cfg["threads"], cfg["direct_tol"]
                 mf.direct_scf()
@@ -165,6 +190,11 @@ def main():
                 scf_energy=float(mf.e_tot), scf_iterations=int(mf.cycles), ks=cfg["ks"])
             if not passed:
                 raise ArithmeticError("SCF failed convergence/finite checks")
+            if cfg.get("save_scf_state", False):
+                # Recovery evidence only: no converged density is injected into a timed run.
+                np.savez(out / "scf_state.npz", mo_coeff=np.asarray(mf.mo_coeff),
+                    mo_occ=np.asarray(mf.mo_occ), mo_energy=np.asarray(mf.mo_energy),
+                    energy=np.asarray(mf.e_tot))
             cls = tdscf.TDDFT if cfg["full"] else tdscf.TDA
             td = cls(mf, nstates=cfg["roots"], eigensolver="davidson",
                 davidson_tol=cfg["td_tol"], davidson_max_iter=cfg["td_max_cycle"],
@@ -183,9 +213,19 @@ def main():
                 nvir=[nmo - n for n in counts] if isinstance(counts, list) else nmo - counts,
                 ngrid=int(ref.grid.weights.size),
                 naux=None if ref.df_factors is None else int(ref.df_factors.shape[0]))
+            if cfg["ks"] == "rks":
+                dim = counts * (nmo - counts)
+                log.add("dimensions", None, repeat, ntransition=dim,
+                    hypothetical_dense_a_bytes=8 * dim**2,
+                    hypothetical_full_ao_eri_bytes=8 * log.context["nao"]**4,
+                    notes="Size estimates only; these tensors are not requested or allocated")
             active("response_solve", repeat)
             with jax.default_device(target):
-                log.timed("response_solve", td.kernel, repeat)
+                restore = compile_counter(out, repeat) if cfg.get("compile_diagnostic") else lambda: None
+                try:
+                    log.timed("response_solve", td.kernel, repeat)
+                finally:
+                    restore()
                 strengths = log.timed("oscillator_strength", td.oscillator_strength, repeat)
             passed = bool(np.all(td.converged)) and finite(td.e, strengths)
             log.add("end_to_end", time.perf_counter() - start, repeat,

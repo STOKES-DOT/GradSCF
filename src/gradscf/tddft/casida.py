@@ -9,6 +9,7 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import Array
 
+from ..solvers import EigenSolverConfig, LinearOperator, solve_rpa
 from ..solvers.eigen.rpa import implicit_differential_davidson_lowest_tdhf
 from .defaults import (
     FULL_TDDFT_DAVIDSON_MAX_CYCLE,
@@ -17,7 +18,7 @@ from .defaults import (
     TD_POSITIVE_EIG_THRESHOLD,
 )
 from ..solvers.eigen.davidson import _davidson_search_nroots, _solver_dtype
-from ..solvers.eigen.response import EigenGradientMode
+from ..solvers.eigen.response import EigenGradientMode, _spectral_inputs
 from ._utils import (
     _resolve_xc_functional,
     _restricted_channel,
@@ -92,7 +93,17 @@ def solve_casida_from_tdhf_operator(
     davidson_max_iter: int = FULL_TDDFT_DAVIDSON_MAX_CYCLE,
     davidson_max_subspace: int | None = None,
     davidson_initial_guess_count: int | None = None,
+    tda_gradient_mode: EigenGradientMode = "eigenvalue_only",
+    eigenvector_adjoint_tol: float = 1e-6,
+    eigenvector_adjoint_max_iter: int = 64,
 ) -> TDDFTResult:
+    """Solve full restricted TDDFT, optionally retaining first-order X/Y AD.
+
+    The opt-in vector mode uses the shared structured RPA solver.  The supplied
+    TDHF row action remains fused and retains its original memory batching.
+    """
+    if tda_gradient_mode not in {"eigenvalue_only", "implicit_eigenvector"}:
+        raise ValueError(f"Unsupported TDDFT gradient mode {tda_gradient_mode!r}.")
     nocc, nvir = delta_eps.shape
     dim = int(nocc * nvir)
     nroots = dim if nstates is None else min(int(nstates), dim)
@@ -102,6 +113,59 @@ def solve_casida_from_tdhf_operator(
     def tdhf_vind(values):
         values = jnp.asarray(values, dtype=work_dtype).reshape(-1, 2 * dim)
         return tdhf_vind_rows(values)
+
+    if tda_gradient_mode == "implicit_eigenvector" and dim:
+        diagonal = jnp.asarray(delta_eps, dtype=work_dtype).reshape(dim)
+
+        def h_columns(columns):
+            # TDHF returns JH [X,Y], with H=[[A,B],[B,A]].  Undo J without
+            # splitting X/Y, so one H application keeps one physical traversal.
+            applied = tdhf_vind(columns.T).T
+            return jnp.concatenate([applied[:dim], -applied[dim:]], axis=0)
+
+        def h_vector(vector):
+            return h_columns(vector[:, None])[:, 0]
+
+        # Lift the Fock, orbital, integral and bound-XC inputs at the vector
+        # signature used by implicit response.  Closure conversion specializes
+        # shapes; block columns therefore retain their own microbatched action.
+        converted, parameters, _ = _spectral_inputs(
+            h_vector, jnp.zeros(2 * dim, dtype=work_dtype))
+        h_operator = LinearOperator(
+            (2 * dim, 2 * dim), work_dtype,
+            lambda vector: converted(vector, *parameters), matmat=h_columns,
+        )
+
+        def component(values, *, bottom):
+            applied = h_operator.apply(jnp.concatenate([values, jnp.zeros_like(values)], axis=0))
+            return applied[dim:] if bottom else applied[:dim]
+
+        # The canonical gaps remain the established Davidson preconditioner;
+        # these are approximate diagonals, not an extra full-basis evaluation.
+        a_operator = LinearOperator(
+            (dim, dim), work_dtype, lambda v: component(v, bottom=False),
+            diagonal=diagonal, matmat=lambda v: component(v, bottom=False),
+        )
+        b_operator = LinearOperator(
+            (dim, dim), work_dtype, lambda v: component(v, bottom=True),
+            diagonal=jnp.zeros_like(diagonal), matmat=lambda v: component(v, bottom=True),
+        )
+        solved = solve_rpa(
+            a_operator, b_operator, h_operator=h_operator, matrix_eps=matrix_eps,
+            config=EigenSolverConfig(
+                nroots=nroots, atol=davidson_tol, maxiter=davidson_max_iter,
+                max_subspace=davidson_max_subspace,
+                initial_guess_count=davidson_initial_guess_count,
+                gradient_mode="implicit_eigenvector",
+                adjoint_tol=eigenvector_adjoint_tol,
+                adjoint_maxiter=eigenvector_adjoint_max_iter,
+            ),
+        )
+        return _finalize_casida_result(
+            solved.values, solved.x, solved.y, nroots=nroots,
+            excitation_threshold=excitation_threshold, matrix_eps=matrix_eps,
+            nocc=nocc, nvir=nvir, converged=jnp.all(solved.converged),
+        )
 
     w, x_vecs, y_vecs, converged = implicit_differential_davidson_lowest_tdhf(
         tdhf_vind,
@@ -129,7 +193,11 @@ def solve_casida_from_tdhf_operator(
 
 @dataclass(frozen=True)
 class RestrictedCasidaTDDFT:
-    """PySCF-like restricted TDDFT driver for GradDFT-style molecules."""
+    """PySCF-like restricted TDDFT driver for GradDFT-style molecules.
+
+    ``tda_gradient_mode='implicit_eigenvector'`` enables first-order amplitude
+    response for both TDA and full TDDFT, using the existing adjoint controls.
+    """
 
     molecule: Any
     xc_functional: Any | None = None
@@ -152,6 +220,8 @@ class RestrictedCasidaTDDFT:
         gaps = _restricted_delta_eps(self.molecule, self.occupation_tolerance)
         dim = int(gaps.size)
         roots = dim if nstates is None else min(int(nstates), dim)
+        if rpa and self.tda_gradient_mode == "implicit_eigenvector":
+            roots = min(roots + 1, dim)
         options = normalize_response_kernel_options(
             self.response_kernel_options,
             default_max_memory=getattr(self.molecule, "max_memory", DEFAULT_MAX_MEMORY_MB))
@@ -303,8 +373,11 @@ class RestrictedCasidaTDDFT:
             occupation_tolerance=self.occupation_tolerance,
             response_kernel_options=self.response_kernel_options,
         )
+        delta_eps = getattr(vind_tdhf, "delta_eps", None)
+        if delta_eps is None:
+            delta_eps = _restricted_delta_eps(self.molecule, self.occupation_tolerance)
         result = solve_casida_from_tdhf_operator(
-            _restricted_delta_eps(self.molecule, self.occupation_tolerance),
+            delta_eps,
             vind_tdhf,
             nstates=nstates,
             excitation_threshold=self.excitation_threshold,
@@ -313,5 +386,8 @@ class RestrictedCasidaTDDFT:
             davidson_max_iter=self.davidson_max_iter,
             davidson_max_subspace=memory.max_subspace,
             davidson_initial_guess_count=self.davidson_initial_guess_count,
+            tda_gradient_mode=self.tda_gradient_mode,
+            eigenvector_adjoint_tol=self.eigenvector_adjoint_tol,
+            eigenvector_adjoint_max_iter=self.eigenvector_adjoint_max_iter,
         )
         return self._apply_posthoc_correction(result, use_tda=False)

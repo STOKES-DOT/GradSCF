@@ -169,3 +169,62 @@ to0.010426151; density improvement is not demonstrated.
 The remote replay passed with empty stderr and directionalAD0.0758799152882
 versus finite difference0.0758799124055. All formula and per-molecule score
 records are retained separately; non-winner test results are not evaluated.
+
+## Standard finite-lambda ZMP
+
+`zmp.py` uses only GradSCF to generate small PBE targets and perform restricted
+HeH+ and unrestricted Li ZMP inversions. The Coulomb callback reuses the packed
+J-only integral action. It may be replaced by a direct/DF action without
+changing the inversion implementation. All model evaluation/training ports
+continue to accept the resulting valid `OrbitalReference`.
+
+The independent `compare_kspies_zmp.py` uses only KSPies/PySCF/NumPy on saved
+targets, checking densities and physical Fock matrices at lambda1,5,10,20,50,100.
+Neither example defines a CLI. Set `GRADSCF_IKS_VALIDATION` to the shared result
+directory. KSPies is an optional external reference, never a runtime dependency
+of `gradscf.dft.iks`. See [the theory and method boundary](../../src/gradscf/dft/iks/KSPies.md).
+
+
+CPU verification2026-11-10:159tests pass and12KSPies comparisons pass. Maximum
+AO-density difference across both systems/lambdas is3.71e-10, maximum physical
+Fock difference4.86e-10Ha. Atlambda100, relative density reconstruction errors
+are4.07464e-4 (HeH+) and6.04270e-4 (Li, spin-resolved); both meet1e-3.
+These are finite-lambda/known-PBE validation results, not an exact-density claim.
+The independent comparison uses a process-local legacy SciPy angular-function
+alias and documented small-history/level-shift controls, with upstream ZMP
+source unchanged. No performance-equivalence claim is attached.
+
+
+## SCF-free single-sample reward
+
+`single_sample_reward.py` assesses three external scaled-Dirac exchange formulas
+on a qualified, cached CAFES-QM9 CH4 CCSD/Wu-Yang reference: Cartesian def2-SVP,
+35 AOs, grid level1 (15068 points). No HF, candidate SCF or new inversion is
+performed. Each score builds a frozen Fock once, fills its lowest orbitals once
+and reports the one-shot/target density error alongside the inverse baseline.
+This demonstrates the interface, not a fitted or general-purpose XC functional.
+See the [equations and interpretation](../../src/gradscf/dft/iks/README.md#single-sample-reward-without-candidate-scf).
+
+Point `GRADSCF_IKS_TEACHER` to a qualified teacher JSON and optionally
+`GRADSCF_IKS_REFERENCE` to its relocated `.reference.npz`. The existing loader
+validates the exact NPZ hash. These labels and metadata stay outside Git.
+The local copy for this run is under
+`/Volumes/TF/GradSCF-data/CAFES-QM9/iks-single-reward-20261110/`.
+
+```bash
+GRADSCF_IKS_TEACHER=/Volumes/TF/GradSCF-data/CAFES-QM9/iks-single-reward-20261110/teacher.json \
+PYTHONPATH=src JAX_PLATFORMS=cpu python examples/iks/single_sample_reward.py
+```
+
+The JSON output records every candidate formula, coefficient, raw diagnostic,
+reward scale and validity flag. It separates input preparation, compilation and
+warm evaluation time and checks the reward parameter derivative against a
+centered finite difference. No CLI or external agent is launched.
+
+In the CPU4 validation, the inverse baseline was 0.07242% relative L2. The
+one-shot density errors were 3.22182%, 1.59232% and 1.58280% for scales 0.8,
+1.0 and1.2; corresponding rewards were 0.0565686,0.141990 and0.135336.
+The default reward combines density error with the variational defect, so its
+ordering need not equal density-only ordering. Warm evaluations took about
+56--58ms; this excludes preparation and compilation and is not a full-SCF
+speed comparison. Full SCF density accuracy has not been measured in this test.
