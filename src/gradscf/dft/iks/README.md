@@ -1,5 +1,18 @@
 # Inverse references and functional assessment
 
+## Direct fixed-target Wu–Yang assessment
+
+`WuYang(target, kinetic, base_fock, baseline=baseline_vxc, grid=grid)` prepares
+repeated SCF-free candidate evaluation. `score(vxc)` accepts a complete AO XC
+potential; `assess(xc_energy_fn, params)` differentiates a complete scalar XC
+energy callback; `local(field_fn, params)` assembles an external local field with
+the existing blocked potential map. No inverse orbital reference is required.
+`base_fock` contains T+Vext+J[target] and excludes XC. All candidates include XC
+exactly once. This interface preserves parameter AD and isolated-subspace
+response for real RKS/UKS; it does not redefine the older `reward` diagnostic.
+See [the design-loop interface](../../model/autoxc/README.md) for units, validity,
+gauge, fixed-reference limitations and an optional Codex Python controller.
+
 ## Supplied orbital references and shared fixed-density objectives
 
 `OrbitalReference(target, coefficients, occupations, energies, method=...)`

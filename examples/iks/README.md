@@ -1,5 +1,18 @@
 # Inverse-reference functional assessment
 
+`agent_loop.py` demonstrates the new deterministic proposal/evaluate/reward
+controller with three replayed formulas and live AD fitting on a manufactured
+two-AO quadrature. It needs no SDK, SCF or teacher potential. See the
+[AutoXC interface](../../src/gradscf/model/autoxc/README.md) for the optional
+official Codex adapter, direct Wu–Yang score and restart contract.
+
+`xc100_codex.py` completes two **live** Codex proposals on one qualified XC100
+BH3 target, after an independent PBE energy/potential gate. It uses the saved
+cc-pVTZ AO convention and level-5 grid. See [the measured single-molecule
+acceptance](XC100_CODEX_SINGLE.md); this is a training-target smoke test, not a
+general molecular accuracy result. Unlike the replay example, it invokes a
+real model and requires the existing Codex SDK authentication.
+
 `fixed_reference.py` demonstrates the new orbital-reference/assessment layer
 with a manufactured two-AO system, an external analytic custom_xc and an
 external MLP. It reuses the existing fixed-density Trainer and exposes the same

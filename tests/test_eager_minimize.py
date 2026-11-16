@@ -5,6 +5,21 @@ import numpy as np
 import pytest
 
 
+def test_eager_minimize_respects_explicit_bounds():
+    from gradscf.solvers.nonlinear import minimize_eager
+    objective = jax.value_and_grad(lambda x: jnp.sum((x-2.)**2))
+    result = minimize_eager(objective, jnp.zeros(1), bounds=[(-.5, .5)])
+    assert result.success
+    np.testing.assert_allclose(result.x, [.5], atol=1e-12)
+
+
+@pytest.mark.parametrize('bounds', [[(1., -1.)], [(jnp.nan, 1.)], [(1., 2.)]])
+def test_eager_minimize_rejects_bad_bounds_or_initial_point(bounds):
+    from gradscf.solvers.nonlinear import minimize_eager
+    with pytest.raises(ValueError, match='bound'):
+        minimize_eager(jax.value_and_grad(lambda x: jnp.sum(x*x)), jnp.zeros(1), bounds=bounds)
+
+
 def test_eager_minimize_quadratic():
     from gradscf.solvers.nonlinear import minimize_eager
     objective = jax.jit(jax.value_and_grad(lambda x: jnp.sum(jnp.array([2., 5.])*(x-jnp.array([.3, -.7]))**2)))
