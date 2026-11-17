@@ -5,6 +5,7 @@ Hosts the machine-learned model code:
 - ``gradscf.model.neural_xc``: neural XC functional models
 - ``gradscf.model.neural_d``: neural dispersion corrections
 - ``gradscf.model.nnao``: MACE-conditioned neural-network basis sets (NNAO)
+- ``gradscf.model.autoxc``: analytic XC proposals and fixed Python design loops
 
 Note: the vendored ``mace_jax`` upstream project ships inside
 ``gradscf/model/nnao/vendor/mace-jax`` but remains a separate top-level package at
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 from importlib import import_module
 
-_SUBMODULES = ("neural_xc", "neural_d", "nnao")
+_SUBMODULES = ("neural_xc", "neural_d", "nnao", "autoxc")
 
 
 def __getattr__(name):

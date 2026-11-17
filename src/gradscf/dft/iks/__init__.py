@@ -20,3 +20,6 @@ __all__ += ['guide_fock']
 
 from .reward import Reward, reward
 __all__ += ['Reward', 'reward']
+
+from .wu_yang import WuYang, WuYangScore
+__all__ += ['WuYang', 'WuYangScore']
