@@ -14,8 +14,8 @@ import jax
 
 from gradscf.model import autoxc
 from gradscf.model.autoxc.history import json_value, source_digest
-from gradscf_tools.xc_design.molecule import XC100Case
-from gradscf_tools.xc_design.checks import baseline_checks, candidate_checks
+from gradscf.model.autoxc.workflows.xc100.molecule import XC100Case
+from gradscf.model.autoxc.workflows.xc100.checks import baseline_checks, candidate_checks
 
 jax.config.update('jax_enable_x64', True)
 

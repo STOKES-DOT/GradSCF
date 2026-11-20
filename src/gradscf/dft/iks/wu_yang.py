@@ -1,13 +1,12 @@
 """Direct fixed-target Wu–Yang assessment; no inverse reference or candidate SCF."""
 from math import isfinite
-from types import SimpleNamespace
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
 from gradscf.solvers.eigen.spectral import inverse_sqrt
-from .response import density_norm2
+from .response import density_errors
 from .reward import _aufbau
 from .potential import Potential
 from .types import Target, _check
@@ -29,8 +28,10 @@ class WuYangScore(NamedTuple):
     variational_gap: object
     density_error: object
     valid: object
+    density_l1: object = float('nan')
 
 
+@jax.tree_util.register_pytree_node_class
 class WuYang:
     """Prepare a real RKS/UKS density target for repeated local XC assessment.
 
@@ -72,6 +73,20 @@ class WuYang:
         self.baseline = self._evaluate(self.baseline_potential)
         _check(self.baseline.valid, 'Baseline must have a finite, isolated occupied subspace')
 
+    def tree_flatten(self):
+        children = (self.target, self.kinetic, self.base_fock, self.x,
+                    self.baseline_potential, self.baseline, self.grid)
+        return children, (self.energy_scale, self.gap_tolerance, self.counts)
+
+    @classmethod
+    def tree_unflatten(cls, metadata, children):
+        obj = object.__new__(cls)
+        names = ('target', 'kinetic', 'base_fock', 'x', 'baseline_potential',
+                 'baseline', 'grid', 'energy_scale', 'gap_tolerance', 'counts')
+        for name, value in zip(names, (*children, *metadata)):
+            setattr(obj, name, value)
+        return obj
+
     def _matrix(self, matrix, *, spatial=False):
         matrix = jnp.asarray(matrix)
         shape = self.target.overlap.shape if spatial else self.target.density.shape
@@ -94,34 +109,43 @@ class WuYang:
         fock = self.base_fock+potential
         blocks = fock[None] if self.target.layout == 'rks' else fock
         weight = 2 if self.target.layout == 'rks' else 1
-        densities, gaps, valid = [], [], []
+        densities, gaps, valid, energies = [], [], [], []
         for block, count in zip(blocks, self.counts):
             # The validated AO operator is symmetric. Whitening can accumulate
             # antisymmetric roundoff when S is conditioned poorly; enforce its
             # exact mathematical symmetry before the strict shared solver guard.
             orthogonal = self.x@block@self.x
             orthogonal = .5*(orthogonal+orthogonal.T)
-            projector, gap, good = _aufbau(orthogonal, count, self.gap_tolerance)
+            projector, gap, good, energy = _aufbau(orthogonal, count, self.gap_tolerance,
+                                                  return_energy=True)
             densities.append(weight*self.x@projector@self.x)
+            energies.append(weight*energy)
             gaps.append(gap)
             valid.append(good)
         density = jnp.stack(densities)
         if self.target.layout == 'rks':
             density = density[0]
         trace = lambda a, d: jnp.einsum('...ij,...ji->', a, d).real
-        spectral = trace(fock, density)
+        # Hellmann–Feynman sum: first parameter derivatives need no projector
+        # response solve. The shared spectral primitive retains higher response.
+        spectral = jnp.sum(jnp.stack(energies))
         value = spectral-trace(fock-self.kinetic, self.target.density)
         excess = trace(fock, self.target.density)-spectral
         good = (self._valid_matrix(potential) & jnp.all(jnp.stack(valid)) &
                 jnp.isfinite(value) & jnp.all(jnp.isfinite(density)))
-        error = jnp.asarray(jnp.nan)
-        if self.grid is not None:
-            reference = SimpleNamespace(target=self.target, density=self.target.density)
-            error2, _ = density_norm2(reference, density-self.target.density, self.grid, relative=True)
-            error = jnp.sqrt(error2)
-            good &= jnp.isfinite(error)
-        return WuYangScore(value, jnp.asarray(0.), jnp.asarray(0.), spectral, density,
-                          fock, jnp.min(jnp.stack(gaps)), excess, error, good)
+        result = WuYangScore(value, jnp.asarray(0.), jnp.asarray(0.), spectral, density,
+                             fock, jnp.min(jnp.stack(gaps)), excess, jnp.asarray(jnp.nan), good)
+        return self.diagnose(result)
+
+    def diagnose(self, result):
+        """Add the grid error to a score from this same target/operator setup."""
+        if self.grid is None:
+            return result
+        errors = density_errors(self.target,result.density,self.grid)
+        error = jnp.sqrt(errors.l2_squared)
+        valid = result.valid & errors.valid
+        return result._replace(density_error=error,density_l1=errors.l1, valid=valid,
+                               reward=jnp.where(valid, result.reward, jnp.nan))
 
     def score(self, potential):
         """One candidate solve; the prepared baseline is reused without global caches."""

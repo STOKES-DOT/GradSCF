@@ -6,6 +6,22 @@ import jax.numpy as jnp
 from .assessment import evaluate
 
 
+def wu_yang_density_loss(gap_per_electron, density_l1, density_l2_squared, *,
+                        scales, weights=(.5,.25,.25)):
+    """Compose fixed-baseline normalized gap, L1 and squared L2 components.
+
+    Gap and its scale use Ha/electron; density errors/scales are dimensionless.
+    Dataset aggregation and baseline subtraction belong to the caller. This
+    pure algebra performs no inversion, SCF, spectral solve or grid evaluation.
+    """
+    if (len(scales)!=3 or len(weights)!=3 or
+            any(not isfinite(float(s)) or s<=0 for s in scales) or
+            any(not isfinite(float(w)) or w<0 for w in weights) or sum(weights)<=0):
+        raise ValueError('Require three positive scales and nonnegative finite weights')
+    components=(gap_per_electron,density_l1,density_l2_squared)
+    return sum(w*jnp.asarray(value)/s for value,s,w in zip(components,scales,weights))
+
+
 def potential_error(predicted, target, weights, *, metric='grid_l2', density=None, gauge='fixed'):
     """Real local-potential metrics, keeping every spin/Pauli component.
 

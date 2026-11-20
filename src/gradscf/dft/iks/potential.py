@@ -1,6 +1,7 @@
 """Local multiplicative potential maps over the existing checkpointed AO grid."""
 from dataclasses import dataclass, replace
 from numbers import Integral
+from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
@@ -9,6 +10,82 @@ import numpy as np
 from gradscf._memory import DEFAULT_MAX_MEMORY_MB, array_device, tree_storage_bytes, validate_memory_mb, workspace_bytes
 from gradscf.integrals.grids.blocks import ao_point_bytes
 from .types import CHANNELS, _check, _components, _layout
+
+
+@jax.jit
+def _sampled_potential_program(grid, values):
+    from gradscf.scf.differentiable import _build_vxc_matrix_from_components
+    view = SimpleNamespace(grid_ao=grid)
+    def project(field):
+        zero = jnp.zeros_like(field)
+        # LDA selects the scalar multiplication channel of the common AO
+        # assembler. The supplied field may itself depend on density gradients.
+        return _build_vxc_matrix_from_components(molecule=view, weights=grid.weights,
+            v_rho=field, v_grad=jnp.zeros(field.shape+(3,), dtype=field.dtype),
+            v_tau=zero, v_lapl=zero, xc_kind='LDA')
+    return jax.vmap(project, in_axes=1)(values)
+
+
+def _plan_potential_projection(grid,values,max_memory):
+    dtype = np.dtype(jnp.result_type(values,grid.exponents,grid.coefficients,
+                                     grid.coords,grid.centers,grid.weights))
+    n, channels = grid.nao, values.shape[1]
+    resident = tree_storage_bytes(grid, values)+8*channels*n*n*dtype.itemsize
+    available = workspace_bytes(max_memory, resident_bytes=resident,
+                                device=array_device(values, grid.exponents))
+    per_point = ao_point_bytes(grid, deriv=0)+dtype.itemsize*(channels+2*channels*n+4)
+    width = min(grid.block_size, available//per_point)
+    if width < 1: raise ValueError('Potential memory budget cannot hold one quadrature point')
+    return replace(grid,block_size=int(width)),dtype
+
+
+def project_potential(grid, values, *, max_memory=DEFAULT_MAX_MEMORY_MB):
+    """Project real sampled local fields through the shared bounded AO map.
+
+    values has shape (ngrids,) or (ngrids,nfield), in Ha. Return one AO matrix
+    or a leading stack of independent matrices. Only AO values are needed;
+    field/basis/geometry JVPs and VJPs remain available. No energy is inferred.
+    """
+    values = jnp.asarray(values)
+    scalar = values.ndim == 1
+    if scalar: values = values[:, None]
+    if (values.ndim != 2 or values.shape[0] != grid.ngrids or not values.shape[1]
+            or jnp.iscomplexobj(values)):
+        raise ValueError('Potential values require real (ngrids,) or (ngrids,nfield) arrays')
+    values = jnp.where(grid.weights[:, None] != 0, values, 0.)
+    valid = jnp.all(jnp.isfinite(values))
+    _check(valid, 'Potential values must be finite on active grid points')
+    values = values*jnp.where(valid, 1., jnp.nan)
+    grid,dtype = _plan_potential_projection(grid,values,max_memory)
+    result = _sampled_potential_program(grid, values.astype(dtype))
+    return result[0] if scalar else result
+
+
+@jax.jit
+def _potential_pullback_program(grid,cotangent):
+    values=jnp.zeros((grid.ngrids,cotangent.shape[0]),dtype=cotangent.dtype)
+    def project(v):
+        return _sampled_potential_program(grid,jnp.where(grid.weights[:,None]!=0,v,0.))
+    return jax.vjp(project,values)[1](cotangent)[0]
+
+
+def project_potential_pullback(grid,cotangent,*,max_memory=DEFAULT_MAX_MEMORY_MB):
+    """Physical transpose of sampled-field projection, including grid weights.
+
+    A single AO cotangent (nao,nao) returns (ngrids,); a stack returns
+    (ngrids,nfield). This is AD of the same shared projection, with live basis
+    and geometry dependencies, not a separate integral implementation.
+    """
+    cotangent=jnp.asarray(cotangent);scalar=cotangent.ndim==2
+    if scalar:cotangent=cotangent[None]
+    if (cotangent.ndim!=3 or cotangent.shape[1:]!=(grid.nao,grid.nao)
+            or not cotangent.shape[0] or jnp.iscomplexobj(cotangent)):
+        raise ValueError('Require real AO cotangents (nao,nao) or (nfield,nao,nao)')
+    _check(jnp.all(jnp.isfinite(cotangent)),'Potential cotangents must be finite')
+    values=jnp.zeros((grid.ngrids,cotangent.shape[0]),dtype=cotangent.dtype)
+    grid,dtype=_plan_potential_projection(grid,values,max_memory)
+    result=_potential_pullback_program(grid,cotangent.astype(dtype))
+    return result[:,0] if scalar else result
 
 
 def _ao_products(provider, coordinates):
