@@ -211,23 +211,28 @@ def test_swarm_stores_on_policy_trajectory_and_frozen_policy(tmp_path, frozen):
     assert (segment['policy'] == initial) is frozen
 
 
-def test_old_single_agent_entry_keeps_original_dispatch(monkeypatch):
+@pytest.mark.parametrize('mode', ['standalone_potential', 'open_xc'])
+def test_single_agent_example_selects_the_worker_mode(monkeypatch, mode):
     from pathlib import Path
     import runpy
     import sys
-    import gradscf.model.autoxc.workflows.xc100.distributed as distributed
+    import gradscf.model.autoxc.workflows.xc100.single as single
 
     called = {}
     def design(*args, **kwargs):
         called.update(kwargs)
         return {'records': [], 'incumbent': {'reward': 0.}}
 
-    monkeypatch.setattr(distributed, 'design_campaign', design)
+    monkeypatch.setattr(single, 'design_campaign', design)
     script = Path('examples/iks/xc100_open_xc.py')
-    monkeypatch.setattr(sys, 'argv', [str(script), '--remote', '/sample',
-                                     '--output', '/sample', '--job-id', '1', '--rounds', '2'])
+    argv = [str(script), '--remote', '/sample', '--output', '/sample',
+            '--job-id', '1', '--rounds', '2']
+    if mode == 'open_xc':
+        argv += ['--candidate-mode', mode]
+    monkeypatch.setattr(sys, 'argv', argv)
     runpy.run_path(str(script), run_name='__main__')
-    assert called['rounds'] == 2 and called['candidate_mode'] == 'standalone_potential'
+    assert called['rounds'] == 2 and called['candidate_mode'] == mode
+    assert f'Active XC100 mode: `{mode}`.' in called['brief']
 
 
 def test_swarm_cli_passes_agent_count_and_releases_worker(tmp_path, monkeypatch):

@@ -26,3 +26,28 @@ def test_streaming_uses_cached_loss_and_solved_density_diagnostics():
     assert calls['forward']==1 and calls['diagnostic']==1
     np.testing.assert_allclose(result.parameters['a'],.2,atol=1e-9)
     np.testing.assert_allclose(result.reward,0.,atol=1e-12)
+
+
+def test_reports_reuse_solved_density_for_outer_details():
+    from gradscf.model.autoxc.loop import sample_reports
+
+    calls = []
+
+    class Score:
+        def __init__(self, valid):
+            self.valid = valid
+
+        def __call__(self, parameters):
+            calls.append('forward')
+            return WuYangScore(0., 0., 3., 0., jnp.eye(2), jnp.eye(2), 1., 0., 0., self.valid)
+
+        def sample_details(self, parameters, density):
+            calls.append('details')
+            return {'xc_energy_hartree': -parameters['a']*jnp.trace(density)}
+
+    reports = sample_reports({'ok': Score(True), 'failed': Score(False)},
+                             ('ok', 'failed'), {'a': .5})
+    assert calls == ['forward', 'details', 'forward']
+    assert reports['ok']['xc_energy_hartree'] == -1.
+    assert reports['ok']['reward'] == 3.
+    assert 'xc_energy_hartree' not in reports['failed']

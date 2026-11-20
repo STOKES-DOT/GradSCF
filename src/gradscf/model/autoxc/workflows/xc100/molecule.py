@@ -1,5 +1,6 @@
 """Bind a qualified XC100 archive to shared GradSCF grids, custom_xc and iKS."""
 from dataclasses import dataclass
+from functools import partial
 import hashlib
 import json
 from pathlib import Path
@@ -15,15 +16,60 @@ from gradscf.integrals.basis import basis_from_molecule_spec
 from gradscf.integrals.grids.blocks import AOGrid
 from gradscf.data.molecule import parse_molecule_spec
 from gradscf.scf.molecules import QuadratureGrid
+from gradscf.tools.features import _spin_density_and_gradient, _spin_laplacian
 from .pbe import energy_density
 
 
-ENERGY_INPUTS = frozenset(('n', 'sigma', 's2', 'u', 'pbe_x', 'pbe_c'))
+_Q_NODES, _Q_WEIGHTS = np.polynomial.legendre.leggauss(96)
+_q_nodes = (_Q_NODES + 1) / 2
+_Q_NODES, _Q_WEIGHTS = _q_nodes**3, 1.5*_q_nodes**2*_Q_WEIGHTS
 
 
-def validate_full_energy(candidate):
-    if not candidate.features <= ENERGY_INPUTS or set(candidate.initial) & ENERGY_INPUTS:
-        raise ValueError('Complete XC energy requires declared semilocal inputs')
+def _density_fields(rho, gradient, laplacian, fields, floor):
+    n = jnp.sqrt(rho**2 + floor**2)
+    result = {'n': n}
+    if fields & {'sigma', 'grad', 's', 'u'}:
+        sigma = jnp.sum(gradient**2, axis=-1)
+        s2 = sigma / (4*(3*jnp.pi**2)**(2/3)*n**(8/3))
+        result.update(sigma=sigma, grad=jnp.sqrt(sigma), s=jnp.sqrt(s2), u=s2/(1+s2))
+    if fields & {'lap', 'q', 'z'}:
+        q = laplacian / (4*(3*jnp.pi**2)**(2/3)*n**(5/3))
+        result.update(lap=laplacian, q=q, z=q/jnp.sqrt(1+q*q))
+    return result
+
+
+def q_path_energy_density(candidate, params, rho, gradient, laplacian, floor):
+    """Integrate rho * v_xc[t*rho] on the straight path from zero density."""
+    nodes = jnp.asarray(_Q_NODES, dtype=rho.dtype)
+    weights = jnp.asarray(_Q_WEIGHTS, dtype=rho.dtype)
+
+    def add(index, total):
+        t = nodes[index]
+        fields = _density_fields(t*rho, t*gradient, t*laplacian, candidate.features, floor)
+        return total + weights[index]*candidate.evaluate(params, fields)
+
+    return rho*jax.lax.fori_loop(0, len(_Q_NODES), add, jnp.zeros_like(rho))
+
+
+@partial(jax.jit, static_argnames=('candidate',))
+def _q_path_energy(grid, density, candidate, params, floor):
+    fields = candidate.features
+    needs_laplacian = bool(fields & {'lap', 'q', 'z'})
+    needs_gradient = needs_laplacian or bool(fields & {'sigma', 'grad', 's', 'u'})
+    deriv = 2 if needs_laplacian else int(needs_gradient)
+
+    def add(total, ao, derivative, ao_laplacian, coords, weights):
+        if needs_gradient:
+            rho, gradient = _spin_density_and_gradient(ao, derivative, density)
+        else:
+            rho = jnp.sum(ao*(ao@density.T), axis=1)
+            gradient = jnp.zeros((), dtype=rho.dtype)
+        laplacian = (_spin_laplacian(ao, derivative, ao_laplacian, density)
+                     if needs_laplacian else jnp.zeros((), dtype=rho.dtype))
+        energy = q_path_energy_density(candidate, params, rho, gradient, laplacian, floor)
+        return total + jnp.dot(weights, energy)
+
+    return grid.reduce(add, jnp.zeros((), dtype=density.dtype), deriv=deriv)
 
 
 def file_hash(path):
@@ -88,25 +134,11 @@ class BoundCandidate:
     def diagnose(self, params): return self.case.reporter.score(self.potential(params))
 
 
-@dataclass(frozen=True)
-class BoundEnergy:
-    """Score a complete XC energy through its density derivative."""
-    case: object
-    energy: object
-
-    def __call__(self, params):
-        return self.case.problem.assess(self.energy, params)
-
-    def diagnose_result(self, result):
-        return self.case.reporter.diagnose(result)
-
-
 class XC100Case:
     """Real closed-shell acceptance sample; all archive conventions remain fixed.
 
-    Legacy candidates define affine corrections to PBE. The open binding
-    also supports general local corrections and a complete semilocal energy.
-    A complete energy builds its own XC operator through the custom_xc port.
+    Legacy candidates define affine corrections to PBE. Open bindings also
+    accept general local corrections and complete local XC potentials.
     """
     fields = frozenset(('n', 'sigma', 'grad', 'lap', 's', 'q', 'u', 'z'))
 
@@ -149,18 +181,17 @@ class XC100Case:
         self.timings = {'load_seconds': time.perf_counter()-started}
 
     def inputs(self, physical, fields):
-        n = jnp.sqrt(physical.rho**2+self.floor**2)
-        result = {'n': n, 'weights': physical.weights}
-        if fields & {'sigma', 'grad', 's', 'u'}:
-            sigma = jnp.sum(physical.grad_rho**2, axis=-1)
-            result.update(sigma=sigma, grad=jnp.sqrt(sigma))
-            s2 = sigma/(4*(3*jnp.pi**2)**(2/3)*n**(8/3))
-            result.update(s=jnp.sqrt(s2), u=s2/(1+s2))
-        if fields & {'lap', 'q', 'z'}:
-            lap = physical.laplacian_rho
-            q = lap/(4*(3*jnp.pi**2)**(2/3)*n**(5/3))
-            result.update(lap=lap, q=q, z=q/jnp.sqrt(1+q*q))
-        return result
+        gradient = physical.grad_rho if fields & {'sigma', 'grad', 's', 'u'} else None
+        laplacian = physical.laplacian_rho if fields & {'lap', 'q', 'z'} else None
+        result = _density_fields(physical.rho, gradient, laplacian, fields, self.floor)
+        return dict(result, weights=physical.weights)
+
+    def energy_report(self, candidate, params, density):
+        cartesian = self.transform@density@self.transform.T
+        energy = float(_q_path_energy(self.grid, cartesian, candidate, params, self.floor))
+        if not np.isfinite(energy):
+            raise ValueError(f'Nonfinite Q-path XC energy for {self.system_id}')
+        return {'xc_energy_hartree': energy}
 
     def _energy(self, functional, params, density):
         cartesian = self.transform@density@self.transform.T
@@ -211,7 +242,6 @@ class XC100Case:
                 return jax.grad(lambda d: self._energy(functional, params, d))(self.target.density)
         else:
             density = self.transform@self.target.density@self.transform.T
-            from gradscf.tools.features import _spin_density_and_gradient, _spin_laplacian
             def matrix(params):
                 def add(total, ao, derivative, laplacian, coords, weights):
                     n, gradient = _spin_density_and_gradient(ao, derivative, density)
@@ -228,31 +258,6 @@ class XC100Case:
         return matrix
 
     def bind(self, candidate, *, complete_potential=False):
-        if self.max_parameters is None and candidate.kind == 'energy':
-            validate_full_energy(candidate)
-
-            def inputs(physical):
-                n = jnp.sqrt(physical.rho**2 + self.floor**2)
-                fields = {'n': n, 'weights': physical.weights}
-                if candidate.features - {'n'}:
-                    sigma = jnp.sum(physical.grad_rho**2, axis=-1)
-                    s2 = sigma / (4 * (3 * jnp.pi**2)**(2/3) * n**(8/3))
-                    fields.update(sigma=sigma, s2=s2, u=s2/(1+s2))
-                    if candidate.features & {'pbe_x', 'pbe_c'}:
-                        enhancement = 1 + .804 - .804/(1 + .2195149727645171*s2/.804)
-                        exchange = -.75*(3/jnp.pi)**(1/3)*n**(4/3)*enhancement
-                        fields['pbe_x'] = exchange
-                        fields['pbe_c'] = energy_density(physical.rho, sigma, floor=self.floor) - exchange
-                return fields
-
-            functional = candidate.functional(inputs)
-
-            def energy(params, density):
-                return self._energy(functional, params, density)
-
-            self.timings['cached_affine'] = False
-            return {self.system_id: BoundEnergy(self, energy)}
-
         if self.max_parameters is None:
             from gradscf.model.autoxc.bindings import bind_local_potential
             from .ingredients import features_for_candidate

@@ -69,25 +69,36 @@ def test_matrix_callable_rejects_an_undeclared_feature(small_case):
         small_case.candidate_matrix(Candidate('a*missing', parameters=(Parameter('a', 0., -.2, .2),)))
 
 
-def test_full_energy_reproduces_and_replaces_pbe(small_case):
+def test_full_potential_reconstructs_xc_energy_on_the_solved_density(small_case, tmp_path):
     from gradscf.dft.iks import Target
+    from gradscf.model.autoxc.loop import sample_reports
+    from gradscf.model.autoxc.workflows.xc100.campaign import Campaign
 
     case = small_case
     case.system_id, case.timings, case.max_parameters = 'toy', {}, None
     case.target = Target(case.target.density, jnp.eye(2), 2)
-    case.arrays = {'kinetic': jnp.eye(2), 'nuclear': jnp.diag(jnp.asarray([0., 2.])),
-                   'hartree': jnp.zeros((2, 2))}
-    case.prepare(include_energy=False)
-    pbe = case.bind(Candidate('pbe_x + pbe_c', kind='energy'))['toy']
-    zero = case.bind(Candidate('0*n', kind='energy'))['toy']
-    np.testing.assert_allclose(pbe({}).reward, 0., atol=1e-10)
-    np.testing.assert_allclose(zero({}).fock, case.problem.base_fock, atol=1e-12)
-    assert case.baseline_energy is None and bool(pbe({}).valid) and bool(zero({}).valid)
+    ao, _, _, _, weights = case.grid.block(0, 5)
 
-    edited = case.bind(Candidate('pbe_x * exp(a*u) + pbe_c',
-                                 parameters=(Parameter('a', 0., -.5, .5),),
-                                 kind='energy'))['toy']
-    score = lambda a: edited({'a': a}).reward
-    step = 1e-4
-    np.testing.assert_allclose(jax.grad(score)(.1), (score(.1+step)-score(.1-step))/(2*step),
-                               atol=1e-8, rtol=1e-5)
+    def density_grid(density):
+        return jnp.einsum('gi,ij,gj->g', ao, density, ao)
+
+    case.arrays = {'kinetic': jnp.eye(2), 'nuclear': jnp.diag(jnp.asarray([0., 2.])),
+                   'hartree': jnp.zeros((2, 2)), 'rho': density_grid(case.target.density),
+                   'grad_rho': jnp.zeros((5, 3)), 'laplacian_rho': jnp.zeros(5),
+                   'grid_weights': weights}
+    case.prepare(include_energy=False)
+    campaign = Campaign(tmp_path, candidate_mode='open_xc')
+    campaign.cases[case.system_id] = case
+    candidate = Candidate('a*n', parameters=(Parameter('a', .3, -.7, .7),))
+    callbacks = campaign.bind(candidate)
+    bound = callbacks['toy']
+    energy = lambda d: .5*.3*jnp.dot(weights, density_grid(d)**2)
+    np.testing.assert_allclose(bound.potential(candidate.initial),
+                               jax.grad(energy)(case.target.density), atol=1e-12)
+    solved = bound(candidate.initial)
+    expected = energy(solved.density)
+    assert not np.isclose(expected, energy(case.target.density))
+    sample = sample_reports(callbacks, ('toy',), candidate.initial)['toy']
+    assert sample['valid']
+    np.testing.assert_allclose(sample['xc_energy_hartree'], expected, atol=1e-12)
+    np.testing.assert_allclose(sample['reward'], solved.reward, atol=1e-12)
