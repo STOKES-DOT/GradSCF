@@ -61,6 +61,9 @@
   联合训练是显式选择的不同工作流，整理目录不改变它们的数学行为。
 - Neural D：`gradscf.model.neural_d` 提供色散模型和泛函组合；目前没有独立
   Trainer，未添加空训练框架。未来专用训练代码归入其自身模块。
+- AutoXC 在 `gradscf.model.autoxc` 提供解析势、AD 拟合和候选评估，
+  `autoxc.swarm` 管六基因搜索，`autoxc.workflows.xc100` 管 XC100 实验。
+  运行入口与模块边界见 [AutoXC 指南](autoxc/README.md#xc100-experiment-and-swarm)。
 - 通用标量能量的力和混合导数辅助函数位于 `gradscf.scf.forces`。
 
 ## 命名迁移
@@ -68,3 +71,6 @@
 `gradscf.training` → `gradscf.model.neural_xc.training`；
 `gradscf.workflows` → `gradscf.model.neural_xc.workflows`。
 旧顶层入口已撤下，项目内调用点同时更新，不维护转发包。
+
+AutoXC 的 XC100 实验实现已迁至 `gradscf.model.autoxc.workflows.xc100`。
+已保存的运行可使用各自冻结的源码快照复现。

@@ -18,6 +18,14 @@ from gradscf.scf.molecules import QuadratureGrid
 from .pbe import energy_density
 
 
+ENERGY_INPUTS = frozenset(('n', 'sigma', 's2', 'u', 'pbe_x', 'pbe_c'))
+
+
+def validate_full_energy(candidate):
+    if not candidate.features <= ENERGY_INPUTS or set(candidate.initial) & ENERGY_INPUTS:
+        raise ValueError('Complete XC energy requires declared semilocal inputs')
+
+
 def file_hash(path):
     digest = hashlib.sha256()
     with Path(path).open('rb') as handle:
@@ -25,10 +33,16 @@ def file_hash(path):
     return digest.hexdigest()
 
 
+@jax.tree_util.register_pytree_node_class
 @dataclass(frozen=True)
 class SphericalGrid:
     cartesian: object
     transform: object
+
+    def tree_flatten(self): return (self.cartesian,self.transform),None
+
+    @classmethod
+    def tree_unflatten(cls, metadata, children): return cls(*children)
 
     @property
     def nao(self): return self.transform.shape[1]
@@ -74,22 +88,40 @@ class BoundCandidate:
     def diagnose(self, params): return self.case.reporter.score(self.potential(params))
 
 
+@dataclass(frozen=True)
+class BoundEnergy:
+    """Score a complete XC energy through its density derivative."""
+    case: object
+    energy: object
+
+    def __call__(self, params):
+        return self.case.problem.assess(self.energy, params)
+
+    def diagnose_result(self, result):
+        return self.case.reporter.diagnose(result)
+
+
 class XC100Case:
     """Real closed-shell acceptance sample; all archive conventions remain fixed.
 
-    Candidate formulas define a CORRECTION to PBE. For this inexpensive pilot,
-    parameters must enter affinely; AO directions are constructed once with AD.
-    The custom_xc energy input remains an external model definition. No SCF,
-    re-inversion, grid reduction or Cartesian orbital-space enlargement occurs.
+    Legacy candidates define affine corrections to PBE. The open binding
+    also supports general local corrections and a complete semilocal energy.
+    A complete energy builds its own XC operator through the custom_xc port.
     """
     fields = frozenset(('n', 'sigma', 'grad', 'lap', 's', 'q', 'u', 'z'))
 
-    def __init__(self, root, system_id='010', *, floor=1e-12, block_size=256):
+    def __init__(self, root, system_id='010', *, floor=1e-12, block_size=256, max_parameters=4,
+                 occupation_tolerance=1e-8):
         started = time.perf_counter()
         self.root, self.system_id = Path(root), str(system_id).zfill(3)
         self.floor, self.block_size = floor, block_size
+        if max_parameters is not None and (not isinstance(max_parameters,int) or max_parameters<1):
+            raise ValueError('max_parameters must be positive or None for an open model')
+        self.max_parameters = max_parameters
+        self.occupation_tolerance = occupation_tolerance
         folder = self.root/self.system_id
         self.metadata = json.loads((folder/'metadata.json').read_text())
+        self.metadata_hash = file_hash(folder/'metadata.json')
         if self.metadata['spin'] != 0 or self.metadata['status'] != 'passed':
             raise ValueError('Require a qualified closed-shell archive')
         self.archive_hash = file_hash(folder/'density.npz')
@@ -112,7 +144,8 @@ class XC100Case:
         self.transform = jnp.asarray(a['spherical_to_cartesian'])
         if self.transform.shape != (self.grid.nao, a['density'].shape[0]):
             raise ValueError('Saved angular embedding and reconstructed AO basis differ')
-        self.target = iks.Target(a['density'], a['overlap'], self.metadata['nelec'])
+        self.target = iks.Target(a['density'], a['overlap'], self.metadata['nelec'],
+                                 occupation_tolerance=occupation_tolerance)
         self.timings = {'load_seconds': time.perf_counter()-started}
 
     def inputs(self, physical, fields):
@@ -133,7 +166,7 @@ class XC100Case:
         cartesian = self.transform@density@self.transform.T
         return functional.energy_for_density(params, self.context, cartesian)
 
-    def prepare(self):
+    def prepare(self, *, baseline=None, include_energy=True):
         started = time.perf_counter()
         def pbe_inputs(physical):
             return {'n': physical.rho, 'sigma': jnp.sum(physical.grad_rho**2, axis=-1),
@@ -141,11 +174,23 @@ class XC100Case:
         self.baseline_functional = dft.custom_xc(input_fn=pbe_inputs,
             energy_fn=lambda p, x: jnp.sum(x['weights']*energy_density(x['n'], x['sigma'], floor=self.floor)),
             name='external_pbe_reference')
-        evaluate = jax.jit(jax.value_and_grad(lambda d: self._energy(self.baseline_functional, None, d)))
-        energy, self.vxc = evaluate(self.target.density)
+        if baseline is None:
+            def evaluate(density):
+                return self._energy(self.baseline_functional, None, density)
+
+            if include_energy:
+                energy, self.vxc = jax.jit(jax.value_and_grad(evaluate))(self.target.density)
+            else:
+                energy = None
+                self.vxc = jax.jit(jax.grad(evaluate))(self.target.density)
+        else:
+            energy, potential = baseline
+            self.vxc = jnp.asarray(potential)
+            if self.vxc.shape != self.target.density.shape:
+                raise ValueError('Cached baseline shape differs from the target')
         self.vxc.block_until_ready()
-        self.baseline_energy = float(energy)
-        if not np.isfinite(self.vxc).all() or not np.isfinite(self.baseline_energy):
+        self.baseline_energy = None if energy is None else float(energy)
+        if not np.isfinite(self.vxc).all() or (energy is not None and not np.isfinite(self.baseline_energy)):
             raise ValueError('PBE baseline is nonfinite')
         self.timings['baseline_ad_seconds'] = time.perf_counter()-started
         a = self.arrays
@@ -155,13 +200,11 @@ class XC100Case:
             grid=SphericalGrid(self.grid, self.transform))
         return self
 
-    def bind(self, candidate):
-        if (not candidate.affine or len(candidate.parameters) > 2 or
+    def candidate_matrix(self, candidate):
+        """Return the existing uncompiled AO map for separate compile/run timing."""
+        if (not candidate.affine or (self.max_parameters is not None and len(candidate.parameters) > self.max_parameters) or
                 not candidate.features <= self.fields or set(candidate.initial) & self.fields):
-            raise ValueError('This pilot requires an affine correction with <=2 coefficients and declared density features')
-        started = time.perf_counter()
-        names = [p.name for p in candidate.parameters]
-        zeros = {name: jnp.asarray(0.) for name in names}
+            raise ValueError(f'This pilot requires an affine correction with <={self.max_parameters} coefficients and declared density features')
         if candidate.kind == 'energy':
             functional = candidate.functional(lambda p: self.inputs(p, candidate.features))
             def matrix(params):
@@ -182,6 +225,50 @@ class XC100Case:
                     return total+jnp.einsum('g,gi,gj->ij', weights*values, ao, ao)
                 cartesian = self.grid.reduce(add, jnp.zeros((self.grid.nao,)*2), deriv=2)
                 return self.transform.T@cartesian@self.transform
+        return matrix
+
+    def bind(self, candidate, *, complete_potential=False):
+        if self.max_parameters is None and candidate.kind == 'energy':
+            validate_full_energy(candidate)
+
+            def inputs(physical):
+                n = jnp.sqrt(physical.rho**2 + self.floor**2)
+                fields = {'n': n, 'weights': physical.weights}
+                if candidate.features - {'n'}:
+                    sigma = jnp.sum(physical.grad_rho**2, axis=-1)
+                    s2 = sigma / (4 * (3 * jnp.pi**2)**(2/3) * n**(8/3))
+                    fields.update(sigma=sigma, s2=s2, u=s2/(1+s2))
+                    if candidate.features & {'pbe_x', 'pbe_c'}:
+                        enhancement = 1 + .804 - .804/(1 + .2195149727645171*s2/.804)
+                        exchange = -.75*(3/jnp.pi)**(1/3)*n**(4/3)*enhancement
+                        fields['pbe_x'] = exchange
+                        fields['pbe_c'] = energy_density(physical.rho, sigma, floor=self.floor) - exchange
+                return fields
+
+            functional = candidate.functional(inputs)
+
+            def energy(params, density):
+                return self._energy(functional, params, density)
+
+            self.timings['cached_affine'] = False
+            return {self.system_id: BoundEnergy(self, energy)}
+
+        if self.max_parameters is None:
+            from gradscf.model.autoxc.bindings import bind_local_potential
+            from .ingredients import features_for_candidate
+            baseline = jnp.zeros_like(self.vxc) if complete_potential else self.vxc
+            bound=bind_local_potential(self.problem,self.grid,candidate,
+                features_for_candidate(self,candidate.features),baseline=baseline,
+                reporter=self.reporter,transform=self.transform,max_memory=8000.)
+            self.timings['cached_affine']=bound.cached_affine
+            return {self.system_id:bound}
+        from .direct import GGA_FIELDS, bind_potential
+        if candidate.kind=='potential' and candidate.features<=GGA_FIELDS:
+            return bind_potential(self,candidate)
+        started = time.perf_counter()
+        matrix = self.candidate_matrix(candidate)
+        names = [p.name for p in candidate.parameters]
+        zeros = {name: jnp.asarray(0.) for name in names}
         offset = jax.jit(matrix)(zeros)
         directions = jax.jit(jax.jacfwd(matrix))(zeros) if names else {}
         offset.block_until_ready()
@@ -192,8 +279,12 @@ class XC100Case:
 
     @property
     def fingerprint(self):
-        files = [Path(__file__), Path(__file__).with_name('pbe.py')]
-        record = {'archive': self.archive_hash, 'basis': self.metadata['canonical_basis_sha256'],
+        files = [Path(__file__).with_name(name) for name in
+                 ('molecule.py','pbe.py','checks.py','direct.py','reference.py')]
+        if self.max_parameters is None:files.append(Path(__file__).with_name('ingredients.py'))
+        record = {'archive': self.archive_hash, 'metadata': self.metadata_hash,
+            'basis': self.metadata['canonical_basis_sha256'], 'max_parameters': self.max_parameters,
+            'occupation_tolerance': self.occupation_tolerance,
             'floor': self.floor, 'block_size': self.block_size, 'baseline': 'PBE+PW92-external',
             'helpers': {p.name: file_hash(p) for p in files}}
         return hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()

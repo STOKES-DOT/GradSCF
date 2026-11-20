@@ -47,6 +47,22 @@ def test_codex_resumes_an_explicit_saved_thread(monkeypatch, tmp_path):
     assert seen == ['saved']
 
 
+def test_designer_can_require_potential_only_without_mutating_default_schema(monkeypatch,tmp_path):
+    from gradscf.model.autoxc import CodexDesigner
+    from gradscf.model.autoxc.candidate import PROPOSAL_SCHEMA
+    seen=[]
+    def run(*args,**kwargs):
+        seen.append(kwargs['output_schema'])
+        return SimpleNamespace(final_response='{}')
+    sdk=SimpleNamespace(Codex=lambda config:SimpleNamespace(
+        thread_start=lambda **kwargs:SimpleNamespace(id='potential',run=run),close=lambda:None),
+        CodexConfig=lambda **kwargs:kwargs,Sandbox=SimpleNamespace(read_only='read-only'))
+    monkeypatch.setitem(sys.modules,'openai_codex',sdk)
+    with CodexDesigner(cwd=tmp_path,kind='potential') as designer:designer.propose({})
+    assert seen[0]['properties']['kind']['enum']==['potential']
+    assert PROPOSAL_SCHEMA['properties']['kind']['enum']==['energy','potential']
+
+
 def test_codex_timeout_closes_the_runtime_without_signals(monkeypatch, tmp_path):
     import threading
     from gradscf.model.autoxc import CodexDesigner
@@ -63,3 +79,17 @@ def test_codex_timeout_closes_the_runtime_without_signals(monkeypatch, tmp_path)
         with pytest.raises(TimeoutError):
             designer.propose({'context': 'timeout'})
         assert designer.session_id == 'timed'
+
+
+def test_sdk_schema_requires_the_definitions_array_without_changing_parser_optional_fields(monkeypatch,tmp_path):
+    from gradscf.model.autoxc import CodexDesigner
+    from gradscf.model.autoxc.candidate import PROPOSAL_SCHEMA
+    seen=[]
+    sdk=SimpleNamespace(Codex=lambda config:SimpleNamespace(
+        thread_start=lambda **kwargs:SimpleNamespace(id='open',run=lambda *a,**kw:
+            (seen.append(kw['output_schema']) or SimpleNamespace(final_response='{}'))),close=lambda:None),
+        CodexConfig=lambda **kwargs:kwargs,Sandbox=SimpleNamespace(read_only='read-only'))
+    monkeypatch.setitem(sys.modules,'openai_codex',sdk)
+    with CodexDesigner(cwd=tmp_path,kind='potential') as designer:designer.propose({})
+    assert 'definitions' in seen[0]['required']
+    assert 'definitions' not in PROPOSAL_SCHEMA['required']

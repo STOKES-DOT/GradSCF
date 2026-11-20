@@ -1,17 +1,59 @@
 # Analytic XC design with a fixed Python evaluator
 
 The Python controller owns the experiment. An optional Codex thread proposes a
-formula; GradSCF evaluates it; the controller records the result and feeds back
-aggregate diagnostics. No provider RPC implementation, handwritten PBE,
-independent eigensolver or dataset-specific workflow is copied into this package.
+formula, GradSCF evaluates it, and the controller records the result and feeds
+back aggregate diagnostics. The core uses the Codex SDK and GradSCF's shared
+XC and iKS implementations.
 
 | Module | Responsibility |
 | --- | --- |
 | `candidate.py` | Immutable formula/parameter contract, safe arithmetic parser, JSON schema and digest |
 | `codex.py` | Optional official `openai_codex` thread, structured replies, resume and transport timeout |
 | `loop.py` | Shared AD parameter fitting, fixed-batch evaluation, acceptance and feedback |
+| `bindings.py` | Grid evaluation and AO projection of local model potentials, including parameter pullbacks |
+| `selection.py` | Wu–Yang-first incumbent selection and density diagnostics |
 | `history.py` | Source/configuration fingerprint, append-only records and atomic proposal checkpoints |
 | `dft/iks/wu_yang.py` | Physical fixed-target score and shared occupied-subspace response |
+
+## XC100 experiment and Swarm
+
+```mermaid
+flowchart TD
+    CLI["Single-agent or Swarm entry point"] --> Search["Single-agent loop or six-gene search"]
+    Search --> Design["CodexDesigner and proposal schema"]
+    Search --> Queue["Swarm agent admission and evaluation queues"]
+    Search --> Mailbox["RemoteEvaluator"]
+    Queue --> Mailbox
+    Mailbox --> Worker["XC100 worker, grid inputs, and CPU/GPU shards"]
+    Worker --> Fit["Evaluator: joint AD fit of the complete potential"]
+    Fit --> Score["WuYang: iKS score and density diagnostics"]
+```
+
+The dataset-specific worker lives in [`workflows/xc100/`](workflows/xc100).
+Its `campaign.py` handles the experiment and fit, `molecule.py` and
+`ingredients.py` bind XC100 data and features, and `parallel.py` and
+`schedule.py` manage the Slurm affinity masks and persistent shards.
+`distributed.py` exchanges candidates and results with the worker.
+
+The [`swarm/`](swarm) subpackage owns the six-gene representation and crossover
+(`genome.py`), generation coordination and independent lineages
+(`search.py`), mutation policy (`ppo.py`), and FIFO scheduling (`queues.py`).
+An agent holds one seat through a complete segment. The first ready
+candidate runs on the shared numerical pool. Agent queue time, numerical
+queue time, and worker-reported evaluation time are recorded separately.
+The CPU allocation charge multiplies the worker-reported time by the pool's
+thread count.
+
+Run `python -m gradscf.model.autoxc.workflows.xc100.swarm` for agent count,
+active segments, GA, and PPO. The single-agent workflow runs through
+`python -m gradscf.model.autoxc.workflows.xc100.single`. Shared XC100 prompts
+and the worker configuration ship with the workflow package. Use
+[`swarm_campaign.json`](workflows/xc100/swarm_campaign.json) as the worker's
+`campaign.json` to set `unbounded_waits=true` and `max_seconds=null`.
+Swarm waits for completion or an explicit failure. Slurm resource limits
+and SSH connection recovery still apply. The scripts
+`examples/iks/xc100_swarm.py` and `examples/iks/xc100_open_xc.py` call
+these workflow entry points.
 
 ## Physical evaluation
 
@@ -49,6 +91,14 @@ Python/JSON conversion happens only at the reporting boundary. An invalid
 candidate has `valid=False` and NaN reward. Optional relative grid density error
 is reported independently; unrequested error is NaN, not a measured zero.
 
+Grid diagnostics now include `density_l1 = integral |delta rho| / integral
+|rho_target|` and `density_error = sqrt(integral delta rho^2 / integral
+rho_target^2)`. Both use one blocked AO pass and the already-solved density.
+`WuYangScore.reward` remains the raw physical Wu–Yang improvement. Workflows
+may compose a separate outer reward through `iks.objectives.wu_yang_density_loss`
+using explicit frozen normalization scales and weights; they must preserve
+the raw metrics and identify the inner objective separately.
+
 For an external local field, `problem.local(field_fn, params)` reuses the existing
 blocked `iks.Potential`. The callback receives parameters and coordinates and
 returns `(points,)` RKS or `(2,points)` UKS potential values. Its external input
@@ -84,8 +134,29 @@ units, domain and any smooth vacuum treatment belong to the declared input/model
 
 The parser permits scalar arithmetic, bounded literal powers and a small set of
 JAX math functions. It rejects Python execution, attributes, indexing and imports.
-Formulas are limited to 120 nodes, depth 12 and four bounded fitted parameters.
-These are pilot limits, not claims about the best functional family.
+Formulas and optional ordered `definitions=[{name, expression}, ...]` share a
+16000-character/2048-node budget, with depth64 per expression. Definitions may
+refer only to preceding definitions. There is no fixed term or parameter-count
+limit. Dynamic exponents and nonlinear parameters are supported; fixed literal
+exponent magnitude is bounded by eight. Unsafe Python syntax remains rejected.
+
+`bind_local_potential(problem, grid, candidate, sampled_inputs, ...)` binds
+arbitrary scalar physical inputs to a local potential. It reuses the core AO
+projection and its physical transpose. Affine candidates cache integral panels
+only when the raw AO/dtype budget permits; others recompute sampled fields and
+use staged pointwise/physical VJPs. Model parameters are dynamic inputs, not a
+reason to recompile each optimizer step. Optional `transform` transports grid
+AOs to the target AO representation. This prepared analytic binder is real
+RKS; RKS/UKS callable/neural local fields continue to use `WuYang.local` and
+may have arbitrary parameter PyTrees.
+
+Shared `iks.prepare_orbital_reference` and `iks.orbital_grid_features` provide
+real RKS/UKS occupied density, tau and smooth energy-filtered virtual densities.
+Reference preparation is explicitly frozen/offline and rejects traced Fock
+inputs. Supplied coefficient/energy/grid leaves retain feature derivatives.
+No full grid-by-orbital cache is constructed; phase/permutation and equal-energy,
+equal-occupation rotations preserve the scalar descriptors. A live
+candidate-dependent reference requires a separately defined response contract.
 
 ## Deterministic evaluator and loop
 
@@ -95,6 +166,15 @@ with JAX value/grad and the shared bounded `minimize_eager` solver. Any invalid
 sample invalidates the whole candidate; no failed molecule is omitted to improve
 the mean reward. Failed fits never become negative-infinity optimization targets.
 An optimizer iteration limit is retained in the fit report, not called convergence.
+Set `gradient_only=True` to disable objective-change convergence and certify
+the projected-gradient infinity norm at the returned parameters. With bounds,
+this is `max(abs(x - clip(x-gradient, lower, upper)))`; the raw gradient is also
+recorded. `require_convergence=True` makes an unresolved fit invalid. The
+iteration limit remains a resource guard, and neither flag changes the defaults
+of existing callers.
+An optional `max_seconds` checks the elapsed fitting budget at optimizer
+evaluation boundaries; exhaustion is invalid, not convergence. Opaque kernels
+cannot be interrupted by that Python check.
 An optional `score_fn.diagnose(params)` runs expensive grid diagnostics once
 after fitting. Its W/DeltaW/reward must agree with the matrix score, and its
 validity also gates the final candidate. The fit never repeats that grid pass.
@@ -111,6 +191,12 @@ batch, supporting training-reward selection as well. Sealed tests must remain
 outside this evaluator and all proposal feedback. After freezing the winner,
 the caller may evaluate it once on a separate held-out batch without refitting.
 No split or fixed list of molecules is embedded in the library.
+
+For strict iKS use the raw WY reward in both fitting and formula selection.
+Optional `WYSelection(density_scales=(mean_PBE_L1, mean_PBE_L2_squared))` accepts
+clear WY improvements first; within its tolerance, density can break a tie only
+without decreasing WY. `run(..., selection=policy)` records the policy and
+secondary state for deterministic resume. An energy label is not required.
 
 `fingerprint` must identify the dataset/target, AO and grid conventions, callback
 code, baseline, score scales and physical gates. The controller additionally
