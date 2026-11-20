@@ -8,7 +8,7 @@ import numpy as np
 
 
 def test_handwritten_pbe_energy_and_density_derivative():
-    from gradscf_tools.xc_design.pbe import energy_density
+    from gradscf.model.autoxc.workflows.xc100.pbe import energy_density
     table = json.loads((Path(__file__).parent/'fixtures/pbe_reference_table.json').read_text())
     for row in table['points']:
         n, sigma = row['density'], row['sigma']
@@ -19,7 +19,7 @@ def test_handwritten_pbe_energy_and_density_derivative():
 
 
 def test_handwritten_pbe_gradient_terms_and_low_density_are_finite():
-    from gradscf_tools.xc_design.pbe import energy_density
+    from gradscf.model.autoxc.workflows.xc100.pbe import energy_density
     table = json.loads((Path(__file__).parent/'fixtures/pbe_reference_table.json').read_text())
     for row in table['points']:
         if row['de_dsigma'] is not None:

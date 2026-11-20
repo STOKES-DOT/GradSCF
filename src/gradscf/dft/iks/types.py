@@ -1,6 +1,7 @@
 """Physical density targets with explicit spatial or spinor AO conventions."""
 from dataclasses import dataclass
 from numbers import Integral
+from math import isfinite
 
 import jax
 import jax.numpy as jnp
@@ -52,9 +53,12 @@ class Target:
     nelec: object
     layout: str = 'rks'
     energy: object = None
+    occupation_tolerance: float = 1e-9
 
     def __post_init__(self):
         _layout(self.layout)
+        if not isfinite(self.occupation_tolerance) or self.occupation_tolerance < 0:
+            raise ValueError('Occupation uncertainty must be finite and nonnegative')
         density, overlap = jnp.asarray(self.density), jnp.asarray(self.overlap)
         if not jnp.issubdtype(density.dtype, jnp.inexact): density = density.astype(float)
         if not jnp.issubdtype(overlap.dtype, jnp.inexact): overlap = overlap.astype(float)
@@ -76,14 +80,14 @@ class Target:
         _check(self.valid, 'Invalid target: check finite Hermitian density/overlap, occupations, electron count and energy')
 
     def tree_flatten(self):
-        return (self.density, self.overlap, self.energy), (self.nelec, self.layout)
+        return (self.density, self.overlap, self.energy), (self.nelec, self.layout, self.occupation_tolerance)
 
     @classmethod
     def tree_unflatten(cls, metadata, children):
         # PyTree reconstruction can use abstract placeholders; validate data at
         # construction and through valid, rather than in tree transformations.
         obj = object.__new__(cls)
-        for name, value in zip(('density', 'overlap', 'energy', 'nelec', 'layout'),
+        for name, value in zip(('density', 'overlap', 'energy', 'nelec', 'layout', 'occupation_tolerance'),
                                (*children, *metadata)):
             object.__setattr__(obj, name, value)
         return obj
@@ -110,7 +114,8 @@ class Target:
         root = jnp.linalg.cholesky(s)
         if self.layout == 'gks': root = jnp.kron(jnp.eye(2, dtype=s.dtype), root)
         occupations = jnp.linalg.eigvalsh(adjoint(root) @ d @ root)
-        good &= jnp.all((occupations >= -tolerance) & (occupations <= (2 if self.layout == 'rks' else 1)+tolerance))
+        occupation_limit = jnp.maximum(tolerance, self.occupation_tolerance)
+        good &= jnp.all((occupations >= -occupation_limit) & (occupations <= (2 if self.layout == 'rks' else 1)+occupation_limit))
         good &= jnp.all(jnp.abs(self.electron_numbers-jnp.atleast_1d(jnp.asarray(self.nelec))) <= tolerance)
         if self.energy is not None: good &= jnp.isfinite(self.energy)
         return good

@@ -18,6 +18,19 @@ def json_value(value):
     raise TypeError(f'Unsupported record type {type(value).__name__}')
 
 
+def write_json(path, value, *, sort_keys=False):
+    """Atomically publish a JSON record next to its temporary file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix+'.tmp')
+    with temporary.open('w') as handle:
+        json.dump(json_value(value), handle, sort_keys=sort_keys, indent=2, allow_nan=False)
+        handle.write('\n')
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(path)
+
+
 def source_digest():
     root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha256()
@@ -60,14 +73,7 @@ class History:
             raise ValueError('Run configuration/fingerprint changed; use a new directory')
 
     def write(self, name, value):
-        path = self.directory/name
-        temporary = path.with_suffix(path.suffix+'.tmp')
-        with temporary.open('w') as handle:
-            json.dump(json_value(value), handle, sort_keys=True, indent=2, allow_nan=False)
-            handle.write('\n')
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
+        write_json(self.directory/name, value, sort_keys=True)
 
     def append(self, record):
         record = json_value(record)

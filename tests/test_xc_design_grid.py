@@ -7,7 +7,7 @@ from gradscf.integrals.grids.blocks import AOGrid
 
 
 def test_projected_grid_density_matches_the_cartesian_embedding():
-    from gradscf_tools.xc_design.molecule import SphericalGrid
+    from gradscf.model.autoxc.workflows.xc100.molecule import SphericalGrid
     grid = AOGrid(jnp.array([[.1*i, .2, .07*i] for i in range(7)]),
         jnp.linspace(.1, .3, 7), jnp.array([[0., 0., 0.], [.5, 0., .1]]),
         jnp.array([[.7], [1.1]]), jnp.ones((2, 1)), (1, 1), ((0, 0, 0),)*2, 3)

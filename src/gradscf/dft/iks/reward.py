@@ -32,7 +32,7 @@ class Reward(NamedTuple):
     valid: object
 
 
-def _aufbau(fock, nocc, gap_tolerance):
+def _aufbau(fock, nocc, gap_tolerance, *, return_energy=False):
     """Use the shared isolated-subspace response, including complex spinors.
 
     Realification doubles a complex Hermitian problem and its occupied rank.
@@ -40,9 +40,11 @@ def _aufbau(fock, nocc, gap_tolerance):
     """
     n = fock.shape[0]
     if nocc == 0:
-        return jnp.zeros_like(fock), jnp.asarray(jnp.inf), jnp.asarray(True)
+        result = (jnp.zeros_like(fock), jnp.asarray(jnp.inf), jnp.asarray(True))
+        return (*result, jnp.asarray(0., dtype=fock.real.dtype)) if return_energy else result
     if nocc == n:
-        return jnp.eye(n, dtype=fock.dtype), jnp.asarray(jnp.inf), jnp.asarray(True)
+        result = (jnp.eye(n, dtype=fock.dtype), jnp.asarray(jnp.inf), jnp.asarray(True))
+        return (*result, jnp.trace(fock).real) if return_energy else result
     complex_problem = jnp.iscomplexobj(fock)
     matrix = (jnp.block([[fock.real, -fock.imag], [fock.imag, fock.real]])
               if complex_problem else fock)
@@ -54,7 +56,9 @@ def _aufbau(fock, nocc, gap_tolerance):
     projector = result.projection
     if complex_problem:
         projector = projector[:n, :n]+1j*projector[n:, :n]
-    return projector, result.boundary_gap, result.response_valid
+    physical = (projector, result.boundary_gap, result.response_valid)
+    energy = result.eigenvalue_sum/(2 if complex_problem else 1)
+    return (*physical, energy) if return_energy else physical
 
 
 def reward(reference, energy_fn, params=None, *, grid, energy_scale=.01,

@@ -84,7 +84,7 @@ __all__ = ['EagerIterationResult', 'iterate_eager']
 
 
 def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1e-8,
-                   callback=None, hessian=None, bounds=None):
+                   callback=None, hessian=None, bounds=None, gradient_only=False):
     """Checked L-BFGS with optional AD-Jacobian stationarity refinement; no inverse-map AD/JIT contract.
 
     The callback returns a scalar and its real vector gradient. Keep physical
@@ -92,6 +92,9 @@ def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1
     host optimization and rejects invalid objective/gradient evaluations.
     Optional finite bounds must contain the initial point. Stationarity
     refinement is unconstrained and therefore cannot be combined with bounds.
+    gradient_only disables the objective-change tolerance and certifies success
+    only by the infinity norm of x-clip(x-gradient,bounds). Iteration and line
+    search limits remain failure guards. Raw and projected gradients are kept.
     """
     import numpy as np
     from scipy.optimize import minimize, root
@@ -103,6 +106,8 @@ def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1
         raise ValueError('Use a finite real vector as the initial state')
     if not isinstance(maxiter, int) or maxiter < 1 or not isfinite(gradient_tolerance) or gradient_tolerance <= 0:
         raise ValueError('Positive maxiter and gradient_tolerance are required')
+    if not isinstance(gradient_only,bool):
+        raise ValueError('gradient_only must be a boolean')
     if bounds is not None:
         bounds = np.asarray(bounds, dtype=float)
         if (bounds.shape != (x.size, 2) or not np.isfinite(bounds).all() or
@@ -124,7 +129,7 @@ def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1
     reserve = min(100, maxiter//4) if hessian is not None else 0
     result = minimize(objective, np.asarray(x, dtype=float), jac=True, method='L-BFGS-B',
                       callback=callback, bounds=bounds, options={'maxiter': maxiter-reserve, 'gtol': gradient_tolerance,
-                      'ftol': 1e-15, 'maxls': 50, 'maxcor': 20})
+                      'ftol': 0. if gradient_only else 1e-15, 'maxls': 50, 'maxcor': 20})
     result['method'] = 'L-BFGS-B'
     # Preserve the stable quasi-Newton trajectory on flat/semi-definite
     # objectives. Actual curvature is used only to polish unresolved residuals.
@@ -150,6 +155,15 @@ def minimize_eager(value_and_grad, initial, *, maxiter=300, gradient_tolerance=1
                           success=bool(np.max(np.abs(refined_gradient)) <= gradient_tolerance),
                           message='Quasi-Newton objective followed by checked stationarity refinement',
                           method='L-BFGS-B+stationary-lm')
+    projected = (result.jac if bounds is None else
+                 result.x-np.clip(result.x-result.jac,bounds[:,0],bounds[:,1]))
+    result['projected_gradient_max'] = float(np.max(np.abs(projected)))
+    if gradient_only:
+        result.success = bool(result.projected_gradient_max<=gradient_tolerance)
+        if result.success:
+            result.message = 'Projected gradient infinity norm reached tolerance'
+        elif result.get('status')==0:
+            result.message = 'Objective change stopped before projected-gradient convergence'
     return result
 
 
