@@ -52,8 +52,41 @@ and the worker configuration ship with the workflow package. Use
 `campaign.json` to set `unbounded_waits=true` and `max_seconds=null`.
 Swarm waits for completion or an explicit failure. Slurm resource limits
 and SSH connection recovery still apply. The scripts
-`examples/iks/xc100_swarm.py` and `examples/iks/xc100_open_xc.py` call
-these workflow entry points.
+`examples/iks/xc100_swarm.py` calls the swarm entry point.
+`examples/iks/xc100_open_xc.py` calls the single-agent controller. Pass
+`--candidate-mode open_xc` to select the joint scoring mode below.
+
+### XC100 joint scoring
+
+Set `"candidate_mode": "open_xc"` and `"objective": "wy_energy"` in the
+worker's `campaign.json`. The worker accepts a complete local XC potential
+built from density, density gradient and Laplacian features. The inner fit
+maximizes the raw Wu–Yang score with the XC potential evaluated at the fixed
+target density.
+
+After fitting, the worker reuses the output density of the final Wu–Yang
+solve for each molecule. It evaluates the proposed potential along the
+straight path from zero to that density using 96-point Gauss–Legendre
+quadrature with a cubic change of variable. Each grid block contributes
+
+    E_Q[rho_out] = integral rho_out(r) * integral_0^1 v_xc[t*rho_out](r) dt dr
+
+The path scales the raw density, gradient and Laplacian together before
+constructing proposal features. The submitted potential defines the gauge, so
+its low-density limit matters. The result is a path-specific energy for a
+general proposed potential.
+
+The outer search takes the mean, over molecules, of
+
+    0.5 * (W - W_PBE) / (Ne * G_scale)
+    + 0.5 * (1 - abs(E_Q - Exc_TZ) / (Ne * E_scale))
+
+`G_scale` is the mean PBE Wu–Yang gap per electron. `E_scale` is the mean
+PBE XC absolute error per electron against the XC100 `Exc_TZ` label, with
+PBE energy evaluated on its own Wu–Yang output density. Both scales are
+fixed during worker preparation, giving PBE a joint score of zero. The
+worker records the raw Wu–Yang improvement, XC energy and energy error
+alongside the joint score.
 
 ## Physical evaluation
 

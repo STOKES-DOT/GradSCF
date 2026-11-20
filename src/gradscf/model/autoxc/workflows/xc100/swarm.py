@@ -86,13 +86,15 @@ def main():
             raise ValueError('Swarm requires a complete local potential evaluator')
         if not policy.get('unbounded_waits') or evaluator.configuration.get('max_seconds') is not None:
             raise ValueError('Swarm requires unbounded_waits=true and max_seconds=null in the worker campaign.json')
+        mode = policy.get('candidate_mode', 'standalone_potential')
+        brief += f'\nActive XC100 mode: `{mode}`.\n'
         result = asyncio.run(run_swarm(
             factory, evaluator, founders, directory=args.output, config=config,
             registry=policy['features'], brief=brief, frozen_policy=checkpoint,
             protocol={'system_prompt_sha256': sha256(system.encode()).hexdigest(),
                       'model': model, 'effort': effort},
         ))
-        print('Completed attempts', result['attempts'], 'best WY', result['best']['evaluation']['reward'])
+        print('Completed attempts', result['attempts'], 'best reward', result['best']['evaluation']['reward'])
     finally:
         try:
             guardian.release()

@@ -243,10 +243,10 @@ def run_parallel(root):
             if jax.default_backend() != 'gpu' or len(jax.devices()) != 1 or not jax.config.jax_enable_x64:
                 raise RuntimeError('Parallel qualification requires one GPU and float64')
             self.status('calibrating')
-            base = LDA_EXCHANGE_POTENTIAL + '+' if self.standalone_potential else ''
+            base = LDA_EXCHANGE_POTENTIAL + '+' if self.complete_potential else ''
             nonlinear = 'a*n**0.3333333333333333*tanh(b*u + .2*z)'
             definitions = ()
-            if not self.standalone_potential:
+            if not self.complete_potential:
                 nonlinear = 'a*n**0.3333333333333333*tanh(b*u + .2*z + .1*c)'
                 definitions = (('c', '(rho_occ-n)/(rho_occ+n)'),)
             fixtures = {
@@ -257,9 +257,6 @@ def run_parallel(root):
                     parameters=(Parameter('a', .015, -.1, .1),
                                 Parameter('b', .8, .1, 3.))).to_dict(),
             }
-            if self.candidate_mode == 'open_xc':
-                fixtures['energy'] = Candidate('pbe_x*exp(a*u) + pbe_c', kind='energy',
-                    parameters=(Parameter('a', .03, -.5, .5),)).to_dict()
             probe_ids = ('010', '017', '065')
             probe_ranks = (0, 1) if len(masks) > 1 else (0,)
             calibration = self.workers.call('calibrate',

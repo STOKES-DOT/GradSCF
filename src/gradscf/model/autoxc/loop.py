@@ -38,6 +38,8 @@ class Evaluator:
     negative reward and its gradient in candidate.parameters order, to reuse
     a compiled program with dynamic physical arrays. diagnose_result(score)
     may add diagnostics to that same solve instead of diagonalizing again.
+    A callback's ``sample_details(params, density)`` can contribute reporting
+    fields after fitting using the same solved density.
     """
     def __init__(self, bind, *, sample_ids, fingerprint, fit_ids=None, reward_ids=None,
                  maxiter=30, gradient_tolerance=1e-8, streaming=False,
@@ -162,7 +164,7 @@ def stream_value_and_grad(callbacks, sample_ids, unpack):
 
 def sample_reports(callbacks, sample_ids, parameters):
     """Collect the physical score and grid diagnostics from the same solve."""
-    results = {}
+    samples = {}
     for name in sample_ids:
         callback = callbacks[name]
         result = callback(parameters)
@@ -177,10 +179,12 @@ def sample_reports(callbacks, sample_ids, parameters):
             valid = result.valid & diagnostic.valid
             result = diagnostic._replace(valid=valid,
                 reward=jnp.where(valid, diagnostic.reward, jnp.nan))
-        results[name] = result
-    samples = {s: json_value({k: getattr(v, k) for k in
-               ('value', 'delta', 'reward', 'gap', 'variational_gap', 'density_error', 'density_l1', 'valid')})
-               for s, v in results.items()}
+        row = {key: getattr(result, key) for key in
+               ('value', 'delta', 'reward', 'gap', 'variational_gap', 'density_error', 'density_l1', 'valid')}
+        details = getattr(callback, 'sample_details', None)
+        if details is not None and bool(result.valid):
+            row.update(details(parameters, result.density))
+        samples[name] = json_value(row)
     return samples
 
 
@@ -201,7 +205,8 @@ def _aggregate(evaluation):
         return None
     rows = list(evaluation['samples'].values())
     result = {'count': len(rows)}
-    for key in ('reward', 'density_error', 'density_l1', 'composite_reward', 'variational_gap'):
+    for key in ('reward', 'density_error', 'density_l1', 'composite_reward', 'variational_gap',
+                'xc_energy_absolute_error_hartree_per_electron'):
         values = [r.get(key) for r in rows]
         if all(v is not None and math.isfinite(v) for v in values):
             result[key] = {'mean': sum(values)/len(values), 'min': min(values), 'max': max(values)}

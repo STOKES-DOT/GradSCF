@@ -53,6 +53,7 @@ class BoundLocalPotential:
     cached_affine: bool
     offset: object = None
     panels: object = None
+    sample_details: object = None
 
     def _vector(self,parameters):
         return jnp.asarray([parameters[p.name] for p in self.candidate.parameters],dtype=self.baseline.dtype)

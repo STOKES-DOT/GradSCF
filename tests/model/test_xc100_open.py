@@ -17,17 +17,20 @@ def test_open_campaign_cannot_silently_select_a_density_weighted_reward(tmp_path
     with pytest.raises(ValueError):Campaign(tmp_path,candidate_mode='open',objective='wy_l1_l2')
 
 
-def test_open_xc_allows_full_semilocal_energy_without_frozen_orbital_fields(tmp_path):
+def test_open_xc_requires_a_complete_local_potential_and_uses_energy_labels(tmp_path):
     from gradscf.model.autoxc import Candidate
     from gradscf.model.autoxc.workflows.xc100.campaign import Campaign
 
     campaign = Campaign(tmp_path, candidate_mode='open_xc')
-    assert campaign.policy['kind'] is None
-    assert campaign.policy['reference_energy_labels'] is False
-    assert campaign.bind(Candidate('pbe_x+pbe_c', kind='energy'), ()) == {}
-    assert campaign.bind(Candidate('virtual_0*n', kind='potential'), ()) == {}
-    with pytest.raises(ValueError, match='semilocal'):
-        campaign.bind(Candidate('virtual_0*n', kind='energy'), ())
+    assert campaign.policy['kind'] == 'potential'
+    assert campaign.policy['potential_is_complete']
+    assert campaign.policy['reference_energy_labels']
+    assert campaign.policy['objective'] == 'wy_energy'
+    assert campaign.policy['inner_objective'] == 'wu_yang'
+    assert campaign.bind(Candidate('-n**(1/3)+lap'), ()) == {}
+    for candidate in (Candidate('pbe_x+pbe_c', kind='energy'), Candidate('virtual_0*n')):
+        with pytest.raises(ValueError, match='local potential'):
+            campaign.bind(candidate, ())
 
 
 def test_open_input_provider_reuses_the_case_density_fields():

@@ -29,10 +29,19 @@ $$
 
 The target density supplies the fitting data. Report Wu–Yang, the mean
 relative density L1 and L2 errors, and fit convergence separately.
-Use the evaluator's Wu–Yang-first selection. A positive improvement
-above $10^{-8}$ is accepted. A nonnegative gain within the tolerance
-requires improvement in the declared normalized L1 and squared L2
-secondary diagnostic. Invalid samples invalidate the aggregate.
+Invalid samples invalidate the aggregate.
+
+- In the Wu–Yang-first mode, use the normalized Wu–Yang improvement first.
+  A nonnegative gain within the declared tolerance requires improvement
+  in the normalized L1 and squared L2 secondary diagnostic.
+- In `open_xc` mode, use the measured joint reward for structural selection.
+  It equally weights normalized Wu–Yang improvement and reduction in the
+  per-electron absolute XC energy error against `Exc_TZ`. The inner fit
+  still maximizes Wu–Yang. The energy is evaluated once after fitting as
+  $E_Q[\rho_\mathrm{out}]=\int d\mathbf r\,\rho_\mathrm{out}(\mathbf r)
+  \int_0^1 v_\mathrm{xc}[t\rho_\mathrm{out}](\mathbf r)\,dt$.
+  Submit the complete potential in a gauge with a vanishing vacuum limit.
+  Keep its density path finite and avoid freely fitted constant shifts.
 
 ## Available density inputs
 
