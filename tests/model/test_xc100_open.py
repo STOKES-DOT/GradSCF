@@ -7,7 +7,9 @@ def test_open_campaign_has_no_four_parameter_or_uniform_shape_policy(tmp_path):
     campaign=Campaign(tmp_path,candidate_mode='open',objective='wu_yang',maxiter=500,
         gradient_tolerance=1e-6,gradient_only=True,require_convergence=True)
     assert campaign.policy['max_parameters'] is None
-    assert 'tau' in campaign.policy['features'] and 'virtual_0' in campaign.policy['features']
+    assert campaign.policy['primitive_fields'] == ['grad', 'lap', 'n', 'sigma']
+    assert 'virtual_0' not in campaign.policy['features']
+    assert 'pair_average' in campaign.policy['feature_operators']
     assert campaign.policy['uniform_limit_tolerance'] is None
     assert campaign.policy['reference_energy_labels'] is False
 
@@ -28,6 +30,8 @@ def test_open_xc_requires_a_complete_local_potential_and_uses_energy_labels(tmp_
     assert campaign.policy['objective'] == 'wy_energy'
     assert campaign.policy['inner_objective'] == 'wu_yang'
     assert campaign.bind(Candidate('-n**(1/3)+lap'), ()) == {}
+    candidate = Candidate('-n + custom', definitions=(('custom', 'pair_average(n, exp(-r2))'),))
+    assert campaign.bind(candidate, ()) == {}
     for candidate in (Candidate('pbe_x+pbe_c', kind='energy'), Candidate('virtual_0*n')):
         with pytest.raises(ValueError, match='local potential'):
             campaign.bind(candidate, ())

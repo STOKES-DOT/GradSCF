@@ -43,50 +43,38 @@ Invalid samples invalidate the aggregate.
   Submit the complete potential in a gauge with a vanishing vacuum limit.
   Keep its density path finite and avoid freely fitted constant shifts.
 
-## Available density inputs
+## Constructing density features
 
-The active evaluator registry controls which names are available. The
-standalone density worker provides these eight fields. The density is
-the input density at scoring time and the current density at SCF runtime.
+The evaluator supplies the spin-summed regularized density `n`, the squared
+gradient magnitude `sigma`, the gradient magnitude `grad`, and the Laplacian
+`lap`. Quantities are in atomic units. Declare custom features as named
+entries in `definitions`, ordered by dependency. Definitions can be used
+by later definitions and by the potential. The conventional `s`, `u`,
+`q`, and `z` shorthands are accepted for existing analytic proposals.
 
-| Name | Definition in atomic units |
+The scalar expression language accepts `+`, `-`, `*`, `/`, `**`,
+`sqrt`, `exp`, `log`, `log1p`, and `tanh`. The pair operators let you
+design a kernel from the same scalar expressions.
+
+| Operation | Grid value at the target point |
 | --- | --- |
-| `n` | $\sqrt{\rho^2+10^{-24}}$ |
-| `sigma`, `grad` | $\lvert\nabla\rho\rvert^2$ and its square root |
-| `s`, `u` | $s=\text{grad}/[2(3\pi^2)^{1/3}n^{4/3}]$, $u=s^2/(1+s^2)$ |
-| `lap`, `q`, `z` | $\nabla^2\rho$, $q=\text{lap}/[4(3\pi^2)^{2/3}n^{5/3}]$, $z=q/\sqrt{1+q^2}$ |
+| `pair_integral(field, kernel)` | Integrate the source field times the kernel over all source points |
+| `pair_average(field, kernel)` | Divide the integral by the integral of the kernel |
+| `pair_moment(field, kernel, rank)` | Integrate the weighted displacement for literal rank 1 or its traceless second moment for rank 2, then return the squared norm |
 
-The expression language accepts `+`, `-`, `*`, `/`, `**`,
-`sqrt`, `exp`, `log`, `log1p`, and `tanh`. Use finite numeric
-literals. Literal exponent magnitude is at most eight. The combined
-limits are 16,000 characters and 2,048 expression nodes, with a depth
-limit of 64 per formula or definition. Use the names and arithmetic
-provided by the registry and the proposal schema.
+In a kernel, a field name denotes its value at the target point. Prefix a
+field or an earlier definition with `source_` to read its value at the source
+point. `r2` is the squared displacement in bohr squared. Parameters are
+shared between source and target and use their declared names. For example,
+`pair_average(n, exp(-a*r2*(1+b*source_n)))` lets the source density change the
+range. Declare `a` and `b` in `parameters` with appropriate units and bounds.
+Return finite values on the scoring grid, including when the kernel is
+normalized. The evaluator computes the result for each fitted parameter
+point when the convolution has adjustable parameters.
 
-## Orbital inputs to enable with the candidate state provider
-
-The following groups define the orbital-aware experiment. An input
-becomes available for scoring when the evaluator registers it and
-supplies its runtime and gradient rules. With the current standalone
-density worker, use the density-only experiment as a control.
-
-| Descriptor family | Construction from the candidate's state |
-| --- | --- |
-| Occupied orbital shapes | Supply $\tau_{\mathrm{occ}}=\tfrac12\sum_i f_i\lvert\nabla\phi_i\rvert^2$ and an iso-orbital indicator derived from that kinetic density and its corresponding occupied density. |
-| Exchange hole | Use the spin-resolved occupied density matrices to build the exchange hole. Supply its Coulomb potential or the short- and long-range Coulomb contractions in a declared gauge. |
-| Virtual spectral control | Sum the virtual density with Lorentzian energy weights centered at the candidate's HOMO–LUMO midpoint. Use separate window widths of 0.2 and 1.0 Ha for comparison with the earlier spectral construction. |
-| Occupied–virtual response | Use transition densities and gaps to project $\chi_0(i\omega)$ onto a specified perturbation. One option is $P_{\omega,\mu}(\mathbf r)=-\langle K_{\mu,\mathbf r},\chi_0(i\omega)K_{\mu,\mathbf r}\rangle$, with $K_{\mu,\mathbf r}$ a range-separated Coulomb perturbation centered at $\mathbf r$. |
-| Perturbative correlation | Supply a defined contraction of PT2 amplitudes or a pair-density correction, with the integral convention, gaps, regularization, and localization rule recorded. |
-
-For the orbital-aware iKS protocol, keep the target Hartree operator
-and any explicit target-density inputs fixed. Build orbital descriptors
-from the trial potential's own orbitals and update that state to
-convergence for each parameter evaluation. Define the orbital density
-used in derived observables such as the iso-orbital indicator. The
-inner gradient includes the response of the converged orbital state.
-After scoring, assess independent SCF by updating the density, Hartree
-operator, and orbital inputs together from the declared regular initial
-guess. Record SCF convergence and density error as separate outcomes.
+Literal exponent magnitude is at most eight. The combined limits are
+16,000 characters and 2,048 expression nodes, with a depth limit of 64 per
+formula or definition.
 
 ## Inner fit and outer search
 
@@ -99,11 +87,9 @@ parent, use that as a matched control. Record the parameter values,
 active bounds, numerical failures, and convergence.
 
 **Outer search.** Use one structure change per scientific comparison.
-Begin with a density-only control, then compare occupied exchange
-information, virtual spectral information, and explicit occupied–virtual
-response as the evaluator enables those inputs. Test short-/long-range
-constructions and combinations with a matched refit. An available
-perturbative contraction can supply a separate correlation branch.
+Begin with a pointwise control. Test changes to the source field,
+spatial kernel, angular moment, or the way the resulting features are
+combined into the potential. Use matched refits for comparisons.
 
 Use the controller's measured rewards and action feedback. Interpret a
 structural outcome with the fitted score of its matched parent and the

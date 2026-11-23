@@ -23,7 +23,11 @@ def _rename(expression, names, *, ignore_amplitudes=False):
 
     class Rename(ast.NodeTransformer):
         def visit_Name(self, node):
-            node.id = names.get(node.id, node.id)
+            if node.id.startswith('source_'):
+                field = node.id.removeprefix('source_')
+                node.id = 'source_' + names.get(field, field)
+            else:
+                node.id = names.get(node.id, node.id)
             return node
 
         def visit_BinOp(self, node):
@@ -92,7 +96,7 @@ class Genome:
     def structure(self):
         return json.dumps([self.gene_structure(slot) for slot in SLOTS], separators=(',', ':'))
 
-    def compile(self, registry):
+    def compile(self, registry, *, feature_operators=()):
         definitions, parameters, contributions = [], {}, []
         features = set()
         for slot in SLOTS:
@@ -102,7 +106,12 @@ class Genome:
             unavailable = gene.features - (allowed & registry)
             if unavailable:
                 raise ValueError(f'{slot}: unavailable inputs {sorted(unavailable)}')
-            if slot.endswith('_nonlocal') and self.active(slot) and not gene.features - SEMILOCAL:
+            is_nonlocal_slot = slot.endswith('_nonlocal')
+            available_operators = feature_operators if is_nonlocal_slot else ()
+            if gene.pair_operators - set(available_operators):
+                raise ValueError(f'{slot}: pair density operators are unavailable')
+            if is_nonlocal_slot and self.active(slot) and not (
+                    gene.pair_operators or gene.features - SEMILOCAL):
                 raise ValueError(f'{slot}: active gene requires a nonlocal input')
             if set(gene.initial) & registry:
                 raise ValueError(f'{slot}: parameter masks an input feature')

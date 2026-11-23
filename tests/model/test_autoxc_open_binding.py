@@ -18,6 +18,122 @@ def inputs():
     return problem,grid,{'n':jnp.linspace(.1,.7,7),'u':jnp.linspace(.1,.8,7)}
 
 
+def test_candidate_designed_density_kernel_matches_dense_wu_yang_gradient():
+    from gradscf.model.autoxc.bindings import bind_local_potential
+
+    problem, grid, fields = inputs()
+    candidate = Candidate(
+        'a*(ambient-n)',
+        (Parameter('a', .13, -.5, .5), Parameter('width', 4., 1., 12.)),
+        definitions=(('shape', '1+n'), (
+            'ambient', 'pair_average(n, exp(-width*r2*(shape+source_shape)))',
+        )),
+    )
+    assert candidate.features == {'n'}
+    assert Candidate.from_json(candidate.to_dict()) == candidate
+    bound = bind_local_potential(problem, grid, candidate, fields, max_memory=50., block_size=3)
+    density = fields['n']
+    r2 = jnp.sum((grid.coords[:, None] - grid.coords[None, :])**2, axis=-1)
+
+    def dense_potential(vector):
+        amplitude, width = vector
+        weights = grid.weights[None, :] * jnp.exp(
+            -width*r2*(2+density[:, None]+density[None, :])
+        )
+        values = amplitude*(weights@density/jnp.sum(weights, axis=1)-density)
+        return iks.project_potential(grid, values)
+
+    vector = jnp.asarray([.13, 4.])
+    expected = jax.value_and_grad(lambda p: -problem.score(dense_potential(p)).reward)(vector)
+    actual = bound.loss_and_grad(vector)
+    assert not bound.cached_affine
+    assert abs(float(actual[1][1])) > 1e-8
+    np.testing.assert_allclose(bound.potential(candidate.initial), dense_potential(vector), atol=1e-12)
+    np.testing.assert_allclose(actual[0], expected[0], atol=1e-12)
+    np.testing.assert_allclose(actual[1], expected[1], atol=1e-11)
+
+
+@pytest.mark.parametrize('rank', (1, 2))
+def test_candidate_angular_moment_is_rotation_invariant(rank):
+    from gradscf.model.autoxc.density import pair_quadrature
+
+    _, grid, fields = inputs()
+    density = fields['n']
+    displacement = grid.coords[None, :] - grid.coords[:, None]
+    distance2 = jnp.sum(displacement**2, axis=-1)
+    weight = (density*grid.weights)[None, :] * jnp.exp(-distance2)
+    tensor = displacement if rank == 1 else (
+        displacement[..., :, None]*displacement[..., None, :] - distance2[..., None, None]*jnp.eye(3)/3
+    )
+    moment = jnp.einsum('ij,ij...->i...', weight, tensor)
+    expected = jnp.sum(moment.reshape(grid.ngrids, -1)**2, axis=1)
+    rotation = jnp.array([[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]])
+    candidate = Candidate(f'pair_moment(n, exp(-r2), {rank})')
+    for coords in (grid.coords, grid.coords@rotation + .8):
+        actual = candidate.evaluate({}, fields, pair=pair_quadrature(coords, grid.weights, 3, density.dtype))
+        np.testing.assert_allclose(actual, expected, atol=1e-13)
+
+
+def test_fixed_kernel_is_cached_when_outer_parameters_are_nonlinear():
+    from gradscf.model.autoxc.bindings import bind_local_potential
+
+    problem, grid, fields = inputs()
+    candidate = Candidate('tanh(a*neighbor)', (Parameter('a', .2, -.5, .5),),
+                          definitions=(('neighbor', 'pair_average(n, exp(-r2))'),))
+    bound = bind_local_potential(problem, grid, candidate, fields, max_memory=50., block_size=3)
+    assert not bound.cached_affine
+    assert not bound.pair_block
+    distance2 = jnp.sum((grid.coords[:, None] - grid.coords[None, :])**2, axis=-1)
+    weights = jnp.exp(-distance2) * grid.weights[None, :]
+    expected = iks.project_potential(grid, jnp.tanh(.2*(weights@fields['n'])/weights.sum(axis=1)))
+    np.testing.assert_allclose(bound.potential(candidate.initial), expected, atol=1e-13)
+
+
+def test_joint_wu_yang_fit_recovers_potential_amplitude_and_kernel_width():
+    from gradscf.model.autoxc import Evaluator
+    from gradscf.model.autoxc.bindings import bind_local_potential
+
+    problem, grid, fields = inputs()
+    candidate = Candidate(
+        'a*(environment-n)',
+        (Parameter('a', .25, .05, 1.), Parameter('width', 3., 1., 8.)),
+        definitions=(('environment', 'pair_average(n, exp(-width*r2))'),),
+    )
+    truth = {'a': .45, 'width': 5.}
+    r2 = jnp.sum((grid.coords[:, None] - grid.coords[None, :])**2, axis=-1)
+    weights = jnp.exp(-truth['width']*r2) * grid.weights[None, :]
+    cases = {}
+    for name, density in (('one', fields['n']), ('two', fields['n']**3),
+                          ('three', fields['n'].at[0].set(.9))):
+        values = truth['a']*(weights@density/weights.sum(axis=1)-density)
+        base = problem.base_fock - iks.project_potential(grid, values)
+        sample = iks.WuYang(problem.target, problem.kinetic, base, baseline=problem.baseline_potential)
+        cases[name] = sample, {'n': density}
+
+    def bind(proposal):
+        return {name: bind_local_potential(sample, grid, proposal, fields, block_size=3)
+                for name, (sample, fields) in cases.items()}
+
+    evaluator = Evaluator(bind, sample_ids=tuple(cases), fingerprint='pair-kernel-test',
+                          streaming=True, maxiter=80, gradient_tolerance=1e-7,
+                          gradient_only=True, require_convergence=True)
+    evaluation = evaluator.evaluate(candidate)
+    assert evaluation.valid and evaluation.fit['gradient_converged'], evaluation.fit
+    assert evaluation.parameters == pytest.approx(truth, abs=2e-4)
+
+
+def test_full_q_path_uses_all_source_blocks_for_candidate_feature():
+    from gradscf.model.autoxc.workflows.xc100.molecule import _q_path_energy
+
+    problem, grid, _ = inputs()
+    density = problem.target.density
+    moment = grid.reduce(lambda total, ao, _, lap, coords, weights:
+        total + weights @ jnp.sum(ao * (ao @ density), axis=1), jnp.asarray(0.))
+    candidate = Candidate('pair_integral(n, 1)')
+    np.testing.assert_allclose(_q_path_energy(grid, density, candidate, {}, 1e-12),
+                               .5 * moment**2, atol=1e-12)
+
+
 def test_shared_projection_pullback_is_the_physical_transpose():
     from gradscf.dft.iks.potential import project_potential_pullback
     _,grid,_=inputs();value=jnp.linspace(.02,.08,7);adjoint=jnp.array([[.2,.1],[.1,-.3]])

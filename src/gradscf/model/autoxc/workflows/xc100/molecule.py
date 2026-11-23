@@ -14,6 +14,7 @@ from gradscf import dft
 from gradscf.dft import iks
 from gradscf.integrals.basis import basis_from_molecule_spec
 from gradscf.integrals.grids.blocks import AOGrid
+from gradscf.model.autoxc.density import pair_block_size, pair_quadrature
 from gradscf.data.molecule import parse_molecule_spec
 from gradscf.scf.molecules import QuadratureGrid
 from gradscf.tools.features import _spin_density_and_gradient, _spin_laplacian
@@ -23,6 +24,7 @@ from .pbe import energy_density
 _Q_NODES, _Q_WEIGHTS = np.polynomial.legendre.leggauss(96)
 _q_nodes = (_Q_NODES + 1) / 2
 _Q_NODES, _Q_WEIGHTS = _q_nodes**3, 1.5*_q_nodes**2*_Q_WEIGHTS
+DENSITY_FIELDS = frozenset(('n', 'sigma', 'grad', 'lap'))
 
 
 def _density_fields(rho, gradient, laplacian, fields, floor):
@@ -38,15 +40,17 @@ def _density_fields(rho, gradient, laplacian, fields, floor):
     return result
 
 
-def q_path_energy_density(candidate, params, rho, gradient, laplacian, floor):
+def q_path_energy_density(candidate, params, rho, gradient, laplacian, floor, *, pair=None):
     """Integrate rho * v_xc[t*rho] on the straight path from zero density."""
     nodes = jnp.asarray(_Q_NODES, dtype=rho.dtype)
     weights = jnp.asarray(_Q_WEIGHTS, dtype=rho.dtype)
 
     def add(index, total):
         t = nodes[index]
-        fields = _density_fields(t*rho, t*gradient, t*laplacian, candidate.features, floor)
-        return total + weights[index]*candidate.evaluate(params, fields)
+        fields = _density_fields(t*rho, None if gradient is None else t*gradient,
+                                 None if laplacian is None else t*laplacian,
+                                 candidate.features, floor)
+        return total + weights[index]*candidate.evaluate(params, fields, pair=pair)
 
     return rho*jax.lax.fori_loop(0, len(_Q_NODES), add, jnp.zeros_like(rho))
 
@@ -58,14 +62,27 @@ def _q_path_energy(grid, density, candidate, params, floor):
     needs_gradient = needs_laplacian or bool(fields & {'sigma', 'grad', 's', 'u'})
     deriv = 2 if needs_laplacian else int(needs_gradient)
 
-    def add(total, ao, derivative, ao_laplacian, coords, weights):
+    def density_fields(ao, derivative, ao_laplacian):
         if needs_gradient:
             rho, gradient = _spin_density_and_gradient(ao, derivative, density)
         else:
             rho = jnp.sum(ao*(ao@density.T), axis=1)
-            gradient = jnp.zeros((), dtype=rho.dtype)
+            gradient = None
         laplacian = (_spin_laplacian(ao, derivative, ao_laplacian, density)
-                     if needs_laplacian else jnp.zeros((), dtype=rho.dtype))
+                     if needs_laplacian else None)
+        return rho, gradient, laplacian
+
+    if candidate.pair_operators:
+        rho, gradient, laplacian = grid.map(
+            lambda ao, deriv1, lap, *_: density_fields(ao, deriv1, lap), deriv=deriv
+        )
+        block = pair_block_size(grid.ngrids, grid.block_size, 8000., rho.dtype)
+        pair = pair_quadrature(grid.coords, grid.weights, block, rho.dtype)
+        energy = q_path_energy_density(candidate, params, rho, gradient, laplacian, floor, pair=pair)
+        return jnp.dot(grid.weights, energy)
+
+    def add(total, ao, derivative, ao_laplacian, coords, weights):
+        rho, gradient, laplacian = density_fields(ao, derivative, ao_laplacian)
         energy = q_path_energy_density(candidate, params, rho, gradient, laplacian, floor)
         return total + jnp.dot(weights, energy)
 
@@ -140,7 +157,7 @@ class XC100Case:
     Legacy candidates define affine corrections to PBE. Open bindings also
     accept general local corrections and complete local XC potentials.
     """
-    fields = frozenset(('n', 'sigma', 'grad', 'lap', 's', 'q', 'u', 'z'))
+    fields = DENSITY_FIELDS | {'s', 'q', 'u', 'z'}
 
     def __init__(self, root, system_id='010', *, floor=1e-12, block_size=256, max_parameters=4,
                  occupation_tolerance=1e-8):
@@ -233,7 +250,8 @@ class XC100Case:
 
     def candidate_matrix(self, candidate):
         """Return the existing uncompiled AO map for separate compile/run timing."""
-        if (not candidate.affine or (self.max_parameters is not None and len(candidate.parameters) > self.max_parameters) or
+        if (candidate.pair_operators or not candidate.affine or
+                (self.max_parameters is not None and len(candidate.parameters) > self.max_parameters) or
                 not candidate.features <= self.fields or set(candidate.initial) & self.fields):
             raise ValueError(f'This pilot requires an affine correction with <={self.max_parameters} coefficients and declared density features')
         if candidate.kind == 'energy':
@@ -268,7 +286,7 @@ class XC100Case:
             self.timings['cached_affine']=bound.cached_affine
             return {self.system_id:bound}
         from .direct import GGA_FIELDS, bind_potential
-        if candidate.kind=='potential' and candidate.features<=GGA_FIELDS:
+        if candidate.kind=='potential' and not candidate.pair_operators and candidate.features<=GGA_FIELDS:
             return bind_potential(self,candidate)
         started = time.perf_counter()
         matrix = self.candidate_matrix(candidate)
