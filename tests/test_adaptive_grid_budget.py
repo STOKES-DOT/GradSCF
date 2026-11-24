@@ -175,6 +175,14 @@ def test_grid_cache_hit_replans_blocks_without_rebuilding_grid_arrays(monkeypatc
     monkeypatch.setattr(grid, "workspace_bytes", lambda *args, **kwargs: capacity[0])
     basis, coords, weights = _basis(), np.zeros((100_000, 3)), np.ones(100_000)
     spec = SimpleNamespace(symbols=("H",), coords_bohr=np.zeros((1, 3)))
+    original_from_basis = grid.AOGrid.from_basis
+    constructions = []
+
+    def record_provider(cls, *args, **kwargs):
+        constructions.append(1)
+        return original_from_basis(*args, **kwargs)
+
+    monkeypatch.setattr(grid.AOGrid, "from_basis", classmethod(record_provider))
 
     def reject_dense_ao(*args, **kwargs):
         raise AssertionError("Replanning a streamed cache must not evaluate full-grid AO.")
@@ -191,6 +199,34 @@ def test_grid_cache_hit_replans_blocks_without_rebuilding_grid_arrays(monkeypatc
     assert smaller.coords is first.coords and smaller.grid_weights is first.grid_weights
     assert smaller.ao is first.ao and smaller.ao_deriv1 is first.ao_deriv1
     assert grid._cached_grid_ao_input_bundle(**options) is smaller
+    for before, after in zip(jax.tree_util.tree_leaves(first.grid_ao),
+                             jax.tree_util.tree_leaves(smaller.grid_ao), strict=True):
+        assert before is after
+    assert len(constructions) == 1
+
+
+def test_streamed_reference_replans_laplacian_without_rebuilding_provider(monkeypatch):
+    from gradscf import gto, scf
+    from gradscf.scf.builders import complete_restricted_response_inputs
+
+    monkeypatch.setattr(grid, "_GRID_AO_INPUT_CACHE", {})
+    mol = gto.M(atom="H 0 0 0; H 0 0 .74", basis="sto-3g")
+    spec = mol.to_spec()
+    config = scf.RKSConfig(xc_spec="tpss", grid_block_size=64)
+    inputs = assembly.build_rks_integral_inputs(
+        atom=spec, basis=mol.basis, config=config, include_ao_laplacian=False,
+    )
+    assert isinstance(inputs.grid_ao, grid.AOGrid)
+
+    def reject_reconstruction(*args, **kwargs):
+        pytest.fail("A streamed Laplacian replan must reuse the provider leaves.")
+
+    monkeypatch.setattr(grid.AOGrid, "from_basis", reject_reconstruction)
+    completed = complete_restricted_response_inputs(
+        inputs, spec, mol.basis, config=config, require_grid=True,
+    )
+    assert completed.grid_ao is inputs.grid_ao
+    assert completed.dipole_integrals is inputs.dipole_integrals
 
 
 @pytest.mark.parametrize("xc_spec", ["pbe", "cam-b3lyp"])

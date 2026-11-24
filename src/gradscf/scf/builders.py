@@ -120,15 +120,13 @@ def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
         else:
             from .inputs.grid import _streamed_grid
 
+            previous = inputs.grid_ao if replan_streamed else None
             provider = _streamed_grid(inputs.basis, inputs.coords, inputs.grid_weights,
-                _keep_streamed=replan_streamed,
+                _keep_streamed=replan_streamed, _existing_provider=previous,
                 _resident_arrays=(inputs.ao, inputs.ao_deriv1), **grid_options)
             if replan_streamed:
-                previous = inputs.grid_ao
-                if provider is not None and (provider.block_size != previous.block_size
-                                              or provider.adaptive != previous.adaptive):
-                    inputs = replace(inputs, grid_ao=replace(previous,
-                        block_size=provider.block_size, adaptive=provider.adaptive))
+                if provider is not None and provider is not previous:
+                    inputs = replace(inputs, grid_ao=provider)
             elif provider is None:
                 _, derivatives = assembly.evaluate_cartesian_ao_with_derivatives(
                     inputs.basis, inputs.coords, deriv=2)

@@ -118,7 +118,7 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
                    grid_block_size, grid_max_memory,
                    max_memory=DEFAULT_MAX_MEMORY_MB, scf_max_cycle=80,
                    scf_history_matrices=2, fixed_workspace_bytes=0,
-                   _keep_streamed=False, _resident_arrays=()):
+                   _keep_streamed=False, _resident_arrays=(), _existing_provider=None):
     if grid_block_size < -1:
         raise ValueError("grid_block_size must be -1 (dense), 0 (auto), or positive.")
     validate_memory_mb(max_memory)
@@ -145,8 +145,13 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
                           requested=max(0, grid_block_size), device=device)
     if grid_block_size == 0:
         block = min(block, int(coords.shape[0]))
-    return AOGrid.from_basis(basis, coords, weights, block_size=block,
-        adaptive=grid_block_size == 0 and grid_max_memory is None)
+    adaptive = grid_block_size == 0 and grid_max_memory is None
+    if _existing_provider is None:
+        return AOGrid.from_basis(basis, coords, weights, block_size=block, adaptive=adaptive)
+    # The caller supplies a provider for this same physical quadrature.
+    if _existing_provider.block_size == block and _existing_provider.adaptive == adaptive:
+        return _existing_provider
+    return replace(_existing_provider, block_size=block, adaptive=adaptive)
 
 
 def _scf_operator_reservation(df_factors=None, direct_basis=None, with_k=False,
@@ -343,7 +348,7 @@ def _cached_grid_ao_input_bundle(
         same_execution = cached.execution_key == execution_key
         keep_streamed = force_streamed or (old_provider is not None and same_execution)
         provider = _streamed_grid(cached.basis, cached.coords, cached.grid_weights,
-                                  _keep_streamed=keep_streamed, **grid_options)
+            _keep_streamed=keep_streamed, _existing_provider=old_provider, **grid_options)
         if provider is None:
             if old_provider is None:
                 return cached
@@ -354,13 +359,8 @@ def _cached_grid_ao_input_bundle(
             ao, derivative, laplacian = _empty_ao_payload(cached.basis.nao, cached.coords.dtype)
             bundle = replace(cached, ao=ao, ao_deriv1=derivative, ao_laplacian=laplacian, grid_ao=provider)
         else:
-            if (provider.block_size == old_provider.block_size
-                    and provider.adaptive == old_provider.adaptive):
-                if same_execution:
-                    return cached
-                provider = old_provider
-            else:
-                provider = replace(old_provider, block_size=provider.block_size, adaptive=provider.adaptive)
+            if provider is old_provider and same_execution:
+                return cached
             bundle = replace(cached, grid_ao=provider)
     bundle = replace(bundle, execution_key=execution_key)
     _cache_bounded(_GRID_AO_INPUT_CACHE, key, bundle, _GRID_AO_INPUT_CACHE_MAXSIZE)
