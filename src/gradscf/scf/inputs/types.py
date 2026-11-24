@@ -9,6 +9,30 @@ from gradscf.integrals.basis import CartesianBasis
 
 GeometryGradPolicy = Literal["analytic", "error"]
 
+_SCF_KERNEL_FIELDS = (
+    "overlap", "hcore", "eri", "nuclear_repulsion", "ao", "ao_deriv1",
+    "grid_weights", "df_factors",
+)
+_RKS_KERNEL_FIELDS = _SCF_KERNEL_FIELDS + (
+    "eri_pair_matrix", "nelectron", "direct_basis", "init_density",
+    "init_mo_coeff", "init_mo_occ", "init_mo_energy",
+)
+_UKS_KERNEL_FIELDS = _SCF_KERNEL_FIELDS + (
+    "nalpha", "nbeta", "init_density_alpha", "init_density_beta",
+    "init_mo_coeff_alpha", "init_mo_coeff_beta", "init_mo_occ_alpha", "init_mo_occ_beta",
+    "init_mo_energy_alpha", "init_mo_energy_beta",
+)
+
+
+def _scf_kernel_kwargs(inputs, names) -> dict[str, Any]:
+    kwargs = {name: getattr(inputs, name) for name in names}
+    if inputs.grid_ao is not None:
+        kwargs["grid_ao"] = inputs.grid_ao
+    if inputs.eri_lr is not None or inputs.dispersion_energy is not None:
+        kwargs.update(eri_lr=inputs.eri_lr, dispersion_energy=inputs.dispersion_energy)
+    return kwargs
+
+
 @dataclass(frozen=True)
 class RKSIntegralInputs:
     """AO integrals, grid data, and JK data required by the RKS SCF kernel."""
@@ -39,32 +63,11 @@ class RKSIntegralInputs:
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None
     grid_ao: Any | None = None
+    ao_transform: Array | None = None
 
     def as_rks_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments accepted by run_rks_from_integrals."""
-
-        kwargs = {
-            "overlap": self.overlap,
-            "hcore": self.hcore,
-            "eri": self.eri,
-            "eri_pair_matrix": self.eri_pair_matrix,
-            "nelectron": self.nelectron,
-            "nuclear_repulsion": self.nuclear_repulsion,
-            "ao": self.ao,
-            "ao_deriv1": self.ao_deriv1,
-            "grid_weights": self.grid_weights,
-            "df_factors": self.df_factors,
-            "direct_basis": self.direct_basis,
-            "init_density": self.init_density,
-            "init_mo_coeff": self.init_mo_coeff,
-            "init_mo_occ": self.init_mo_occ,
-            "init_mo_energy": self.init_mo_energy,
-        }
-        if self.grid_ao is not None:
-            kwargs["grid_ao"] = self.grid_ao
-        if self.eri_lr is not None or self.dispersion_energy is not None:
-            kwargs.update(eri_lr=self.eri_lr, dispersion_energy=self.dispersion_energy)
-        return kwargs
+        return _scf_kernel_kwargs(self, _RKS_KERNEL_FIELDS)
 
     def response_eri_pair_matrix(self) -> Array | None:
         """Return packed AO-pair ERI data for response assembly when available."""
@@ -94,7 +97,7 @@ class UKSIntegralInputs:
     ao: Array
     ao_deriv1: Array
     ao_laplacian: Array | None
-    dipole_integrals: Array
+    dipole_integrals: Array | None
     df_factors: Array | None = None
     direct_basis: Any | None = None
     init_density_alpha: Array | None = None
@@ -113,34 +116,11 @@ class UKSIntegralInputs:
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None
     grid_ao: Any | None = None
+    ao_transform: Array | None = None
 
     def as_uks_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments accepted by run_uks_from_integrals."""
-
-        kwargs = {
-            "overlap": self.overlap,
-            "hcore": self.hcore,
-            "eri": self.eri,
-            "df_factors": self.df_factors,
-            "nalpha": self.nalpha,
-            "nbeta": self.nbeta,
-            "nuclear_repulsion": self.nuclear_repulsion,
-            "ao": self.ao,
-            "ao_deriv1": self.ao_deriv1,
-            "grid_weights": self.grid_weights,
-            "init_density_alpha": self.init_density_alpha,
-            "init_density_beta": self.init_density_beta,
-            "init_mo_coeff_alpha": self.init_mo_coeff_alpha,
-            "init_mo_coeff_beta": self.init_mo_coeff_beta,
-            "init_mo_occ_alpha": self.init_mo_occ_alpha,
-            "init_mo_occ_beta": self.init_mo_occ_beta,
-            "init_mo_energy_alpha": self.init_mo_energy_alpha,
-            "init_mo_energy_beta": self.init_mo_energy_beta,
-        }
-        if self.grid_ao is not None:
-            kwargs["grid_ao"] = self.grid_ao
-        if self.eri_lr is not None or self.dispersion_energy is not None:
-            kwargs.update(eri_lr=self.eri_lr, dispersion_energy=self.dispersion_energy)
+        kwargs = _scf_kernel_kwargs(self, _UKS_KERNEL_FIELDS)
         if self.direct_basis is not None:
             kwargs["direct_basis"] = self.direct_basis
         return kwargs

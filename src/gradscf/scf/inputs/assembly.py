@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf._memory import DEFAULT_MAX_MEMORY_MB, tree_storage_bytes, workspace_bytes
-from gradscf.integrals.basis import basis_from_molecule_spec, prepare_basis
+from gradscf.integrals.basis import basis_from_molecule_spec, cartesian_to_spherical, prepare_basis
 from gradscf.integrals.plan import make_plan
 from gradscf.integrals.grids import build_molecular_grid_from_spec
 from gradscf.integrals.grids.ao import evaluate_cartesian_ao, evaluate_cartesian_ao_with_derivatives
@@ -65,7 +65,7 @@ def _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices):
     bundle = context.grid_ao_bundle
     arrays = () if bundle is None else (bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian)
     resident = _grid._grid_resident_bytes(context.basis, context.coords,
-        context.grid_weights, *arrays, scf_max_cycle=cfg.max_cycle,
+        context.grid_weights, context.ao_transform, *arrays, scf_max_cycle=cfg.max_cycle,
         scf_history_matrices=scf_history_matrices)
     provider = context.grid_ao
     ao_workspace = (0 if provider is None else provider.block_size *
@@ -79,7 +79,7 @@ def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
     if required_bytes is None:
         if cfg.jk_backend == "direct":
             return
-        required_bytes = _eri_workspace_bytes(context.basis.nao, cfg, mode=mode, rsh=rsh,
+        required_bytes = _eri_workspace_bytes(context.nao, cfg, mode=mode, rsh=rsh,
             geometry_is_traced=context.geometry_is_traced,
             itemsize=max(8, np.dtype(context.coords.dtype).itemsize))
     resident, ao_workspace = _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices)
@@ -95,13 +95,11 @@ def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
         )
 
 
-def _budgeted_direct_basis(spec, basis, cfg, context, *, scf_history_matrices, extra_resident_bytes=0):
-    from gradscf.integrals.backends.native.jk import NativeDirectBasis
+def _budgeted_direct_basis(provider, cfg, context, *, needs_ao_laplacian,
+                           scf_history_matrices, extra_resident_bytes=0):
     from gradscf.integrals.backends.native.workspace import bind_jk_workspace
-    top, parameters = prepare_basis(spec, basis, cart=True)
-    provider = NativeDirectBasis(make_plan(top), parameters)
     resident, ao_workspace = _grid_work_bytes(context, cfg,
-        xc_type(local_xc_spec(cfg.xc_spec)) == 'MGGA', scf_history_matrices)
+        needs_ao_laplacian, scf_history_matrices)
     return bind_jk_workspace(provider, workers=cfg.direct_scf_workers,
         max_memory=cfg.max_memory, resident_bytes=resident+ao_workspace+extra_resident_bytes,
         cutoff=cfg.direct_scf_tol)
@@ -110,9 +108,8 @@ def _budgeted_direct_basis(spec, basis, cfg, context, *, scf_history_matrices, e
 def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
                   grids_level, max_l, grid_ao_backend, integral_backend,
                   geometry_grad_policy, include_dipole, chkfile, sap_basis,
-                  chkfile_project, mol_kwargs, scf_history_matrices=2):
-    if not cart:
-        raise NotImplementedError("SCF/grid assembly currently requires Cartesian AOs; integral plans also support spherical AOs")
+                  chkfile_project, mol_kwargs, init_guess, make_initial_guess,
+                  scf_history_matrices=2, include_ao_laplacian=None):
     mode = str(integral_backend).lower()
     if mode != "libcint":
         raise ValueError("Only the libcint integral interface is supported; remove the old integral_backend option.")
@@ -138,37 +135,42 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
     if mol_kwargs:
         raise TypeError(f"Unsupported molecular options: {', '.join(sorted(mol_kwargs))}")
     spec = atom if isinstance(atom, MoleculeSpec) else parse_molecule_spec(atom, unit=unit, charge=charge, spin=spin)
-    laplacian = xc_type(local_xc_spec(xc_spec)) == "MGGA"
-    needs_grid = xc_type(local_xc_spec(xc_spec)) != "HF"
+    xc_kind = xc_type(local_xc_spec(xc_spec))
+    laplacian = xc_kind == "MGGA" if include_ao_laplacian is None else include_ao_laplacian
+    needs_grid = xc_kind != "HF"
     fixed_workspace = 0
     auxiliary = getattr(cfg, "auxbasis", None)
-    if mode == "libcint":
-        # Preparing metadata is cheap; forecast native/RI storage before the
-        # grid planner commits the remaining budget to AO work arrays.
-        top, params = prepare_basis(spec, basis, cart=True)
-        plan = make_plan(top)
-        geometry_is_traced = any(isinstance(value, jax.core.Tracer)
-            for value in jax.tree_util.tree_leaves(spec.coords_bohr))
-        auxiliary_nao = None
-        if cfg.jk_backend == "df" and auxiliary is not None:
-            if geometry_is_traced:
-                raise NotImplementedError('Native auxiliary-integral geometry AD is not implemented.')
-            aux_top, aux_params = prepare_basis(spec, auxiliary, cart=True)
-            auxiliary_nao = aux_top.nao
-        if cfg.jk_backend == "df":
-            fixed_workspace = _eri_workspace_bytes(top.nao, cfg, mode=mode, rsh=rsh,
-                geometry_is_traced=geometry_is_traced, auxiliary_nao=auxiliary_nao)
-        if cfg.jk_backend == "direct" or only_dfj:
-            from gradscf.integrals.backends.native.jk import NativeDirectBasis, native_jk_workspace_bytes
+    # Forecast native/RI storage before committing the remaining budget to grids.
+    top, params = prepare_basis(spec, basis, cart=cart)
+    plan = make_plan(top)
+    # Cartesian and real spherical s/p columns coincide in libcint order.
+    ao_transform = (cartesian_to_spherical(top)
+                    if needs_grid and not cart and max(top.angular_momenta) > 1 else None)
+    if ao_transform is not None and getattr(cfg, "grid_screen_tol", 0.) > 0:
+        raise NotImplementedError("Local AO screening requires Cartesian AOs; use grid_screen_tol=0.")
+    geometry_is_traced = any(isinstance(value, jax.core.Tracer)
+        for value in jax.tree_util.tree_leaves(spec.coords_bohr))
+    auxiliary_nao = None
+    if cfg.jk_backend == "df" and auxiliary is not None:
+        if geometry_is_traced:
+            raise NotImplementedError('Native auxiliary-integral geometry AD is not implemented.')
+        aux_top, aux_params = prepare_basis(spec, auxiliary, cart=cart)
+        auxiliary_nao = aux_top.nao
+    if cfg.jk_backend == "df":
+        fixed_workspace = _eri_workspace_bytes(top.nao, cfg, mode=mode, rsh=rsh,
+            geometry_is_traced=geometry_is_traced, auxiliary_nao=auxiliary_nao)
+    needs_direct = cfg.jk_backend == "direct" or only_dfj
+    if needs_direct:
+        from gradscf.integrals.backends.native.jk import NativeDirectBasis, native_jk_workspace_bytes
 
-            estimate = native_jk_workspace_bytes(NativeDirectBasis(plan, None),
-                                                 cfg.direct_scf_workers, cfg.direct_scf_tol)
-            if estimate is None:
-                raise ValueError("Native J/K workspace requires a complete basis topology.")
-            fixed_workspace += 3 * estimate
-        elif cfg.jk_backend != "df":
-            fixed_workspace = _eri_workspace_bytes(top.nao, cfg, mode=mode, rsh=rsh,
-                geometry_is_traced=geometry_is_traced, auxiliary_nao=auxiliary_nao)
+        estimate = native_jk_workspace_bytes(NativeDirectBasis(plan, None),
+                                             cfg.direct_scf_workers, cfg.direct_scf_tol)
+        if estimate is None:
+            raise ValueError("Native J/K workspace requires a complete basis topology.")
+        fixed_workspace += 3 * estimate
+    elif cfg.jk_backend != "df":
+        fixed_workspace = _eri_workspace_bytes(top.nao, cfg, mode=mode, rsh=rsh,
+            geometry_is_traced=geometry_is_traced, auxiliary_nao=auxiliary_nao)
     context = _prepare_basis_grid_context(spec=spec, basis=basis, max_l=max_l,
         grids_level=grids_level,
         needs_ao_laplacian=laplacian, needs_grid=needs_grid,
@@ -177,7 +179,8 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         max_memory=getattr(cfg, "max_memory", DEFAULT_MAX_MEMORY_MB),
         scf_max_cycle=cfg.max_cycle, scf_history_matrices=scf_history_matrices,
         fixed_workspace_bytes=fixed_workspace,
-        force_streamed=getattr(cfg, 'grid_screen_tol', 0.) > 0)
+        force_streamed=getattr(cfg, 'grid_screen_tol', 0.) > 0,
+        ao_transform=ao_transform, nao=top.nao)
     if context.geometry_is_traced and geometry_grad_policy == "error":
         raise NotImplementedError("Geometry gradients are disabled by geometry_grad_policy='error'")
     _check_eri_memory(context, cfg, mode=mode, rsh=rsh,
@@ -188,33 +191,61 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
     if original_chg:
         from gradscf.dft.dispersion import wb97xd_dispersion_energy
         dispersion_energy = wb97xd_dispersion_energy(spec.symbols, spec.coords_bohr)
-    if mode == "libcint":
-        s = plan.evaluate("overlap", params)
-        h = plan.evaluate("kinetic", params)+plan.evaluate("nuclear", params)
-        full_eri=pair=factors=None
-        if cfg.jk_backend=='df' and auxiliary is not None:
-            from gradscf.integrals.molecular.density_fitting import make_auxiliary_plan, unpack_factors
-            packed_factors=make_auxiliary_plan(top,aux_top).factors(params,aux_params,lindep=cfg.df_tol)
-            factors=unpack_factors(packed_factors,top.nao)
-        elif cfg.jk_backend != 'direct':
-            if rsh is not None:
-                full_eri = plan.evaluate("eri", params)
-                eri_lr = plan.evaluate("eri", params, omega=rsh.default_omega)
-            else:
-                pair=plan.evaluate('eri',params,aosym='s4')
-        dipole = plan.evaluate("dipole", params) if include_dipole else None
+    # The direct action and one-electron calls consume the same live JAX operands.
+    direct_inputs = plan._direct_inputs(params) if needs_direct else None
+    s, kinetic, nuclear, dipole = plan.evaluate_scf_one_electron(
+        params, include_dipole=include_dipole, _inputs=direct_inputs,
+    )
+    h = kinetic + nuclear
+    del kinetic, nuclear
+    full_eri = pair = factors = None
+    if cfg.jk_backend == 'df' and auxiliary is not None:
+        from gradscf.integrals.molecular.density_fitting import make_auxiliary_plan, unpack_factors
+        packed_factors = make_auxiliary_plan(top, aux_top).factors(params, aux_params, lindep=cfg.df_tol)
+        factors = unpack_factors(packed_factors, top.nao)
+        del packed_factors, aux_params
+    elif cfg.jk_backend != 'direct':
+        if rsh is not None:
+            full_eri = plan.evaluate("eri", params)
+            eri_lr = plan.evaluate("eri", params, omega=rsh.default_omega)
+        else:
+            pair = plan.evaluate('eri', params, aosym='s4')
     if cfg.jk_backend == "df" and factors is None:
         from gradscf.integrals.molecular.factorization import eri_pair_matrix_to_df_factors, eri_pair_matrix_to_df_factors_traceable
         factorize = eri_pair_matrix_to_df_factors_traceable if context.geometry_is_traced else eri_pair_matrix_to_df_factors
         factors = factorize(pair, nao=s.shape[0], tol=cfg.df_tol, max_rank=cfg.df_max_rank)
     ao, ao_deriv1, ao_laplacian = _grid_ao_payload(context, needs_ao_laplacian=laplacian)
-    return spec, context, s, h, full_eri, pair, factors, dipole, ao, ao_deriv1, ao_laplacian, mode, eri_lr, dispersion_energy
+    guess_resident = 0
+    if isinstance(init_guess, str) and init_guess.lower() == 'atom':
+        guess_resident = tree_storage_bytes(
+            spec, context, s, h, full_eri, pair, factors, dipole, ao, ao_deriv1,
+            ao_laplacian, eri_lr, dispersion_energy, params, direct_inputs,
+        )
+    initial = make_initial_guess(init_guess=init_guess, dtype=h.dtype, spec=spec,
+                               basis=basis, max_memory=cfg.max_memory, resident_bytes=guess_resident,
+                               cart=cart)
+    direct = None
+    if needs_direct:
+        direct = _budgeted_direct_basis(
+            NativeDirectBasis(plan, params, _prepared=(plan, params, direct_inputs)),
+            cfg, context, needs_ao_laplacian=laplacian,
+            scf_history_matrices=scf_history_matrices, extra_resident_bytes=tree_storage_bytes(factors),
+        )
+    charge = int(spec.charge)
+    common = dict(basis=context.basis, overlap=s, hcore=h, df_factors=factors,
+        direct_basis=direct, nuclear_repulsion=spec.nuclear_repulsion,
+        coords=context.coords, grid_weights=context.grid_weights,
+        ao=ao, ao_deriv1=ao_deriv1, ao_laplacian=ao_laplacian, dipole_integrals=dipole,
+        molecule_charge=charge, geometry_is_traced=context.geometry_is_traced,
+        integral_backend=mode, grid_ao_backend="jax", grid_ao=context.grid_ao, ao_transform=ao_transform,
+        eri_lr=eri_lr, dispersion_energy=dispersion_energy)
+    return common, int(np.asarray(spec.charges).sum()) - charge, int(spec.spin), full_eri, pair, initial
 
 
 def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     unit="Angstrom", charge=0, spin=0, cart=True, grids_level=0, max_l=3,
     grid_ao_backend="jax", integral_backend="libcint", libcint_geometry_grad_policy="analytic",
-    include_dipole_integrals=True, init_guess="hcore", chkfile=None,
+    include_dipole_integrals=True, include_ao_laplacian=None, init_guess="hcore", chkfile=None,
     init_guess_sap_basis=None, init_guess_chkfile_project=None, verbose=0, **mol_kwargs):
     from gradscf.scf.rks import RKSConfig
     from gradscf.scf.init_guess import restricted_initial_guess
@@ -222,70 +253,42 @@ def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     actual_spin = atom.spin if isinstance(atom, MoleculeSpec) else spin
     if actual_spin != 0:
         raise NotImplementedError("Restricted inputs require a closed-shell system")
-    values = _build_common(atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
+    common, nelectron, _, eri, pair, initial = _build_common(
+        atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
         cart=cart,grids_level=grids_level,max_l=max_l,grid_ao_backend=grid_ao_backend,
         integral_backend=integral_backend,geometry_grad_policy=libcint_geometry_grad_policy,
         include_dipole=include_dipole_integrals,
         chkfile=chkfile,sap_basis=init_guess_sap_basis,chkfile_project=init_guess_chkfile_project,
-        mol_kwargs=mol_kwargs)
-    spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode,eri_lr,dispersion_energy=values
-    guess_resident = (tree_storage_bytes(spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,eri_lr,dispersion_energy)
-        if isinstance(init_guess,str) and init_guess.lower() == "atom" else 0)
-    initial = restricted_initial_guess(init_guess=init_guess,dtype=h.dtype,
-        spec=spec,basis=basis,max_memory=cfg.max_memory,resident_bytes=guess_resident)
-    nelectron = int(np.asarray(spec.charges).sum())-int(spec.charge)
-    direct=None
-    if cfg.jk_backend=='direct' or getattr(cfg, "only_dfj", False):
-        direct=_budgeted_direct_basis(spec,basis,cfg,ctx,scf_history_matrices=2,
-            extra_resident_bytes=tree_storage_bytes(factors))
-    return RKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=eri if eri_lr is not None else None,
-        eri_pair_matrix=pair if cfg.jk_backend == "full" else None,df_factors=factors,
-        direct_basis=direct,nelectron=nelectron,
-        nuclear_repulsion=spec.nuclear_repulsion,coords=ctx.coords,grid_weights=ctx.grid_weights,
-        ao=ao,ao_deriv1=dao,ao_laplacian=lap,dipole_integrals=dipole,init_density=initial.density,
-        molecule_charge=int(spec.charge),geometry_is_traced=ctx.geometry_is_traced,
-        integral_backend=mode,grid_ao_backend="jax",eri_lr=eri_lr,dispersion_energy=dispersion_energy,
-        grid_ao=ctx.grid_ao)
+        mol_kwargs=mol_kwargs, include_ao_laplacian=include_ao_laplacian,
+        init_guess=init_guess, make_initial_guess=restricted_initial_guess)
+    return RKSIntegralInputs(**common, eri=eri if common["eri_lr"] is not None else None,
+        eri_pair_matrix=pair if cfg.jk_backend == "full" else None,
+        nelectron=nelectron, init_density=initial.density)
 
 
 def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
     unit="Angstrom", charge=0, spin=1, cart=True, grids_level=0, max_l=3,
     grid_ao_backend="jax", integral_backend="libcint", libcint_geometry_grad_policy="analytic",
+    include_dipole_integrals=True, include_ao_laplacian=None,
     init_guess="hcore", chkfile=None, init_guess_sap_basis=None,
     init_guess_chkfile_project=None, verbose=0, scf_history_matrices=6, **mol_kwargs):
     from gradscf.scf.uks import UKSConfig
     from gradscf.scf.init_guess import unrestricted_initial_guess
     cfg, name = _resolve_config(config, xc_spec, UKSConfig)
-    values = _build_common(atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
+    common, total, spin, eri, pair, initial = _build_common(
+        atom=atom,basis=basis,cfg=cfg,xc_spec=name,unit=unit,charge=charge,spin=spin,
         cart=cart,grids_level=grids_level,max_l=max_l,grid_ao_backend=grid_ao_backend,
         integral_backend=integral_backend,geometry_grad_policy=libcint_geometry_grad_policy,
-        include_dipole=True,chkfile=chkfile,sap_basis=init_guess_sap_basis,
+        include_dipole=include_dipole_integrals,chkfile=chkfile,sap_basis=init_guess_sap_basis,
         chkfile_project=init_guess_chkfile_project,mol_kwargs=mol_kwargs,
-        scf_history_matrices=scf_history_matrices)
-    spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,mode,eri_lr,dispersion_energy=values
-    guess_resident = (tree_storage_bytes(spec,ctx,s,h,eri,pair,factors,dipole,ao,dao,lap,eri_lr,dispersion_energy)
-        if isinstance(init_guess,str) and init_guess.lower() == "atom" else 0)
-    initial=unrestricted_initial_guess(init_guess=init_guess,dtype=h.dtype,
-        spec=spec,basis=basis,max_memory=cfg.max_memory,resident_bytes=guess_resident)
-    total=int(np.asarray(spec.charges).sum())-int(spec.charge)
-    nalpha,nbeta=_unrestricted_spin_electron_counts(total,int(spec.spin))
-    direct=None
-    if cfg.jk_backend == "direct" or getattr(cfg, "only_dfj", False):
-        direct=_budgeted_direct_basis(spec,basis,cfg,ctx,scf_history_matrices=scf_history_matrices,
-            extra_resident_bytes=tree_storage_bytes(factors))
-        eri=jnp.zeros((0,0,0,0),dtype=h.dtype)
-    elif cfg.jk_backend == "df":
-        eri=jnp.zeros((0,0,0,0),dtype=h.dtype)
-    elif eri_lr is None:
-        eri=pair
-    elif eri is None:
-        eri=eri_tensor(ctx.basis)
-    return UKSIntegralInputs(basis=ctx.basis,overlap=s,hcore=h,eri=eri,df_factors=factors,direct_basis=direct,
-        nalpha=nalpha,nbeta=nbeta,nuclear_repulsion=spec.nuclear_repulsion,
-        coords=ctx.coords,grid_weights=ctx.grid_weights,ao=ao,ao_deriv1=dao,ao_laplacian=lap,
-        dipole_integrals=dipole,init_density_alpha=initial.density_alpha,init_density_beta=initial.density_beta,
-        total_electrons=total,molecule_charge=int(spec.charge),geometry_is_traced=ctx.geometry_is_traced,
-        integral_backend=mode,grid_ao_backend="jax",eri_lr=eri_lr,dispersion_energy=dispersion_energy,
-        grid_ao=ctx.grid_ao)
+        scf_history_matrices=scf_history_matrices,include_ao_laplacian=include_ao_laplacian,
+        init_guess=init_guess,make_initial_guess=unrestricted_initial_guess)
+    nalpha, nbeta = _unrestricted_spin_electron_counts(total, spin)
+    if common["direct_basis"] is not None or cfg.jk_backend == "df":
+        eri = jnp.zeros((0, 0, 0, 0), dtype=common["hcore"].dtype)
+    elif common["eri_lr"] is None:
+        eri = pair
+    return UKSIntegralInputs(**common, eri=eri, nalpha=nalpha, nbeta=nbeta, total_electrons=total,
+        init_density_alpha=initial.density_alpha, init_density_beta=initial.density_beta)
 
 __all__ = ["RKSIntegralInputs", "UKSIntegralInputs", "build_rks_integral_inputs", "build_uks_integral_inputs"]

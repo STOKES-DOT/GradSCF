@@ -292,11 +292,19 @@ class GW:
         return self
 
     def _conventional_source(self):
-        inputs = self._scf._scf_inputs
+        mean_field = self._scf
+        inputs = mean_field._scf_inputs
         for name in ("direct_basis", "eri_pair_matrix", "eri"):
             value = getattr(inputs, name, None)
             if value is not None:
                 return {name: value}
+        mol = getattr(mean_field, "mol", None)
+        if not getattr(mol, "cart", True):
+            from ..integrals import make_plan, prepare_basis
+            from ..integrals.backends.native.jk import NativeDirectBasis
+
+            topology, parameters = prepare_basis(mean_field._spec(), mol.basis, cart=mol.cart)
+            return {"direct_basis": NativeDirectBasis(make_plan(topology), parameters)}
         # Keep learned contraction/exponent values and their AO normalization;
         # a named molecular basis need not describe the actual SCF basis.
         from ..integrals.libcint import bind_cartesian

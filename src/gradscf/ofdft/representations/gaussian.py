@@ -14,16 +14,21 @@ def gaussian_inputs(mol, *, grids_level=1, coordinates=None):
     values and traced coordinate response retain packed s4 ERIs; the producer
     does not gather a full four-index tensor for geometry differentiation.
     """
-    if mol.spin != 0 or not mol.cart:
-        raise ValueError('Molecular OFDFT currently requires unpolarized Cartesian AOs.')
+    if mol.spin != 0:
+        raise ValueError('Molecular OFDFT currently requires an unpolarized density.')
     spec = mol.to_spec()
     if coordinates is not None:
         spec = replace(spec, coords_bohr=jnp.asarray(coordinates))
-    topology, parameters = integrals.prepare_basis(spec,mol.basis)
+    topology, parameters = integrals.prepare_basis(spec, mol.basis, cart=mol.cart)
     plan = integrals.make_plan(topology)
     basis = integrals.basis_from_molecule_spec(spec,basis=mol.basis)
     coords, weights = integrals.build_molecular_grid_from_spec(spec,level=grids_level)
     ao, deriv = integrals.evaluate_cartesian_ao_with_derivatives(basis,coords)
+    if not mol.cart and topology.nao != basis.nao:
+        from ...integrals.basis import cartesian_to_spherical
+
+        deriv = deriv @ cartesian_to_spherical(topology)
+        ao = deriv[0]
     overlap = plan.evaluate('overlap',parameters)
     kinetic = plan.evaluate('kinetic',parameters)
     external = plan.evaluate('nuclear',parameters)

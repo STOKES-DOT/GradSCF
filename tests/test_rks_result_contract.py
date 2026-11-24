@@ -5,6 +5,7 @@ from dataclasses import fields, replace
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from gradscf.scf.rks import (
     RKSConfig,
@@ -86,6 +87,35 @@ def test_eager_result_is_also_a_valid_pytree_input():
     np.testing.assert_allclose(energy, result.total_energy, atol=1e-13)
 
 
+def test_rks_uses_explicit_density_without_building_an_orbital_guess(monkeypatch):
+    from gradscf.scf import rks
+
+    original = rks._build_density_from_occ
+    builds = 0
+
+    def count_build(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rks, "_build_density_from_occ", count_build)
+    with jax.disable_jit():
+        result = run_rks_from_integrals_traceable(
+            **_inputs(), init_density=jnp.asarray([[1.5]]),
+        )
+
+    assert bool(result.converged)
+    assert builds == 0
+
+
+def test_rks_rejects_vector_orbital_coefficients_with_explicit_density():
+    with jax.disable_jit(), pytest.raises(ValueError, match="init_mo_coeff"):
+        run_rks_from_integrals_traceable(
+            **_inputs(), init_density=jnp.asarray([[2.0]]),
+            init_mo_coeff=jnp.asarray([1.0]), init_mo_energy=jnp.asarray([-1.0]),
+        )
+
+
 def test_rsh_convergence_checks_the_complete_energy():
     inputs = _inputs()
     inputs.update(config=RKSConfig(xc_spec="wb97xd", max_cycle=4),
@@ -94,6 +124,51 @@ def test_rsh_convergence_checks_the_complete_energy():
     assert bool(jnp.isfinite(result.electronic_energy))
     assert bool(jnp.isnan(result.total_energy))
     assert not bool(result.converged)
+
+
+def test_full_rsh_reuses_one_jk_builder_for_seed_and_iterations(monkeypatch):
+    from gradscf.scf import rks
+
+    original = rks._make_jk_builder
+    builds = 0
+
+    def count_build(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rks, "_make_jk_builder", count_build)
+    inputs = _inputs()
+    inputs.update(config=RKSConfig(xc_spec="RSH(0.3, 0.8, -0.2)", max_cycle=4),
+                  eri_lr=.2 * inputs["eri"])
+
+    # Observe construction for this solve independently of the compilation cache.
+    with jax.disable_jit():
+        result = run_rks_from_integrals_traceable(**inputs)
+
+    assert bool(result.converged)
+    assert builds == 1
+
+
+def test_full_rsh_jit_keeps_both_eri_inputs_differentiable():
+    inputs = _inputs()
+    inputs["config"] = RKSConfig(xc_spec="RSH(0.3, 0.8, -0.2)", max_cycle=4)
+
+    def energy(eri_values):
+        result = run_rks_from_integrals_traceable(**dict(
+            inputs,
+            eri=jnp.full((1, 1, 1, 1), eri_values[0]),
+            eri_lr=jnp.full((1, 1, 1, 1), eri_values[1]),
+        ))
+        return result.total_energy
+
+    evaluate = jax.jit(jax.value_and_grad(energy))
+    expected_gradient = jnp.array([1.4, -.2])
+    for eri_values in (jnp.array([.6, .12]), jnp.array([.7, .21])):
+        value, gradient = evaluate(eri_values)
+        # E = 2h + (2-a_SR) I0 - (a_LR-a_SR) I_LR + E_nuc for D=2.
+        np.testing.assert_allclose(value, -1.7 + eri_values @ expected_gradient, atol=1e-12)
+        np.testing.assert_allclose(gradient, expected_gradient, atol=1e-12)
 
 
 def test_rsh_traceable_kernel_keeps_lr_and_dispersion_inputs_differentiable():

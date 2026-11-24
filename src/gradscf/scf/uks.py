@@ -108,6 +108,11 @@ class UKSResult:
     range_separated_coefficients: tuple[float, float, float] | None = None
     dispersion_energy: Array | float | None = None
 
+    @property
+    def fock_matrix(self) -> Array:
+        """Spin-stacked Fock for consumers of the raw or reference state."""
+        return jnp.stack([self.fock_matrix_alpha, self.fock_matrix_beta])
+
 def _default_spin_mo_occ(nao: int, nelec: int, dtype) -> Array:
     return jnp.zeros((nao,), dtype=dtype).at[:nelec].set(1.0)
 
@@ -507,7 +512,7 @@ def _raw_fock_and_energy_for_state(
         # This legacy callback has no kinetic-density potential channels.
         if xc_kind in {"MGGA", "MGGA_LAPL"}:
             raise ValueError("MGGA AO potentials require both spin kinetic-density potentials.")
-        from .differentiable import _build_vxc_matrix_from_components
+        from .autodiff import _build_vxc_matrix_from_components
 
         potential = jnp.stack([
             _build_vxc_matrix_from_components(
@@ -631,6 +636,8 @@ def run_uks_from_integrals(
         raise ValueError("UKS jk_backend='direct' requires an AO J/K provider.")
     traceable_inputs = _contains_jax_tracer((s, h, eri, eri_lr, dispersion_energy, df_factors_arr, ao, ao_deriv1, weights, enuc, grid_ao))
     nao = int(s.shape[0])
+    if h.shape != (nao, nao):
+        raise ValueError("hcore must have shape (nao, nao) for UKS.")
     if nalpha < 0 or nalpha > nao or nbeta < 0 or nbeta > nao or (nalpha + nbeta) <= 0:
         raise ValueError("Invalid occupation counts for UKS.")
     if xc_kind in {"GGA", "MGGA"} and ao_deriv1.shape[0] < 4:
@@ -638,9 +645,16 @@ def run_uks_from_integrals(
 
     x = (_orthogonalizer(s, cfg.orthogonalization_eps) if bound_xc is not None
          else orbital_orthogonalizer(s, cfg.orthogonalization_eps))
-    core_mo_energy, core_mo_coeff = _diagonalize_fock(h, x)
+    core_mo_energy = core_mo_coeff = None
+    if any(guess is None for guess in (
+        init_mo_coeff_alpha, init_mo_coeff_beta, init_mo_energy_alpha, init_mo_energy_beta
+    )):
+        core_mo_energy, core_mo_coeff = _diagonalize_fock(h, x)
     mo_coeff_a = core_mo_coeff if init_mo_coeff_alpha is None else jnp.asarray(init_mo_coeff_alpha)
     mo_coeff_b = core_mo_coeff if init_mo_coeff_beta is None else jnp.asarray(init_mo_coeff_beta)
+    for spin, coeff in (("alpha", mo_coeff_a), ("beta", mo_coeff_b)):
+        if coeff.ndim != 2:
+            raise ValueError(f"init_mo_coeff_{spin} must be a two-dimensional matrix for UKS.")
     mo_energy_a = core_mo_energy if init_mo_energy_alpha is None else jnp.asarray(init_mo_energy_alpha)
     mo_energy_b = core_mo_energy if init_mo_energy_beta is None else jnp.asarray(init_mo_energy_beta)
 
@@ -649,26 +663,24 @@ def run_uks_from_integrals(
     mo_occ_a = _validate_spin_occ(mo_occ_a, nao=nao, nelec=nalpha, label="alpha")
     mo_occ_b = _validate_spin_occ(mo_occ_b, nao=nao, nelec=nbeta, label="beta")
 
-    density_a = _build_density_from_occ(mo_coeff_a, mo_occ_a)
-    density_b = _build_density_from_occ(mo_coeff_b, mo_occ_b)
-    init_density_a = _validate_density_matrix(
+    density_a = _validate_density_matrix(
         init_density_alpha,
         nao=nao,
         dtype=h.dtype,
         label="init_density_alpha",
         method="UKS",
     )
-    init_density_b = _validate_density_matrix(
+    density_b = _validate_density_matrix(
         init_density_beta,
         nao=nao,
         dtype=h.dtype,
         label="init_density_beta",
         method="UKS",
     )
-    if init_density_a is not None:
-        density_a = init_density_a
-    if init_density_b is not None:
-        density_b = init_density_b
+    if density_a is None:
+        density_a = _build_density_from_occ(mo_coeff_a, mo_occ_a)
+    if density_b is None:
+        density_b = _build_density_from_occ(mo_coeff_b, mo_occ_b)
 
     if bound_xc is None:
         alpha_scalar = rsh.default_sr_hf_fraction if rsh is not None else float(hybrid_coeff(cfg.xc_spec))

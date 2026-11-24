@@ -2,7 +2,7 @@
 
 Use identical founders, numbers of agents, generations, and steps for ablations.
 GA mode imports multi_agent_ga from Multi-Agent-Swarm's GA package.
-Use the same --ppo-checkpoint for a GA-only ablation with PPO enabled.
+Use --mutation uniform to compare against uniform sampling of legal actions.
 The default founder is local-density exchange. Custom founder objects contain
 a "genes" map keyed by the six slots and an optional "shared" parameter list.
 Each gene uses the existing potential proposal schema.
@@ -19,6 +19,7 @@ from gradscf.model.autoxc import Candidate, CodexDesigner
 from ...history import write_json
 from ...swarm import Genome, SwarmConfig, run_swarm
 from ...swarm.genome import SLOTS
+from ...swarm.search import MUTATION_STRATEGIES
 from .campaign import LDA_EXCHANGE_POTENTIAL
 from .distributed import RemoteEvaluator
 
@@ -34,22 +35,14 @@ def main():
     parser.add_argument('--steps', type=int, default=3, help='Trial slots per agent and generation')
     parser.add_argument('--concurrency', type=int, default=2, help='Concurrent complete agent segments')
     parser.add_argument('--ga', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--ppo', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--ppo-checkpoint', type=Path, help='Frozen policy or a saved agent segment JSON')
+    parser.add_argument('--mutation', choices=MUTATION_STRATEGIES, default='thompson',
+                        help='Contextual Thompson sampling (shared with GA) or uniform sampling')
     parser.add_argument('--founders', type=Path, help='A six-gene genome JSON or a list of genomes')
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
     config = SwarmConfig(agents=args.agents, generations=args.generations, steps=args.steps,
-                         ga=args.ga, ppo=args.ppo, concurrency=args.concurrency, seed=args.seed)
-    checkpoint = None
-    if args.ppo_checkpoint:
-        if not config.ppo:
-            parser.error('--ppo-checkpoint requires --ppo')
-        data = json.loads(args.ppo_checkpoint.read_text())
-        checkpoint = data['policy'] if 'policy' in data else data
-        if not isinstance(checkpoint, dict):
-            parser.error('--ppo-checkpoint must contain trained actor and critic weights')
+                         ga=args.ga, mutation=args.mutation, concurrency=args.concurrency, seed=args.seed)
     if args.founders:
         values = json.loads(args.founders.read_text())
         founders = [Genome.from_dict(value) for value in (values if isinstance(values, list) else [values])]
@@ -63,7 +56,7 @@ def main():
         '\n\n## Swarm mutation turns\n'
         'The controller supplies a six-gene parent and a selected action. '
         'Return only the selected gene as one potential JSON object. '
-        'Use only the supplied search history and active inputs for this turn. '
+        'Build the selected gene from the supplied density fields and feature operators. '
         'The controller assembles and jointly refits the complete local potential.'
     )
     brief = (prompts / 'design.md').read_text()
@@ -90,7 +83,8 @@ def main():
         brief += f'\nActive XC100 mode: `{mode}`.\n'
         result = asyncio.run(run_swarm(
             factory, evaluator, founders, directory=args.output, config=config,
-            registry=policy['features'], brief=brief, frozen_policy=checkpoint,
+            registry=policy['features'], brief=brief,
+            feature_operators=policy.get('feature_operators', ()),
             protocol={'system_prompt_sha256': sha256(system.encode()).hexdigest(),
                       'model': model, 'effort': effort},
         ))

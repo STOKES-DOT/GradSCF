@@ -14,9 +14,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf.model.autoxc import Candidate, Evaluation, Evaluator, Parameter
+from gradscf.model.autoxc.candidate import PAIR_OPERATORS
 from gradscf.model.autoxc.history import source_digest, versions, write_json
 from gradscf.dft.iks.objectives import wu_yang_density_loss
-from .molecule import XC100Case, file_hash
+from .molecule import DENSITY_FIELDS, XC100Case, file_hash
 from .checks import baseline_checks, candidate_checks
 from .direct import BLOCK_SIZE, GGA_FIELDS, PROJECTION_MEMORY_MB
 from .reference import reference_baseline
@@ -45,7 +46,8 @@ def memory():
 
 
 def validate_candidate(candidate):
-    if (candidate.kind!='potential' or not candidate.affine or not candidate.features <= GGA_FIELDS or
+    if (candidate.kind!='potential' or candidate.pair_operators
+            or not candidate.affine or not candidate.features <= GGA_FIELDS or
             set(candidate.initial) & XC100Case.fields):
         raise ValueError('Use a potential-only affine expression of density/gradient features; no energy, lap, q or z')
     if any(p.lower < -.2 or p.upper > .2 for p in candidate.parameters):
@@ -109,12 +111,10 @@ class Campaign:
         if self.open_design:
             self.policy.update(max_parameters=None,coefficient_bounds=None,
                 uniform_limit_tolerance=None,reference_energy_labels=False,selection='wy_first')
+            self.policy.update(features=sorted(XC100Case.fields), primitive_fields=sorted(DENSITY_FIELDS),
+                               feature_operators=list(PAIR_OPERATORS))
             if self.complete_potential:
-                self.policy.update(features=sorted(XC100Case.fields), potential_is_complete=True)
-            else:
-                from .ingredients import AVAILABLE_INPUTS,ORBITAL_WINDOWS
-                self.policy.update(features=sorted(AVAILABLE_INPUTS),
-                    orbital_reference='PBE@fixed-target-density',orbital_windows_hartree=ORBITAL_WINDOWS)
+                self.policy['potential_is_complete'] = True
         if candidate_mode == 'open_xc':
             self.policy.update(reference_energy_labels=True, selection='joint_reward',
                 outer_weights=[.5, .5], energy_label='Exc_TZ', energy_path='linear_density',
@@ -168,16 +168,6 @@ class Campaign:
             baseline = (reference_baseline(self.root, case, include_energy=include_energy)
                         if receipt is not None else None)
             case.prepare(baseline=baseline, include_energy=include_energy)
-            if self.open_design and not self.complete_potential:
-                from .ingredients import prepare_case_orbitals,features_for_candidate,AVAILABLE_INPUTS
-                self.status('preparing_physical_inputs',current_system=identifier)
-                try:
-                    prepare_case_orbitals(case)
-                    fixed_inputs=features_for_candidate(case,AVAILABLE_INPUTS)
-                    if not all(bool(jnp.all(jnp.isfinite(v))) for v in fixed_inputs.values()):
-                        raise ValueError('Declared physical input fields must be finite')
-                except ValueError as exc:
-                    raise ValueError(f'Fixed physical inputs {identifier} failed before model evaluation: {exc}') from exc
             score = case.reporter.baseline
             grid_error = abs(float(np.dot(case.arrays['grid_weights'], case.arrays['rho']))-case.target.nelec)
             if not bool(score.valid) or grid_error > 1e-6 or not np.isfinite(float(score.density_error)):

@@ -9,6 +9,24 @@ from .._memory import DEFAULT_MAX_MEMORY_MB, validate_memory_mb
 from ._pytree import pytree_dataclass
 
 
+def _evaluate_grid_density(
+    rdm1: jnp.ndarray,
+    ao: jnp.ndarray,
+    grid_ao: Any | None,
+    *,
+    spin_resolved: bool,
+) -> jnp.ndarray:
+    """Contract a spin-stacked density on dense AO values or streamed blocks."""
+    subscripts = "spq,rp,rq->rs" if spin_resolved else "spq,rp,rq->r"
+
+    def contract(values, *_):
+        return jnp.einsum(subscripts, rdm1, values, values)
+
+    if grid_ao is not None:
+        return grid_ao.map(contract, deriv=0)
+    return contract(ao)
+
+
 @pytree_dataclass()
 @dataclass(frozen=True)
 class QuadratureGrid:
@@ -94,11 +112,8 @@ class RestrictedMolecule:
         object.__setattr__(self, "max_memory", validate_memory_mb(self.max_memory))
 
     def density(self) -> jnp.ndarray:
-        if self.grid_ao is not None:
-            return self.grid_ao.map(
-                lambda ao, _dao, _lap, _coords, _weights:
-                    jnp.einsum("spq,rp,rq->rs", self.rdm1, ao, ao), deriv=0)
-        return jnp.einsum("spq,rp,rq->rs", self.rdm1, self.ao, self.ao)
+        """Return spin-resolved density with shape (ngrids, 2)."""
+        return _evaluate_grid_density(self.rdm1, self.ao, self.grid_ao, spin_resolved=True)
 
 
 @pytree_dataclass(
@@ -170,11 +185,8 @@ class UnrestrictedMolecule:
         return self.rep_tensor if self.rep_tensor.ndim==2 else None
 
     def density(self) -> jnp.ndarray:
-        if self.grid_ao is not None:
-            return self.grid_ao.map(
-                lambda ao, _dao, _lap, _coords, _weights:
-                    jnp.einsum("spq,rp,rq->r", self.rdm1, ao, ao), deriv=0)
-        return jnp.einsum("spq,rp,rq->r", self.rdm1, self.ao, self.ao)
+        """Return spin-summed density with shape (ngrids,)."""
+        return _evaluate_grid_density(self.rdm1, self.ao, self.grid_ao, spin_resolved=False)
 
 
 __all__ = [

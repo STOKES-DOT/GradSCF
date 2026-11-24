@@ -180,6 +180,46 @@ def test_ro_occupations_use_majority_energies_for_open_orbitals():
     np.testing.assert_array_equal(result, [2., 0., 1., 0.])
 
 
+@pytest.mark.parametrize("has_common_orbitals", [True, False], ids=["explicit", "fallback"])
+def test_roks_only_diagonalizes_initial_fock_for_missing_orbitals(monkeypatch, has_common_orbitals):
+    import jax
+    import jax.numpy as jnp
+    from gradscf.scf import roks
+
+    diagonalize = roks._diagonalize_fock
+    occupations = roks._ro_occupations
+    diagonalizations = []
+    orbital_energies = []
+
+    def observe_diagonalization(fock, *args, **kwargs):
+        diagonalizations.append(fock)
+        return diagonalize(fock, *args, **kwargs)
+
+    def observe_occupations(energy, *args, **kwargs):
+        orbital_energies.append(energy)
+        return occupations(energy, *args, **kwargs)
+
+    monkeypatch.setattr(roks, "_diagonalize_fock", observe_diagonalization)
+    monkeypatch.setattr(roks, "_ro_occupations", observe_occupations)
+    eye = jnp.eye(2)
+    with jax.disable_jit():
+        result = roks.run_roks_from_integrals(
+            overlap=eye, hcore=jnp.diag(jnp.array([-1., 1.])),
+            eri=0.2 * jnp.einsum("pq,rs->pqrs", eye, eye),
+            nalpha=2, nbeta=1, nuclear_repulsion=0., ao=jnp.zeros((0, 2)),
+            ao_deriv1=jnp.zeros((4, 0, 2)), grid_weights=jnp.zeros(0),
+            init_density_alpha=eye, init_density_beta=jnp.diag(jnp.array([1., 0.])),
+            init_mo_coeff=eye[:, ::-1] if has_common_orbitals else None,
+            config=roks.ROKSConfig(xc_spec="hf", max_cycle=1),
+        )
+    assert result.cycles == 1
+    # For the supplied Dα,Dβ, the effective Fock diagonal is [-0.6, 1.5].
+    expected = [1.5, -0.6] if has_common_orbitals else [-0.6, 1.5]
+    np.testing.assert_allclose(orbital_energies[0], expected, atol=1e-12, rtol=0)
+    # The single SCF iteration itself always requires one diagonalization.
+    assert len(diagonalizations) == (1 if has_common_orbitals else 2)
+
+
 def test_rohf_energy_gradient_with_respect_to_hcore():
     import jax
     import jax.numpy as jnp

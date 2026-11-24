@@ -113,6 +113,121 @@ def test_uks_respects_explicit_fixed_spin_occupations():
     assert np.allclose(np.asarray(result.density_matrix_beta), np.zeros((2, 2)))
 
 
+@pytest.mark.parametrize(
+    ("explicit_density_spins", "missing_orbital", "expected_density_builds"),
+    [
+        (("alpha", "beta"), None, 0),
+        (("alpha",), "init_mo_energy_beta", 1),
+        (("beta",), "init_mo_coeff_alpha", 1),
+    ],
+    ids=("all-explicit", "missing-beta-energy", "missing-alpha-coeff"),
+)
+def test_uks_builds_only_missing_initial_guesses(
+    monkeypatch, explicit_density_spins, missing_orbital, expected_density_builds
+):
+    from gradscf.scf import uks
+
+    ao, ao_deriv1, weights = _toy_grid()
+    hcore = np.diag([-1.0, 0.5])
+    densities = {
+        "alpha": np.asarray([[0.4, 0.3], [0.1, 0.6]]),
+        "beta": np.asarray([[0.6, -0.1], [-0.3, 0.4]]),
+    }
+    guesses = {
+        "init_mo_coeff_alpha": np.eye(2),
+        "init_mo_coeff_beta": np.eye(2),
+        "init_mo_energy_alpha": np.asarray([-2.0, 0.5]),
+        "init_mo_energy_beta": np.asarray([-3.0, 0.5]),
+        **{f"init_density_{spin}": densities[spin] for spin in explicit_density_spins},
+    }
+    if missing_orbital is not None:
+        del guesses[missing_orbital]
+
+    diagonalizations = []
+    density_builds = []
+    initial_state = {}
+    diagonalize = uks._diagonalize_fock
+    build_density = uks._build_density_from_occ
+    solve = uks.run_unrestricted_scf
+
+    def record_diagonalize(*args, **kwargs):
+        diagonalizations.append(args[0])
+        return diagonalize(*args, **kwargs)
+
+    def record_density(*args, **kwargs):
+        density_builds.append(args[1])
+        return build_density(*args, **kwargs)
+
+    def record_solve(**kwargs):
+        initial_state.update(kwargs)
+        return solve(**kwargs)
+
+    monkeypatch.setattr(uks, "_diagonalize_fock", record_diagonalize)
+    monkeypatch.setattr(uks, "_build_density_from_occ", record_density)
+    monkeypatch.setattr(uks, "run_unrestricted_scf", record_solve)
+
+    result = run_uks_from_integrals(
+        overlap=np.eye(2), hcore=hcore, eri=np.zeros((2, 2, 2, 2)),
+        nalpha=1, nbeta=1, nuclear_repulsion=0.0,
+        ao=ao, ao_deriv1=ao_deriv1, grid_weights=weights,
+        config=UKSConfig(xc_spec="hf", max_cycle=4),
+        **guesses,
+    )
+
+    assert len(diagonalizations) == int(missing_orbital is not None)
+    assert len(density_builds) == expected_density_builds
+    for index, spin in enumerate(("alpha", "beta")):
+        density = densities[spin] if spin in explicit_density_spins else np.diag([1.0, 0.0])
+        np.testing.assert_allclose(initial_state["density_spin"][index], (density + density.T) / 2)
+        np.testing.assert_allclose(initial_state["mo_coeff_spin"][index], np.eye(2))
+        np.testing.assert_allclose(
+            initial_state["mo_energy_spin"][index],
+            guesses.get(f"init_mo_energy_{spin}", np.diag(hcore)),
+        )
+    assert result.converged
+
+
+def test_uks_rejects_malformed_hcore_with_explicit_orbitals():
+    ao, ao_deriv1, weights = _toy_grid()
+    with pytest.raises(ValueError, match="hcore must have shape"):
+        run_uks_from_integrals(
+            overlap=np.eye(2),
+            hcore=np.asarray([[-1.0, 0.5]]),
+            eri=np.zeros((2, 2, 2, 2)),
+            nalpha=1,
+            nbeta=1,
+            nuclear_repulsion=0.0,
+            ao=ao,
+            ao_deriv1=ao_deriv1,
+            grid_weights=weights,
+            init_mo_coeff_alpha=np.eye(2),
+            init_mo_coeff_beta=np.eye(2),
+            init_mo_energy_alpha=np.asarray([-1.0, 0.5]),
+            init_mo_energy_beta=np.asarray([-1.0, 0.5]),
+            config=UKSConfig(xc_spec="hf", max_cycle=4),
+        )
+
+
+@pytest.mark.parametrize("spin", ["alpha", "beta"])
+def test_uks_rejects_vector_orbital_coefficients_with_explicit_density(spin):
+    ao, ao_deriv1, weights = _toy_grid()
+    energies = np.asarray([-1.0, 0.5])
+    orbitals = np.eye(2)
+    density = np.diag([1.0, 0.0])
+    invalid_coeff = orbitals[:, 0]
+    with jax.disable_jit(), pytest.raises(ValueError, match=f"init_mo_coeff_{spin}"):
+        run_uks_from_integrals(
+            overlap=orbitals, hcore=np.diag(energies), eri=np.zeros((2, 2, 2, 2)),
+            nalpha=1, nbeta=1, nuclear_repulsion=0.0,
+            ao=ao, ao_deriv1=ao_deriv1, grid_weights=weights,
+            init_density_alpha=density, init_density_beta=density,
+            init_mo_coeff_alpha=invalid_coeff if spin == "alpha" else orbitals,
+            init_mo_coeff_beta=invalid_coeff if spin == "beta" else orbitals,
+            init_mo_energy_alpha=energies, init_mo_energy_beta=energies,
+            config=UKSConfig(xc_spec="hf", max_cycle=4),
+        )
+
+
 def test_uks_semilocal_xc_is_spin_resolved():
     pytest.importorskip("jax_xc")
     ao, ao_deriv1, weights = _toy_grid()

@@ -67,7 +67,7 @@ def test_rks_facade_forwards_independent_gradient_tolerance():
 
 
 def test_response_feature_changes_reuse_the_same_ground_state(monkeypatch):
-    mf=scf.RKS(gto.M(atom='H 0 0 0; H 0 0 .74',basis='sto-3g'),xc='hf').run()
+    mf=scf.RKS(gto.M(atom='H 0 0 0; H 0 0 .74',basis='sto-3g',cart=True),xc='hf').run()
     before=mf._ensure_reference()
     result=mf.scf_result
     def forbidden(**kwargs):

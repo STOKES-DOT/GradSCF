@@ -27,7 +27,7 @@ import gradscf.model.neural_xc.binding as neural_xc_binding
 import gradscf.model.neural_xc.components as neural_xc_components
 import gradscf.model.neural_xc.projection as neural_xc_projection
 from gradscf.tools.features import has_explicit_spin_axis, restricted_grid_features
-import gradscf.scf.differentiable as scf_differentiable
+import gradscf.scf.autodiff as scf_autodiff
 from gradscf.dft.derivatives import xc_energy_and_potential_from_density
 from pyscf_reference import restricted_reference_from_pyscf
 from gradscf.tools.spectra import HARTREE_TO_EV, oscillator_strengths
@@ -1586,7 +1586,7 @@ def test_neural_xc_scf_fock_terms_use_density_energy_callback(monkeypatch):
         _fail_separate_alpha,
     )
 
-    vxc_matrix, alpha, extra_fock, _xc_energy = scf_differentiable._restricted_xc_fock_terms(
+    vxc_matrix, alpha, extra_fock, _xc_energy = scf_autodiff._restricted_xc_fock_terms(
         params=params,
         functional=functional,
         molecule=molecule,
@@ -2302,7 +2302,7 @@ def test_restricted_scf_preserves_pt2_local_only_for_nograd_mode():
     molecule = _make_pt2_toy_molecule()
     cached_pt2 = jnp.asarray([-0.4, 0.1])
     molecule.pt2_local = cached_pt2
-    scf = scf_differentiable.DifferentiableSCF()
+    scf = scf_autodiff.DifferentiableSCF()
     density = molecule.rdm1.sum(axis=0)
     mo_coeff = molecule.mo_coeff[0]
     mo_energy = molecule.mo_energy[0]

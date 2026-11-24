@@ -14,7 +14,7 @@ from .types import CHANNELS, _check, _components, _layout
 
 @jax.jit
 def _sampled_potential_program(grid, values):
-    from gradscf.scf.differentiable import _build_vxc_matrix_from_components
+    from gradscf.scf.autodiff import _build_vxc_matrix_from_components
     view = SimpleNamespace(grid_ao=grid)
     def project(field):
         zero = jnp.zeros_like(field)

@@ -7,7 +7,7 @@ from gradscf.scf.rks import RKSConfig
 from gradscf.scf.iteration import run_restricted_scf
 
 
-def run(kind, *, backend="direct", fallback=False):
+def run(kind, *, backend="direct", fallback=False, max_cycle=3):
     h = jnp.diag(jnp.array([-1., 1.]))
     eye, zero = jnp.eye(2), jnp.zeros((2, 2))
     occ = jnp.array([2., 0.])
@@ -24,17 +24,28 @@ def run(kind, *, backend="direct", fallback=False):
     options = dict(refresh_on_convergence=True) if fallback else {}
     return run_restricted_scf(
         h=h, s=eye, x=eye, energy_and_fock_builder=builder,
-        cfg=RKSConfig(xc_spec="hf", jk_backend=backend, max_cycle=3,
+        cfg=RKSConfig(xc_spec="hf", jk_backend=backend, max_cycle=max_cycle,
             conv_tol=1e-12, conv_tol_density=1e-11, conv_tol_grad=1e-10),
         mo_occ_fixed=occ, diis_basis=eye, skip_first_fock_damping=True,
         density=jnp.diag(occ), mo_coeff=eye, mo_occ=occ, mo_energy=jnp.diag(h),
         raw_fock=h, j_mat=zero, k_mat=zero, **options)
 
 
-@pytest.mark.parametrize("kind", ["fock", "energy", "nonfinite"])
+@pytest.mark.parametrize("kind", ["fock", "nonfinite"])
 def test_incremental_false_convergence_is_rejected_under_jit(kind):
     result = jax.jit(lambda: run(kind))()
     assert not bool(result[0]), "The fresh physical Fock/energy must meet the original gates"
+
+
+@pytest.mark.parametrize(
+    ("max_cycle", "expected_converged"), [(2, False), (3, True)],
+    ids=["reject-incremental", "converge-after-refresh"],
+)
+def test_energy_refresh_rejects_false_convergence_and_recovers(max_cycle, expected_converged):
+    result = jax.jit(lambda: run("energy", max_cycle=max_cycle))()
+    assert bool(result[0]) is expected_converged
+    assert int(result[1]) == max_cycle
+    assert float(result[5]) == pytest.approx(1e-6, abs=1e-12, rel=0)
 
 
 def test_full_backend_is_unchanged_and_matching_direct_build_converges():

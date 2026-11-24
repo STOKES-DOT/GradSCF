@@ -17,6 +17,11 @@ class RestrictedSCFDiagnostics:
     stationary: bool
 
 
+def _check_scf_energy(source, stored_energy):
+    if _array_signature(source.e_tot) != _array_signature(stored_energy):
+        raise RuntimeError("SCF energy changed; run SCF again")
+
+
 def _check_scf_snapshot(source, stored, energy_attribute):
     """One freshness contract for both facade layouts and energy acceptance."""
     if source._cached_scf_key != source._scf_signature():
@@ -26,10 +31,7 @@ def _check_scf_snapshot(source, stored, energy_attribute):
             getattr(stored, name)
         ):
             raise RuntimeError("SCF orbital arrays changed; run SCF again")
-    if _array_signature(source.e_tot) != _array_signature(
-        getattr(stored, energy_attribute)
-    ):
-        raise RuntimeError("SCF energy changed; run SCF again")
+    _check_scf_energy(source, getattr(stored, energy_attribute))
 
 
 def _restricted_scf_state(source):
@@ -79,15 +81,23 @@ def _unrestricted_scf_state(source):
 
     if not isinstance(source, UKS) or isinstance(source, ROKS):
         raise TypeError("Unrestricted stability requires a UKS/UHF facade")
-    reference = source.reference
-    if reference is None:
-        if source.scf_result is None or source._scf_inputs is None:
-            raise RuntimeError("Run unrestricted SCF before stability analysis")
-        # Stability retains the finite, unconverged -> unresolved protocol.
-        # Validate the solved source before completing its missing grid.
-        source._check_reference_source(allow_unconverged=True)
-        reference = source._put_on_requested_device(source._build_reference(source._spec()))
-        source.reference = reference
-        source._cached_response_key = source._response_signature()
-    _check_scf_snapshot(source, reference, "mf_energy")
+    reference = vars(source).get("reference")
+    if reference is not None:
+        _check_scf_snapshot(source, reference, "mf_energy")
+        return reference
+
+    if source.scf_result is None or source._scf_inputs is None:
+        raise RuntimeError("Run unrestricted SCF before stability analysis")
+    # Read the cache directly so deferred DFT and UHF complete the same
+    # validated snapshot, including finite unconverged states.
+    spec, config = source._spec(), source._config()
+    source._check_reference_source(allow_unconverged=True, spec=spec, config=config)
+    reference = source._put_on_requested_device(source._build_reference(spec, config=config))
+    for name, signature in zip(("mo_coeff", "mo_occ"), source._cached_orbital_key):
+        value = getattr(reference, name)
+        if value is not getattr(source, name) and _array_signature(value) != signature:
+            raise RuntimeError("SCF orbital arrays changed; run SCF again")
+    _check_scf_energy(source, reference.mf_energy)
+    source.reference = reference
+    source._cached_response_key = source._response_signature()
     return reference

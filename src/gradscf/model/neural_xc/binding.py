@@ -673,7 +673,7 @@ class NeuralXCBindingMixin:
         v_lapl = jnp.nan_to_num(projected_vlapl, nan=0.0, posinf=0.0, neginf=0.0)
 
         kind = self._response_feature_kind_label()
-        from ...scf.differentiable import _build_vxc_matrix_from_components
+        from ...scf.autodiff import _build_vxc_matrix_from_components
 
         vxc_matrix = _build_vxc_matrix_from_components(
             molecule=molecule,

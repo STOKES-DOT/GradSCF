@@ -127,7 +127,7 @@ def test_external_explicit_ao_requests_materialize_values_instead_of_empty_place
 
 @pytest.mark.parametrize("kind", ["LDA", "GGA", "MGGA", "MGGA_LAPL"])
 def test_streamed_grid_component_potential_and_geometry_ad_match_dense(kind):
-    from gradscf.scf.differentiable import _build_vxc_matrix_from_components
+    from gradscf.scf.autodiff import _build_vxc_matrix_from_components
 
     def potential(displacement, streamed):
         molecule = _molecule(displacement, streamed=streamed)
@@ -155,7 +155,7 @@ def test_streamed_grid_component_potential_and_geometry_ad_match_dense(kind):
 
 
 def test_replacing_grid_provider_invalidates_trial_neural_grid_payload():
-    from gradscf.scf.differentiable import _replace_molecule
+    from gradscf.scf.autodiff import _replace_molecule
 
     molecule = _molecule(jnp.asarray(.04), streamed=True)
     molecule.neural_xc_grid_payload = {"old_density_features": jnp.ones(7)}

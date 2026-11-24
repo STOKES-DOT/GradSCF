@@ -61,24 +61,24 @@ def test_rks_reads_density_tolerance_and_override_never_bypasses_energy():
 
 
 def test_level_shift_reporting_preserves_selected_occupied_branch():
-    from gradscf.scf.rks import RKSConfig, _maybe_run_extra_final_cycle
+    from gradscf.scf.rks import RKSConfig, run_rks_from_integrals_traceable
+
     eye = jnp.eye(2)
     # Occupying the higher orbital is stationary, and must not be refilled.
     coeff = eye[:, ::-1]
     density = jnp.diag(jnp.array([0., 2.]))
-    fock = jnp.diag(jnp.array([-1., 1.]))
-    output = _maybe_run_extra_final_cycle(
-        density=density, mo_coeff=coeff, mo_energy=jnp.array([1., 4.]),
-        energy=jnp.array(2.), xc_energy=jnp.array(0.), raw_fock=fock,
-        converged=jnp.array(True), x=eye, jk_builder=None, ao=None,
-        ao_deriv1=None, weights=None, h=fock, s=eye, enuc=jnp.array(0.),
-        cfg=RKSConfig(level_shift=3.), alpha=jnp.array(1.), xc_kind='HF',
-        mo_occ_fixed=jnp.array([2., 0.]), j_mat=None, k_mat=None, traceable=True,
+    result = run_rks_from_integrals_traceable(
+        overlap=eye, hcore=jnp.diag(jnp.array([-1., 1.])),
+        eri=jnp.zeros((2, 2, 2, 2)), nelectron=2, nuclear_repulsion=0.,
+        ao=jnp.zeros((0, 2)), ao_deriv1=jnp.zeros((4, 0, 2)),
+        grid_weights=jnp.zeros(0), init_mo_coeff=coeff,
+        init_mo_energy=jnp.array([1., 4.]),
+        config=RKSConfig(xc_spec="hf", level_shift=3., max_cycle=4),
     )
-    assert jnp.array_equal(output[0], density)
-    assert jnp.array_equal(output[1], coeff)
-    assert jnp.array_equal(output[2], jnp.array([1., -1.]))
-    assert bool(output[-1])
+    assert bool(result.converged)
+    assert jnp.array_equal(result.density_matrix, density)
+    assert jnp.array_equal(jnp.abs(result.mo_coeff), coeff)
+    assert jnp.array_equal(result.mo_energy, jnp.array([1., -1.]))
 
 
 @pytest.mark.parametrize('method', ['roks', 'gks'])

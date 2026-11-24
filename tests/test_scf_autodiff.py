@@ -7,6 +7,17 @@ import pytest
 from gradscf.solvers.nonlinear import implicit_fixed_point_solution
 
 
+def test_autodiff_owns_the_public_differentiable_scf_types():
+    from gradscf import scf
+    from gradscf.scf import autodiff
+    import gradscf.scf.differentiable as legacy
+
+    assert autodiff.DifferentiableSCF is scf.DifferentiableSCF
+    assert autodiff.DifferentiableSCFConfig is scf.DifferentiableSCFConfig
+    assert autodiff.DifferentiableSCFInfo is scf.DifferentiableSCFInfo
+    assert legacy is autodiff
+
+
 def test_fixed_point_argument_gradients_are_preserved():
     def solve(scale, offset):
         return implicit_fixed_point_solution(
@@ -16,6 +27,31 @@ def test_fixed_point_argument_gradients_are_preserved():
         )
     derivatives = jax.grad(solve, argnums=(0, 1))(jnp.array(0.2), jnp.array(1.4))
     np.testing.assert_allclose(derivatives, [1.4 / 0.8**2, 1.0 / 0.8], rtol=1e-9)
+
+
+@pytest.mark.parametrize('regularization', [0.0, 0.2])
+def test_shared_scf_backward_accepts_a_fixed_point_with_dynamic_arguments(regularization):
+    from gradscf.scf.autodiff import SCFDifferentiationConfig, attach_scf_backward
+
+    config = SCFDifferentiationConfig(regularization=regularization)
+
+    def solve(scale, offset):
+        return attach_scf_backward(
+            scale,
+            solution=offset / (1.0 - scale),
+            fixed_point=lambda x, p, args: p * x + args['offset'],
+            fixed_point_args={'offset': offset},
+            config=config,
+        )
+
+    scale, offset = jnp.array(0.2), jnp.array(1.4)
+    value, derivatives = jax.jit(jax.value_and_grad(solve, argnums=(0, 1)))(scale, offset)
+    tangent = jax.jvp(solve, (scale, offset), (jnp.ones_like(scale), jnp.ones_like(offset)))[1]
+    expected_state = 1.4 / 0.8
+    denominator = 0.8 + regularization
+    np.testing.assert_allclose(value, expected_state, rtol=1e-9)
+    np.testing.assert_allclose(derivatives, [expected_state / denominator, 1.0 / denominator], rtol=1e-9)
+    np.testing.assert_allclose(tangent, (expected_state + 1.0) / denominator, rtol=1e-9)
 
 
 def test_shared_implicit_nonlinear_root_and_density_loss_pytree_jit():
@@ -72,8 +108,11 @@ def test_failed_adjoint_rejects_approximate_gradient():
 
 @pytest.mark.parametrize('mode, expected', [('implicit', 'implicit'), ('impl', 'implicit'), ('explicit', 'explicit'), ('unrolled', 'explicit'), ('expl', 'explicit')])
 def test_mode_normalization_and_legacy_configuration(mode, expected):
-    from gradscf.scf.autodiff import SCFDifferentiationConfig, normalize_scf_gradient_mode
-    from gradscf.scf.differentiable import DifferentiableSCFConfig
+    from gradscf.scf.autodiff import (
+        DifferentiableSCFConfig,
+        SCFDifferentiationConfig,
+        normalize_scf_gradient_mode,
+    )
     from gradscf.model.neural_xc.training.config import MolecularTrainingConfig
     assert normalize_scf_gradient_mode(mode) == expected
     assert SCFDifferentiationConfig(mode=mode).mode == expected

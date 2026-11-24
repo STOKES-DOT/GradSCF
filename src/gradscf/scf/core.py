@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.lax import Precision
 from jaxtyping import Array
 
@@ -16,6 +18,21 @@ from ..solvers.eigen.spectral import (
     _spectral_orthogonalizer,
     occupied_projector,
 )
+
+
+def _cache_signature(value):
+    """Snapshot numerical inputs by value, including arrays inside raw bases."""
+    if is_dataclass(value):
+        return tuple((item.name, _cache_signature(getattr(value, item.name))) for item in fields(value))
+    if isinstance(value, dict):
+        return tuple((repr(key), _cache_signature(item))
+                     for key, item in sorted(value.items(), key=lambda pair: repr(pair[0])))
+    if isinstance(value, (tuple, list)):
+        return tuple(_cache_signature(item) for item in value)
+    if hasattr(value, 'shape') and hasattr(value, 'dtype'):
+        array = np.asarray(value)
+        return array.dtype.str, array.shape, array.tobytes()
+    return value
 
 
 def _contains_jax_tracer(value: Any) -> bool:

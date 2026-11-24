@@ -52,6 +52,32 @@ def test_mixed_raman_derivative_keeps_reference_response(molecule):
     np.testing.assert_allclose(mixed, fd, atol=3e-6, rtol=1e-5)
 
 
+def test_hf_moving_inputs_keep_spherical_d_shells():
+    from gradscf import gto, integrals, scf
+    from gradscf_tools.molecular_response import MolecularEnergy
+
+    basis = {"He": [[0, [.8, 1.]], [2, [.5, 1.]]]}
+    mol = gto.M(atom="He 0 0 0", basis=basis, unit="Bohr")
+    spec = mol.to_spec()
+    topology, parameters = integrals.prepare_basis(spec, basis, cart=False)
+    plan = integrals.make_plan(topology)
+    overlap, kinetic, nuclear, _ = plan.evaluate_scf_one_electron(
+        parameters, include_dipole=False)
+    eri = plan.evaluate("eri", parameters)
+    seed = scf.run_rhf_from_integrals(
+        overlap=overlap, hcore=kinetic + nuclear, eri=eri, nelectron=2,
+        nuclear_repulsion=0.)
+    assert seed.converged
+    mf = scf.RHF(mol)
+    mf._sync_from_scf_result(seed)
+
+    energy = MolecularEnergy(mf)
+    inputs = energy.inputs(energy.coordinates)
+    assert inputs["overlap"].shape == (6, 6)
+    np.testing.assert_allclose(inputs["overlap"], overlap, atol=1e-12, rtol=0.)
+    np.testing.assert_allclose(inputs["eri"], eri, atol=1e-12, rtol=0.)
+
+
 def test_pbe_moving_grid_hvp_matches_gradient_differences():
     from gradscf import dft, gto
     from gradscf_tools.molecular_response import MolecularEnergy

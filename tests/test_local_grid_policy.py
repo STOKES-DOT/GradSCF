@@ -23,7 +23,7 @@ def test_screening_is_explicit_default_off_and_validated(config):
 @pytest.mark.parametrize('method',[dft.RKS,dft.UKS,dft.GKS])
 def test_facades_forward_one_control_and_guard_unadapted_response_export(method):
     assert 'grid_screen_tol' in {f.name for f in fields(method)}, 'Missing facade control'
-    mol=gto.M(atom='H 0 0 0; H 0 0 1.4',unit='Bohr',basis='sto-3g')
+    mol=gto.M(atom='H 0 0 0; H 0 0 1.4',unit='Bohr',basis='sto-3g',cart=True)
     mf=method(mol,xc='pbe',grid_screen_tol=1e-14)
     assert mf._config().grid_screen_tol==1e-14
     message = ('Generalized spinor response' if method is dft.GKS else

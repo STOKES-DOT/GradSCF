@@ -69,6 +69,43 @@ def test_hcore_and_explicit_density_initial_guess_compatibility():
     np.testing.assert_array_equal(guess.density_beta, expected / 2)
 
 
+def test_atom_guess_uses_the_selected_ao_representation(monkeypatch):
+    from gradscf.integrals import make_plan, prepare_basis
+    from gradscf.integrals.plan import IntegralPlan
+    from gradscf.scf import init_guess as guesses
+
+    evaluate = IntegralPlan.evaluate
+    computed = []
+
+    def pack_reference_eri(plan, operator, parameters, *, aosym="s1", **options):
+        if operator != "eri" or aosym != "s4":
+            return evaluate(plan, operator, parameters, aosym=aosym, **options)
+        # Use exact reference packing to isolate the guess from the native
+        # packed driver's independent mixed-shell failures on macOS.
+        computed.append(plan.topology.cart)
+        eri = evaluate(plan, operator, parameters, **options)
+        i, j = np.tril_indices(plan.topology.nao)
+        return eri[i[:, None], j[:, None], i[None, :], j[None, :]]
+
+    monkeypatch.setattr(IntegralPlan, "evaluate", pack_reference_eri)
+    monkeypatch.setattr(guesses, "_native_fingerprint", lambda: "exact-reference-packing")
+
+    spec = parse_molecule_spec("Ne 0 0 0")
+    kwargs = dict(init_guess="atom", dtype=jnp.float64, basis="def2-svp")
+    spherical = guesses.restricted_initial_guess(spec=spec, cart=False, **kwargs).density
+    cartesian = guesses.restricted_initial_guess(spec=spec, **kwargs).density
+    assert spherical.shape == (14, 14)
+    assert cartesian.shape == (15, 15)
+
+    topology, parameters = prepare_basis(spec, "def2-svp", cart=False)
+    overlap = np.asarray(make_plan(topology).evaluate("overlap", parameters))
+    np.testing.assert_allclose(np.trace(spherical @ overlap), 10., atol=2e-10, rtol=0.)
+    ion = guesses.unrestricted_initial_guess(spec=replace(spec, charge=1, spin=1), cart=False, **kwargs)
+    np.testing.assert_allclose(np.trace(ion.density_alpha @ overlap), 5., atol=2e-10, rtol=0.)
+    np.testing.assert_allclose(np.trace(ion.density_beta @ overlap), 4., atol=2e-10, rtol=0.)
+    assert computed == [False, True]
+
+
 def test_atom_guess_rejects_raw_basis_and_unsupported_elements():
     from gradscf.scf.init_guess import restricted_initial_guess
     from gradscf.integrals.basis.data import load_basis_from_snapshot

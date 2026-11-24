@@ -11,6 +11,7 @@ XC and iKS implementations.
 | `codex.py` | Optional official `openai_codex` thread, structured replies, resume and transport timeout |
 | `loop.py` | Shared AD parameter fitting, fixed-batch evaluation, acceptance and feedback |
 | `bindings.py` | Grid evaluation and AO projection of local model potentials, including parameter pullbacks |
+| `density.py` | Blocked integration and rotational invariants for candidate-defined density kernels |
 | `selection.py` | Wu–Yang-first incumbent selection and density diagnostics |
 | `history.py` | Source/configuration fingerprint, append-only records and atomic proposal checkpoints |
 | `dft/iks/wu_yang.py` | Physical fixed-target score and shared occupied-subspace response |
@@ -37,7 +38,8 @@ Its `campaign.py` handles the experiment and fit, `molecule.py` and
 
 The [`swarm/`](swarm) subpackage owns the six-gene representation and crossover
 (`genome.py`), generation coordination and independent lineages
-(`search.py`), mutation policy (`ppo.py`), and FIFO scheduling (`queues.py`).
+(`search.py`), contextual mutation policy (`bandit.py`), its feedback records
+(`mutations.py`), and FIFO scheduling (`queues.py`).
 An agent holds one seat through a complete segment. The first ready
 candidate runs on the shared numerical pool. Agent queue time, numerical
 queue time, and worker-reported evaluation time are recorded separately.
@@ -45,7 +47,8 @@ The CPU allocation charge multiplies the worker-reported time by the pool's
 thread count.
 
 Run `python -m gradscf.model.autoxc.workflows.xc100.swarm` for agent count,
-active segments, GA, and PPO. The single-agent workflow runs through
+active segments, GA, and mutation strategy. Thompson sampling is the default.
+Use `--mutation uniform` for random legal edits. The single-agent workflow runs through
 `python -m gradscf.model.autoxc.workflows.xc100.single`. Shared XC100 prompts
 and the worker configuration ship with the workflow package. Use
 [`swarm_campaign.json`](workflows/xc100/swarm_campaign.json) as the worker's
@@ -55,6 +58,17 @@ and SSH connection recovery still apply. The scripts
 `examples/iks/xc100_swarm.py` calls the swarm entry point.
 `examples/iks/xc100_open_xc.py` calls the single-agent controller. Pass
 `--candidate-mode open_xc` to select the joint scoring mode below.
+
+Each Thompson decision uses the active genes, detected density operators,
+formula size, and parent metrics as context. It samples models of valid fitted
+gain and numerical validity, then ranks legal mutations by expected improvement
+over the best score observed at dispatch. GA mode shares feedback across agents.
+Independent mode updates a separate model for each lineage. Recent evaluations
+receive more weight. Syntax failures and duplicates are logged
+separately. Numerical failures update validity without supplying a fitness gain.
+The `mutations/` journal records completed attempts in feedback order, so an
+interrupted segment can reuse those attempts. Start a new output directory when
+changing the mutation strategy or switching from an earlier run protocol.
 
 ### XC100 joint scoring
 
@@ -144,6 +158,37 @@ run candidate SCF, certify a unique continuum potential or assess the final SCF
 density. The older `iks.reward` and `iks.invert` retain their existing contracts.
 
 ## Candidates and existing custom_xc
+
+XC100 proposals can define their own features from the reference density
+and its spatial derivatives. Define scalar intermediates in dependency order.
+An example of a source-density-dependent convolution is
+
+```python
+candidate = autoxc.Candidate(
+    "a*n**(1/3)*tanh((environment-n)/(environment+n+1e-12))",
+    parameters=(
+        autoxc.Parameter("a", 0.1, -0.5, 0.5),
+        autoxc.Parameter("width", 2.0, 0.1, 10.0),
+    ),
+    definitions=(
+        ("environment", "pair_average(n, exp(-width*r2*(1+source_n)))"),
+    ),
+)
+```
+
+In pair kernels, `r2` is the squared separation. Unprefixed fields are
+evaluated at the target point, and `source_` reads an input or preceding
+definition at the source point. `pair_integral` uses grid weights and
+`pair_average` also divides by the weighted kernel integral.
+`pair_moment` returns the squared norm of a weighted displacement moment
+of rank 1 or a traceless second moment of rank 2.
+
+The inner fit includes kernel parameters in the same differentiated
+objective as the potential coefficients. Named parameter-independent pair
+definitions are evaluated at binding time. General pair quadrature is
+quadratic in the number of grid points and uses bounded tiles. XC100 joint
+scoring reconstructs the fields and evaluates the candidate's feature
+definitions at each density on its energy reporting path.
 
 ```python
 candidate = autoxc.Candidate(

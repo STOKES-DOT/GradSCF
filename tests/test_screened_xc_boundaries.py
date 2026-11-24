@@ -22,7 +22,7 @@ def _numerical_work(*args, **kwargs):
 
 
 def _molecule():
-    return gto.M(atom="H 0 0 0; H 0 0 1.4", unit="Bohr", basis="sto-3g")
+    return gto.M(atom="H 0 0 0; H 0 0 1.4", unit="Bohr", basis="sto-3g", cart=True)
 
 
 def _uks_result():
@@ -46,19 +46,19 @@ def test_uks_kernel_does_not_publish_an_unmatched_screened_reference(monkeypatch
     source = dft.UKS(_molecule(), xc="pbe", grid_screen_tol=cutoff)
     result = _uks_result()
     monkeypatch.setattr(source, "_configure_jax_cache", lambda: None)
-    monkeypatch.setattr(source, "_build_scf_result", lambda spec: result)
+    monkeypatch.setattr(source, "_build_scf_result", lambda spec, **kwargs: result)
     monkeypatch.setattr(source, "_build_reference", _numerical_work)
-    if cutoff == 0:
-        # Preserve the established unscreened UKS reference-building route.
-        with pytest.raises(_NumericalWorkReached):
-            source.kernel()
-        return
     assert source.kernel() == result.total_energy
     assert source.converged
     assert source.scf_result is result
-    assert source.reference is None
     assert source.mo_coeff.shape == (2, 2, 2)
     assert source.make_rdm1().shape == (2, 2, 2)
+    if cutoff == 0:
+        # The established direct reference read materializes only on demand.
+        with pytest.raises(_NumericalWorkReached):
+            _ = source.reference
+        return
+    assert source.reference is None
     with pytest.raises(NotImplementedError, match="(?i)screened.*response|response.*screened"):
         source.to_reference()
 

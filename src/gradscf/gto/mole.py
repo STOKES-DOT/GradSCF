@@ -8,12 +8,14 @@ from ..data.molecule import MoleculeSpec, parse_molecule_spec
 
 @dataclass(frozen=True)
 class Mole:
+    """Molecular input with real spherical AOs by default."""
+
     atom: Any
     basis: Any
     unit: str = "Angstrom"
     charge: int = 0
     spin: int = 0
-    cart: bool = True
+    cart: bool = False
     verbose: int = 0
 
     def to_spec(self) -> MoleculeSpec:

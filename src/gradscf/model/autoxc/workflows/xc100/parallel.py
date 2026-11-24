@@ -245,15 +245,11 @@ def run_parallel(root):
             self.status('calibrating')
             base = LDA_EXCHANGE_POTENTIAL + '+' if self.complete_potential else ''
             nonlinear = 'a*n**0.3333333333333333*tanh(b*u + .2*z)'
-            definitions = ()
-            if not self.complete_potential:
-                nonlinear = 'a*n**0.3333333333333333*tanh(b*u + .2*z + .1*c)'
-                definitions = (('c', '(rho_occ-n)/(rho_occ+n)'),)
             fixtures = {
                 'affine': Candidate(base+'n**0.3333333333333333*(a*u + b*z)',
                     parameters=(Parameter('a', .003, -.05, .05),
                                 Parameter('b', -.002, -.05, .05))).to_dict(),
-                'nonlinear': Candidate(base+nonlinear, definitions=definitions,
+                'nonlinear': Candidate(base+nonlinear,
                     parameters=(Parameter('a', .015, -.1, .1),
                                 Parameter('b', .8, .1, 3.))).to_dict(),
             }

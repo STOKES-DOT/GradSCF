@@ -622,55 +622,28 @@ def _energy_and_raw_fock_for_density(
     return total,xc.energy,fock,j_mat,k_mat
 
 
-def _maybe_run_extra_final_cycle(
-    *,
-    density: Array,
-    mo_coeff: Array,
-    mo_energy: Array,
-    energy: Array,
-    xc_energy: Array,
-    raw_fock: Array,
-    converged,
-    x: Array,
-    jk_builder: JKBuilder,
-    ao: Array,
-    ao_deriv1: Array,
-    weights: Array,
-    h: Array,
-    s: Array,
-    enuc: Array,
-    cfg: RKSConfig,
-    alpha: Array,
-    xc_kind: str,
-    mo_occ_fixed: Array,
-    j_mat: Array,
-    k_mat: Array,
-    traceable: bool,
-) -> tuple[Array, Array, Array, Array, Array, Array, Any]:
-    # A final Aufbau refill can leave the selected stationary branch. Keep its
-    # density/orbitals and report unshifted raw-Fock expectations instead.
-    if cfg.level_shift != 0.0:
-        mo_energy = jnp.real(jnp.diag(mo_coeff.conj().T @ raw_fock @ mo_coeff))
-    return density, mo_coeff, mo_energy, energy, xc_energy, raw_fock, converged
-
-
 @partial(jax.jit, static_argnames=(
     "cfg", "xc_kind", "nocc", "with_k", "skip_first_fock_damping",
 ))
 def _run_rks_iterations(
     *, h, s, x, eri, eri_pair_matrix, df_factors, direct_basis,
     ao, ao_deriv1, weights, grid_ao, enuc, alpha, cfg, xc_kind, nocc,
-    with_k, skip_first_fock_damping, density, mo_coeff, mo_occ, mo_energy,
-    raw_fock, j_mat, k_mat, eri_lr,
+    with_k, skip_first_fock_damping, density, mo_coeff, mo_occ, mo_energy, eri_lr,
 ):
     """Reuse the SCF executable with all physical inputs as dynamic leaves.
 
-    Build the local callbacks inside this stable JIT boundary. Creating a new
-    integral/grid/provider object must not create another compiled scan body.
+    Build the J/K callback once inside this stable JIT boundary. The initial
+    Fock and the scan share its prepared data, including full RSH exchange ERIs.
     """
     jk_builder = _make_jk_builder(
         eri, cfg, eri_pair_matrix=eri_pair_matrix, df_factors=df_factors,
         direct_basis=direct_basis, with_k=with_k, nocc=nocc, eri_lr=eri_lr,
+    )
+    j_mat, k_mat, _, raw_fock = _fock_components_for_density(
+        density=density, mo_coeff=mo_coeff, mo_occ=mo_occ, mo_energy=mo_energy,
+        jk_builder=jk_builder, ao=ao, ao_deriv1=ao_deriv1, weights=weights,
+        h=h, alpha=alpha, cfg=cfg, xc_kind=xc_kind, grid_ao=grid_ao,
+        occupied_columns=nocc,
     )
 
     def energy_and_fock_builder(density_i, mo_coeff_i, mo_occ_i, mo_energy_i,
@@ -716,7 +689,6 @@ def _run_rks_from_integrals_shared(
     config: RKSConfig | None = None,
     eri_lr: Array | None = None,
     dispersion_energy: Array | None = None,
-    traceable: bool,
 ) -> RKSResult:
     cfg = RKSConfig() if config is None else config
     rsh = validate_rsh_inputs(cfg.xc_spec, eri, eri_lr, dispersion_energy,
@@ -742,6 +714,8 @@ def _run_rks_from_integrals_shared(
         mo_coeff = jnp.asarray(init_mo_coeff)
         if mo_coeff.ndim == 3:
             mo_coeff = mo_coeff[0]
+        if mo_coeff.ndim != 2:
+            raise ValueError("init_mo_coeff must resolve to a two-dimensional matrix for RKS.")
         if init_mo_energy is None:
             mo_energy, _ = _diagonalize_fock(h, x)
         else:
@@ -766,24 +740,21 @@ def _run_rks_from_integrals_shared(
         if int(mo_occ_fixed.shape[0]) != nao:
             raise ValueError("init_mo_occ must match the AO/MO dimension for RKS.")
         nocc = int(jnp.count_nonzero(mo_occ_fixed > jnp.asarray(1e-12, dtype=h.dtype)))
-    density = _build_density_from_occ(mo_coeff, mo_occ_fixed)
-
-    init_density_matrix = _validate_density_matrix(
+    density = _validate_density_matrix(
         init_density,
         nao=nao,
         dtype=h.dtype,
         label="init_density",
         method="RKS",
     )
-    if init_density_matrix is not None:
-        density = init_density_matrix
-
-    skip_first_fock_damping = (init_mo_coeff is not None) or (init_density_matrix is not None)
+    skip_first_fock_damping = (init_mo_coeff is not None) or (density is not None)
+    if density is None:
+        density = _build_density_from_occ(mo_coeff, mo_occ_fixed)
     alpha_scalar = 1.0 if rsh is not None else float(hybrid_coeff(cfg.xc_spec))
     alpha = jnp.asarray(alpha_scalar, dtype=h.dtype)
     if cfg.jk_backend == "df" and df_factors is None and eri_arr is not None:
         # The existing rank-selecting spectral compression is a host step.
-        # Pass its factors to both Fock builders, outside the compiled loop.
+        # Pass its factors into the compiled seed and SCF loop.
         df_factors = eri_to_df_factors(eri_arr, tol=cfg.df_tol, max_rank=cfg.df_max_rank)
     if grid_ao is not None and xc_kind in {"LDA", "GGA", "MGGA"}:
         from gradscf._memory import tree_storage_bytes
@@ -801,33 +772,6 @@ def _run_rks_from_integrals_shared(
             grid_ao = prepare_scf_grid(grid_ao, max_memory=cfg.max_memory,
                 resident_bytes=resident + device_work, host_workspace_bytes=host_work,
                 deriv=0 if xc_kind == "LDA" else 1, screen_tol=cfg.grid_screen_tol)
-    jk_builder = _make_jk_builder(
-        eri_arr,
-        cfg,
-        eri_pair_matrix=eri_pair_arr,
-        df_factors=df_factors,
-        direct_basis=direct_basis,
-        with_k=bool(abs(alpha_scalar) > 1e-14),
-        nocc=nocc,
-        eri_lr=eri_lr,
-    )
-    j_mat, k_mat, _, fock = _fock_components_for_density(
-        density=density,
-        mo_coeff=mo_coeff,
-        mo_occ=mo_occ_fixed,
-        mo_energy=mo_energy,
-        jk_builder=jk_builder,
-        ao=ao,
-        ao_deriv1=ao_deriv1,
-        weights=weights,
-        h=h,
-        alpha=alpha,
-        cfg=cfg,
-        xc_kind=xc_kind,
-        grid_ao=grid_ao,
-        occupied_columns=nocc,
-    )
-
     (
         converged,
         cycles,
@@ -837,12 +781,7 @@ def _run_rks_from_integrals_shared(
         energy,
         xc_energy,
         fock,
-        j_mat,
-        k_mat,
-        _density_history,
-        _mo_coeff_history,
-        _mo_energy_history,
-        _density_rms_history,
+        *_,
     ) = _run_rks_iterations(
         h=h, s=s, x=x, eri=eri_arr, eri_pair_matrix=eri_pair_arr,
         df_factors=df_factors,
@@ -854,33 +793,12 @@ def _run_rks_from_integrals_shared(
         with_k=bool(abs(alpha_scalar) > 1e-14),
         skip_first_fock_damping=skip_first_fock_damping,
         density=density, mo_coeff=mo_coeff, mo_occ=mo_occ_fixed,
-        mo_energy=mo_energy, raw_fock=fock, j_mat=j_mat, k_mat=k_mat,
-        eri_lr=eri_lr,
+        mo_energy=mo_energy, eri_lr=eri_lr,
     )
-    density, mo_coeff, mo_energy, energy, xc_energy, fock, converged = _maybe_run_extra_final_cycle(
-        density=density,
-        mo_coeff=mo_coeff,
-        mo_energy=mo_energy,
-        energy=energy,
-        xc_energy=xc_energy,
-        raw_fock=fock,
-        converged=converged,
-        x=x,
-        jk_builder=jk_builder,
-        ao=ao,
-        ao_deriv1=ao_deriv1,
-        weights=weights,
-        h=h,
-        s=s,
-        enuc=enuc,
-        cfg=cfg,
-        alpha=alpha,
-        xc_kind=xc_kind,
-        mo_occ_fixed=mo_occ_fixed,
-        j_mat=j_mat,
-        k_mat=k_mat,
-        traceable=traceable,
-    )
+    # Preserve the selected density and orbitals. Report expectations of the
+    # unshifted raw Fock rather than refilling the orbitals in Aufbau order.
+    if cfg.level_shift != 0.0:
+        mo_energy = jnp.real(jnp.diag(mo_coeff.conj().T @ fock @ mo_coeff))
     total_energy = energy if dispersion_energy is None else energy + dispersion_energy
     return RKSResult(
         converged=jnp.asarray(converged) & jnp.isfinite(total_energy),
@@ -945,7 +863,6 @@ def run_rks_from_integrals(
         config=config,
         eri_lr=eri_lr,
         dispersion_energy=dispersion_energy,
-        traceable=False,
     )
 
     return replace(
@@ -1003,5 +920,4 @@ def run_rks_from_integrals_traceable(
         config=config,
         eri_lr=eri_lr,
         dispersion_energy=dispersion_energy,
-        traceable=True,
     )

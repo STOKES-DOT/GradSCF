@@ -44,6 +44,20 @@ def test_native_inputs_match_independent_reference_integrals():
     np.testing.assert_allclose(data.eri_pair_matrix,mol.intor("int2e",aosym="s4"),atol=1e-12)
 
 
+def test_spherical_hf_inputs_use_native_integrals_without_a_grid():
+    pyscf = pytest.importorskip("pyscf")
+    data = build_rks_integral_inputs(
+        atom=ATOM, basis="def2-svp", cart=False,
+        config=RKSConfig(xc_spec="hf", jk_backend="direct"),
+    )
+    mol = pyscf.gto.M(atom=ATOM, basis="def2-svp", cart=False, verbose=0)
+    assert data.ao.shape == (0, mol.nao_nr())
+    assert data.grid_ao is None
+    assert data.ao_transform is None
+    assert not data.direct_basis.plan.topology.cart
+    np.testing.assert_allclose(data.overlap, mol.intor("int1e_ovlp"), atol=1e-12)
+
+
 def test_native_spectral_df_preserves_full_jk():
     from gradscf.integrals.molecular.jk import build_jk_from_df
     data=build_rks_integral_inputs(atom=ATOM,basis="3-21g",config=RKSConfig(xc_spec="hf",jk_backend="df",df_tol=1e-12))
@@ -55,10 +69,15 @@ def test_native_spectral_df_preserves_full_jk():
     np.testing.assert_allclose(k,jnp.einsum("prqs,rs->pq",eri,dm),atol=1e-10)
 
 
-@pytest.mark.parametrize("name", ["minao", "sap", "atom", "chkfile"])
+@pytest.mark.parametrize("name", ["minao", "sap", "chkfile"])
 def test_external_initial_guesses_fail_explicitly(name):
     with pytest.raises(ValueError,match="Unsupported initial guess"):
         restricted_initial_guess(init_guess=name,dtype=jnp.float64)
+
+
+def test_atomic_initial_guess_requires_a_molecule_and_basis():
+    with pytest.raises(ValueError, match="requires a molecule specification and a fixed named Gaussian basis"):
+        restricted_initial_guess(init_guess="atom", dtype=jnp.float64)
 
 
 def test_initial_density_inputs_are_validated_and_symmetrized():
@@ -71,7 +90,7 @@ def test_initial_density_inputs_are_validated_and_symmetrized():
 
 
 @pytest.mark.parametrize("options,error", [({"integral_backend":"gpu"},ValueError),
-    ({"grid_ao_backend":"cpu"},ValueError),({"cart":False},NotImplementedError),
+    ({"grid_ao_backend":"cpu"},ValueError),
     ({"chkfile":"old.chk"},NotImplementedError),({"ecp":"lanl2dz"},TypeError)])
 def test_unsupported_external_options_are_not_silently_ignored(options,error):
     with pytest.raises(error):build_rks_integral_inputs(atom=ATOM,basis="3-21g",xc_spec="hf",**options)

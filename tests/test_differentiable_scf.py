@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import gradscf.model.neural_xc.training.targets as training_targets
 import gradscf.model.neural_xc.training.trainer as training_trainer
-import gradscf.scf.differentiable as scf_differentiable
+import gradscf.scf.autodiff as scf_autodiff
 import gradscf.scf.rks as scf_rks
 from gradscf.dft.xc import b3lyp_component_basis
 from gradscf.model.neural_xc import make_neural_xc_functional
@@ -15,7 +15,7 @@ from gradscf.dft.hfx import ChunkedHFXNu
 from pyscf_reference import restricted_reference_from_pyscf
 from gradscf.scf import DifferentiableSCF, DifferentiableSCFConfig
 from gradscf.scf.molecules import QuadratureGrid, RestrictedMolecule, UnrestrictedMolecule
-from gradscf.scf.differentiable import (
+from gradscf.scf.autodiff import (
     _replace_molecule,
     _restricted_iteration_molecule,
     _restricted_total_occupations,
@@ -255,7 +255,7 @@ def test_unrestricted_scf_components_prefer_direct_hfx_fock_path():
         def bind_to_molecule_for_scf(self, _params, _molecule):
             raise AssertionError("direct unrestricted SCF path should avoid binding")
 
-    *_, extra_a, extra_b = scf_differentiable._unrestricted_scf_xc_components(
+    *_, extra_a, extra_b = scf_autodiff._unrestricted_scf_xc_components(
         {},
         _DirectFunctional(),
         molecule,
@@ -479,7 +479,7 @@ def test_restricted_scf_returns_selected_iterate_for_best_rms(
     monkeypatch.setattr(solver, "_run_restricted_scf_core", fake_core)
     if gradient_mode == "impl":
         monkeypatch.setattr(
-            scf_differentiable,
+            scf_autodiff,
             "implicit_fixed_point_solution",
             lambda _params, *, solution, **_kwargs: solution,
         )
@@ -833,50 +833,41 @@ def test_unrestricted_impl_forward_uses_self_consistent_density():
     )
 
 
-def test_unrestricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch):
-    molecule = _make_toy_unrestricted_reference()
-    calls = {"implicit": 0, "restart": None}
-    original = scf_differentiable.implicit_fixed_point_solution
+@pytest.mark.parametrize(
+    "make_reference,functional_class",
+    [
+        (_make_toy_restricted_reference, _ToyRestrictedFunctional),
+        (_make_toy_unrestricted_reference, _ToyUnrestrictedFunctional),
+    ],
+    ids=["restricted", "unrestricted"],
+)
+def test_implicit_scf_delegates_with_one_policy_resolution(
+    monkeypatch, make_reference, functional_class
+):
+    molecule = make_reference()
+    functional = functional_class()
+    policies = []
+    resolve_policy = DifferentiableSCFConfig.differentiation_config
 
-    def counted_implicit_fixed_point_solution(*args, **kwargs):
-        calls["implicit"] += 1
-        calls["restart"] = kwargs["config"].restart
-        return original(*args, **kwargs)
+    def counted_policy(config):
+        policy = resolve_policy(config)
+        policies.append(policy)
+        return policy
+
+    monkeypatch.setattr(DifferentiableSCFConfig, "differentiation_config", counted_policy)
+
+    implicit_configs = []
+    solve_fixed_point = scf_autodiff.implicit_fixed_point_solution
+
+    def counted_fixed_point(*args, **kwargs):
+        implicit_configs.append(kwargs["config"])
+        return solve_fixed_point(*args, **kwargs)
 
     monkeypatch.setattr(
-        scf_differentiable,
+        scf_autodiff,
         "implicit_fixed_point_solution",
-        counted_implicit_fixed_point_solution,
+        counted_fixed_point,
     )
-
-    class _ToyUnrestrictedFunctional:
-        def bind_to_molecule_for_scf(self, params, _molecule):
-            strength = jnp.asarray(params["strength"], dtype=jnp.float32)
-
-            class _Bound:
-                exact_exchange_fraction = jnp.asarray(0.0, dtype=jnp.float32)
-
-                def unrestricted_scf_components(self, molecule_in):
-                    ngrids = int(molecule_in.ao.shape[0])
-                    zeros_grad = jnp.zeros((ngrids, 3), dtype=jnp.float32)
-                    zeros_mat = jnp.zeros(
-                        (molecule_in.ao.shape[1], molecule_in.ao.shape[1]),
-                        dtype=jnp.float32,
-                    )
-                    v_alpha = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
-                    v_beta = -strength * jnp.asarray([0.1, 0.3, -0.5], dtype=jnp.float32)
-                    return (
-                        v_alpha,
-                        v_beta,
-                        zeros_grad,
-                        zeros_grad,
-                        "LDA",
-                        jnp.asarray(0.0),
-                        zeros_mat,
-                        zeros_mat,
-                    )
-
-            return _Bound()
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(
@@ -891,15 +882,16 @@ def test_unrestricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch)
         )
     )
 
-    def _objective(raw_strength):
+    def objective(raw_strength):
         params = {"strength": raw_strength}
-        out, _ = solver.run(molecule, _ToyUnrestrictedFunctional(), params)
+        out, _ = solver.run(molecule, functional, params)
         return jnp.sum(out.rdm1[0])
 
-    _, grad = jax.value_and_grad(_objective)(jnp.asarray(0.1, dtype=jnp.float32))
+    _, grad = jax.value_and_grad(objective)(jnp.asarray(0.1, dtype=jnp.float32))
 
-    assert calls["implicit"] == 1
-    assert calls["restart"] == 7
+    assert len(policies) == 1
+    assert len(implicit_configs) == 1
+    assert implicit_configs[0].restart == 7
     assert jnp.isfinite(grad)
 
 
@@ -922,7 +914,7 @@ def test_restricted_xc_fock_terms_prefers_density_energy_callback():
         def scf_potential_components_and_alpha(self, *_args, **_kwargs):
             raise AssertionError("potential-component path should not be used")
 
-    vxc_matrix, alpha, extra_fock, xc_energy = scf_differentiable._restricted_xc_fock_terms(
+    vxc_matrix, alpha, extra_fock, xc_energy = scf_autodiff._restricted_xc_fock_terms(
         params={"scale": jnp.asarray(1.7, dtype=jnp.float32)},
         functional=_EnergyFunctional(),
         molecule=molecule,
@@ -970,48 +962,6 @@ def test_restricted_scf_problem_builder_returns_density_callback_energy():
 
     assert np.allclose(float(xc_energy), float(expected_xc), atol=1e-6)
     assert np.allclose(float(total), float(expected_total), atol=1e-6)
-
-
-def test_restricted_impl_delegates_to_generic_fixed_point_wrapper(monkeypatch):
-    molecule = _make_toy_restricted_reference()
-    calls = {"implicit": 0}
-    original = scf_differentiable.implicit_fixed_point_solution
-
-    def counted_implicit_fixed_point_solution(*args, **kwargs):
-        calls["implicit"] += 1
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(
-        scf_differentiable,
-        "implicit_fixed_point_solution",
-        counted_implicit_fixed_point_solution,
-    )
-
-    class _ToyRestrictedFunctional:
-        def scf_potential_components_and_alpha(self, params, molecule_in):
-            strength = jnp.asarray(params["strength"], dtype=jnp.float32)
-            v_rho = strength * jnp.asarray([1.0, -0.2, 0.4], dtype=jnp.float32)
-            v_grad = jnp.zeros((int(molecule_in.ao.shape[0]), 3), dtype=jnp.float32)
-            return (v_rho, v_grad, jnp.zeros_like(v_rho), jnp.zeros_like(v_rho),
-                    "LDA", jnp.asarray(0.0, dtype=jnp.float32), None)
-
-    solver = DifferentiableSCF(
-        DifferentiableSCFConfig(
-            mode="self_consistent",
-            gradient_mode="impl",
-            implicit_diff_max_iter=4,
-        )
-    )
-
-    def objective(raw_strength):
-        params = {"strength": raw_strength}
-        out, _ = solver.run(molecule, _ToyRestrictedFunctional(), params)
-        return jnp.sum(out.rdm1[0])
-
-    _, grad = jax.value_and_grad(objective)(jnp.asarray(0.1, dtype=jnp.float32))
-
-    assert calls["implicit"] == 1
-    assert jnp.isfinite(grad)
 
 
 def test_training_config_builds_implicit_scf_without_forward_mode_switch():
@@ -1222,7 +1172,7 @@ def test_energy_only_scf_does_not_converge_on_first_cycle():
             zero_mat,
         )
 
-    converged, cycles, *_ = scf_differentiable.run_restricted_scf(
+    converged, cycles, *_ = scf_autodiff.run_restricted_scf(
         h=h,
         s=s,
         x=x,
@@ -1349,13 +1299,13 @@ def test_expl_unrestricted_scf_passes_level_shift_to_fixed_cycle_loop(monkeypatc
             return _Bound()
 
     level_shift_calls = []
-    original_scan = scf_differentiable.run_unrestricted_scf
+    original_scan = scf_autodiff.run_unrestricted_scf
 
     def _recording_scan(*args, **kwargs):
         level_shift_calls.append(float(kwargs["level_shift"]))
         return original_scan(*args, **kwargs)
 
-    monkeypatch.setattr(scf_differentiable, "run_unrestricted_scf", _recording_scan)
+    monkeypatch.setattr(scf_autodiff, "run_unrestricted_scf", _recording_scan)
 
     solver = DifferentiableSCF(
         DifferentiableSCFConfig(

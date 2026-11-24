@@ -68,6 +68,24 @@ def test_q_path_energy_scales_raw_density_gradient_and_laplacian():
     np.testing.assert_allclose(values, expected, atol=1e-12, rtol=1e-12)
 
 
+def test_q_path_recomputes_candidate_kernel_on_scaled_density():
+    import jax.numpy as jnp
+    import numpy as np
+
+    from gradscf.model.autoxc import Candidate
+    from gradscf.model.autoxc.density import pair_quadrature
+    from gradscf.model.autoxc.workflows.xc100.molecule import q_path_energy_density
+
+    rho = jnp.array([.2, .8])
+    coords = jnp.array([[0., 0., 0.], [1., 0., 0.]])
+    weights = jnp.array([.3, .7])
+    candidate = Candidate('pair_integral(n, source_n + n*r2)')
+    pair = pair_quadrature(coords, weights, 1, rho.dtype)
+    values = q_path_energy_density(candidate, {}, rho, None, None, 1e-12, pair=pair)
+    expected = rho * ((weights @ (rho**2)) + rho.prod()*weights[::-1])/3
+    np.testing.assert_allclose(values, expected, atol=1e-12)
+
+
 def test_joint_worker_publishes_fixed_scales_and_joint_selection(tmp_path, monkeypatch):
     import json
     import pytest

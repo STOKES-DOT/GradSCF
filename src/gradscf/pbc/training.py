@@ -73,7 +73,7 @@ class Reference:
 
     def resolve(self,params,functional,config):
         from ..dft import Functional
-        from ..scf.differentiable import DifferentiableSCFInfo
+        from ..scf.autodiff import DifferentiableSCFInfo
         from ._kpoint import run_kpoint_scf
         if not isinstance(functional,Functional):
             raise TypeError('Periodic training requires an external dft.Functional.')

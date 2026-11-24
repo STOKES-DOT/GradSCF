@@ -14,15 +14,16 @@ from time import perf_counter
 import numpy as np
 
 from gradscf.model.autoxc import Candidate
+from ..candidate import PAIR_OPERATORS
 from ..history import History, json_value, source_digest, versions, write_json
 from .genome import Genome, SEMILOCAL, SLOTS
-from .ppo import MutationPolicy, Transition
+from .mutations import MutationHistory
 from .queues import AgentQueue, EvaluationQueue
 
 
 ACTIONS = tuple((slot, operation) for slot in SLOTS
                 for operation in ('activate', 'replace', 'remove'))
-STATE_SIZE = 11
+MUTATION_STRATEGIES = ('thompson', 'uniform')
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class SwarmConfig:
     generations: int = 5
     steps: int = 3
     ga: bool = False
-    ppo: bool = False
+    mutation: str = 'thompson'
     tournament_size: int = 3
     crossover_probability: float = .6
     seed: int = 0
@@ -43,6 +44,8 @@ class SwarmConfig:
             raise ValueError('Agent, generation, step, tournament and concurrency counts must be positive integers')
         if self.ga and self.agents < 2:
             raise ValueError('GA requires at least two agents')
+        if self.mutation not in MUTATION_STRATEGIES:
+            raise ValueError('Choose thompson or uniform mutation')
         if not 0 <= self.crossover_probability <= 1 or type(self.seed) is not int or self.seed < 0:
             raise ValueError('Supply a crossover probability and a nonnegative integer seed')
 
@@ -63,20 +66,25 @@ def _summary(record):
     return result
 
 
-def _state(genome, evaluated, last_gain):
+def _context(genome, evaluated, last_gain):
     summary = _summary(evaluated)
+    genes = tuple(genome.genes.values())
+    operators = frozenset().union(*(gene.pair_operators for gene in genes))
+    feature_count = sum(len(gene.definitions) for gene in genes)
     return [1., *(float(genome.active(slot)) for slot in SLOTS),
             math.tanh(10 * summary['reward']),
             math.tanh(10 * summary.get('density_l1', 0.)),
             math.tanh(10 * summary.get('density_error', 0.)),
-            math.tanh(10 * last_gain)]
+            math.tanh(10 * last_gain),
+            *(float(operator in operators) for operator in PAIR_OPERATORS),
+            math.tanh(feature_count / 8)]
 
 
-def _mask(genome, registry):
+def _mask(genome, registry, feature_operators=()):
     occupied = sum(genome.active(slot) for slot in SLOTS)
     return [
         (genome.active(slot) and occupied > 1 if operation == 'remove' else
-         (not slot.endswith('_nonlocal') or bool(registry - SEMILOCAL))
+         (not slot.endswith('_nonlocal') or bool(feature_operators or registry - SEMILOCAL))
          and (genome.active(slot) == (operation == 'replace')))
         for slot, operation in ACTIONS
     ]
@@ -87,14 +95,14 @@ def _best(trials):
                key=lambda r: r['evaluation']['reward'], default=None)
 
 
-def _score(record, genome, evaluate, registry, seen):
+def _score(record, genome, evaluate, registry, seen, feature_operators):
     record['structure'] = genome.structure
     record['genome'] = genome.to_dict()
     if genome.structure in seen:
         record['status'] = 'duplicate'
         return
     try:
-        candidate = genome.compile(registry)
+        candidate = genome.compile(registry, feature_operators=feature_operators)
     except ValueError as exc:
         record.update(status='invalid_proposal', error=str(exc))
         return
@@ -113,24 +121,35 @@ def _score(record, genome, evaluate, registry, seen):
 
 
 def _segment(factory, evaluate, registry, config, slot, generation, parent, donor,
-             previous, frozen_policy, brief):
+             previous, mutation_history, brief, feature_operators):
     rng = np.random.default_rng([config.seed, generation, slot])
     last = previous[-1] if previous else {}
     session_id = last.get('session_id')
-    checkpoint = frozen_policy if frozen_policy is not None else last.get('policy')
-    policy = MutationPolicy(STATE_SIZE, len(ACTIONS), checkpoint) if config.ppo else None
     own_trials = [r for segment in previous for r in segment['trials']]
     seen = {r['structure'] for r in own_trials if r.get('structure')}
     seen.add(parent['structure'])
     current = parent
-    trials, trajectory = [], []
+    trials = []
     last_gain = 0.
     with ExitStack() as stack:
         agent = None
         for step in range(1, config.steps + 1):
             genome = Genome.from_dict(current['genome'])
             record = dict(agent=slot, generation=generation, step=step, operation='mutation',
-                          parent=current['structure'], error=None, evaluation=None)
+                          parent=current['structure'], parent_evaluation_id=current['evaluation_id'],
+                          evaluation_id=f'{slot}:{generation}:{step}', error=None, evaluation=None)
+            replay = mutation_history.replay(record) if mutation_history is not None else None
+            if replay is not None:
+                restored = replay['trial']
+                trials.append(restored)
+                session_id = replay['session_id']
+                rng.bit_generator.state = replay['rng_state']
+                if restored.get('candidate_digest'):
+                    seen.add(restored['structure'])
+                if (restored.get('evaluation') or {}).get('valid'):
+                    current = restored
+                last_gain = restored.get('reward') or 0.
+                continue
             trials.append(record)
             if step == 1 and donor is not None:
                 donor_genome = Genome.from_dict(donor['genome'])
@@ -139,18 +158,26 @@ def _segment(factory, evaluate, registry, config, slot, generation, parent, dono
                 count = int(rng.integers(1, max(2, len(differing))))
                 slots = sorted(rng.choice(differing, size=count, replace=False).tolist())
                 record.update(operation='crossover', donor=donor['structure'], swapped_slots=slots)
-                _score(record, genome.cross(donor_genome, slots), evaluate, registry, seen | {donor['structure']})
+                _score(record, genome.cross(donor_genome, slots), evaluate, registry,
+                       seen | {donor['structure']}, feature_operators)
                 if (record.get('evaluation') or {}).get('valid'):
                     current = record
                     seen.add(record['structure'])
+                if mutation_history is not None:
+                    mutation_history.commit(record, session_id, rng)
                 continue
 
-            state, legal = _state(genome, current, last_gain), _mask(genome, registry)
+            legal = _mask(genome, registry, feature_operators)
             if not any(legal):
                 raise ValueError('The evaluator registry leaves no valid mutation action')
-            probabilities = (policy.probabilities(state, legal) if policy else
-                             np.asarray(legal, dtype=float) / sum(legal))
-            action = int(rng.choice(len(ACTIONS), p=probabilities))
+            if mutation_history is not None:
+                selection = mutation_history.select(
+                    _context(genome, current, last_gain), legal, current['evaluation']['reward'], rng
+                )
+                record['mutation_selection'] = selection
+                action = selection['action_index']
+            else:
+                action = int(rng.choice(len(ACTIONS), p=np.asarray(legal, dtype=float)/sum(legal)))
             gene_slot, operation = ACTIONS[action]
             record['action'] = {'slot': gene_slot, 'operation': operation}
             if operation == 'remove':
@@ -161,6 +188,7 @@ def _segment(factory, evaluate, registry, config, slot, generation, parent, dono
                             'allowed_gene_inputs': sorted(registry & (
                                 {'n'} if gene_slot.endswith('_local') else
                                 SEMILOCAL if gene_slot.endswith('_semilocal') else registry)),
+                            'feature_operators': (feature_operators if gene_slot.endswith('_nonlocal') else ()),
                             'parent_metrics': _summary(current),
                             'history': [_summary(r) for r in (own_trials + trials[:-1])[-4:]],
                             'instruction': ('Return the selected gene contribution only in the potential '
@@ -183,33 +211,31 @@ def _segment(factory, evaluate, registry, config, slot, generation, parent, dono
                     child = None
                 finally:
                     record['proposal_seconds'] = perf_counter() - proposed
+                    if agent is not None:
+                        session_id = getattr(agent, 'session_id', session_id)
             if child is not None:
-                _score(record, child, evaluate, registry, seen)
+                _score(record, child, evaluate, registry, seen, feature_operators)
             if (record.get('evaluation') or {}).get('valid'):
                 last_gain = record['evaluation']['reward'] - current['evaluation']['reward']
                 current = record
+                record['reward'] = last_gain
             else:
-                last_gain = -.001
-            transition = Transition(state, legal, action, float(np.log(probabilities[action])), last_gain)
-            trajectory.append(transition)
-            record['reward'] = last_gain
-        if agent is not None:
-            session_id = getattr(agent, 'session_id', session_id)
-    if policy and frozen_policy is None:
-        policy.update(trajectory)
-    return {'session_id': session_id, 'policy': policy.checkpoint() if policy else None,
-            'trials': trials, 'trajectory': [asdict(t) for t in trajectory],
-            'current': current}
+                last_gain = 0.
+                record['reward'] = None
+            if mutation_history is not None:
+                mutation_history.commit(record, session_id, rng)
+    return {'session_id': session_id, 'trials': trials, 'current': current}
 
 
 async def run_swarm(factory, evaluator, founders, *, directory, config, registry, protocol,
-                    frozen_policy=None, brief=''):
+                    brief='', feature_operators=()):
     """Evaluate a fixed number of proposals per agent in either search mode.
 
     Completed per-agent segments and GA generations can be replayed on restart.
-    Each independent agent receives only its own trajectory and policy state.
+    Thompson learning is shared in GA mode and local to each independent lineage.
     """
     directory, registry = Path(directory), frozenset(registry)
+    feature_operators = tuple(sorted(set(feature_operators)))
     founders = tuple(founders)
     if len(founders) == 1:
         founders *= config.agents
@@ -217,8 +243,6 @@ async def run_swarm(factory, evaluator, founders, *, directory, config, registry
         raise ValueError('Supply one common founder or one founder per agent')
     if any(g.shared != founders[0].shared for g in founders):
         raise ValueError('Founders must agree on shared parameter names')
-    if frozen_policy is not None and not config.ppo:
-        raise ValueError('A frozen policy requires PPO mode')
     if config.ga:
         from multi_agent_ga import GAConfig, GeneticSearch, Individual
 
@@ -226,10 +250,11 @@ async def run_swarm(factory, evaluator, founders, *, directory, config, registry
                      'evaluator': evaluator.configuration, 'source': source_digest(),
                      'implementation': {
                          name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                         for name in ('genome.py', 'ppo.py', 'queues.py', 'search.py')
+                         for name in ('genome.py', 'bandit.py', 'mutations.py', 'queues.py', 'search.py')
                      },
                      'versions': versions(), 'founders': [g.to_dict() for g in founders],
-                     'frozen_policy': frozen_policy, 'brief': brief}
+                     'brief': brief,
+                     'feature_operators': list(feature_operators)}
     directory.mkdir(parents=True, exist_ok=True)
     agent_queue = AgentQueue(config.concurrency)
     execution = evaluator.configuration.get('worker', {}).get('execution', {})
@@ -251,12 +276,11 @@ async def run_swarm(factory, evaluator, founders, *, directory, config, registry
             return result
         previous = [_read(segment_path(slot, i)) for i in range(1, generation)]
         started = perf_counter()
+        mutation_history = mutation_histories[0 if config.ga else slot] if mutation_histories else None
         result = _segment(factory, evaluate, registry, config, slot, generation, parent, donor,
-                          previous, frozen_policy, brief)
+                          previous, mutation_history, brief, feature_operators)
         result.update(inputs=inputs, agent_queue_seconds=agent_queue_seconds,
                       agent_slot_seconds=perf_counter() - started)
-        for row in result['trials']:
-            row['evaluation_id'] = f"{slot}:{generation}:{row['step']}"
         write_json(path, result)
         return result
 
@@ -267,17 +291,30 @@ async def run_swarm(factory, evaluator, founders, *, directory, config, registry
         if not seed_path.is_file():
             seeds, assessed = [], {}
             for slot, genome in enumerate(founders):
-                key = genome.compile(registry).digest
+                key = genome.compile(registry, feature_operators=feature_operators).digest
                 if key not in assessed:
                     record = dict(agent=slot, step=0, generation=0, operation='founder',
                                   parent=None, error=None, evaluation_id=f'founder:{slot}')
-                    _score(record, genome, evaluate, registry, set())
+                    _score(record, genome, evaluate, registry, set(), feature_operators)
                     if not (record.get('evaluation') or {}).get('valid'):
                         raise ValueError('Every founder must complete the joint fit')
                     assessed[key] = record
                 seeds.append({**assessed[key], 'agent': slot, 'evaluation_id': f'founder:{slot}'})
             write_json(seed_path, seeds)
         seeds = _read(seed_path)
+        mutation_histories = ()
+        if config.mutation == 'thompson':
+            context = _context(Genome.from_dict(seeds[0]['genome']), seeds[0], 0.)
+            journal = directory/'mutations'
+            if config.ga:
+                mutation_histories = (MutationHistory(journal, len(ACTIONS), len(context),
+                                                      _best(seeds)['evaluation']['reward']),)
+            else:
+                mutation_histories = tuple(
+                    MutationHistory(journal/f'{slot:03d}', len(ACTIONS), len(context),
+                                    seed['evaluation']['reward'])
+                    for slot, seed in enumerate(seeds)
+                )
 
         if config.ga:
             def individual(row):
@@ -338,12 +375,18 @@ async def run_swarm(factory, evaluator, founders, *, directory, config, registry
                 if allocated_threads is not None and fit_times else None,
             })
         result = {'mode': 'ga' if config.ga else 'independent',
-                  'mutation': 'ppo' if config.ppo else 'uniform', 'agents': config.agents,
+                  'mutation': config.mutation, 'agents': config.agents,
                   'scheduling': {'agent_concurrency': config.concurrency, 'evaluation_concurrency': 1,
                                  'allocated_threads': allocated_threads, 'per_agent': usage},
                   'attempts': len(trials), 'outcomes': dict(Counter(r['status'] for r in trials)),
                   'proposal_calls': sum(r.get('proposal_requested', False) for r in trials),
                   'founder_evaluations': len({r['candidate_digest'] for r in seeds}),
                   'best': _best([*seeds, *trials]), 'trials': trials}
+        if mutation_histories:
+            counts = [history.summary() for history in mutation_histories]
+            result['mutation_learning'] = {
+                'scope': 'swarm' if config.ga else 'agent',
+                **{key: sum(row[key] for row in counts) for key in counts[0]},
+            }
         write_json(directory/'swarm.json', result)
         return result

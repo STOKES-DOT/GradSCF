@@ -24,13 +24,15 @@ from .rsh import local_xc_spec, rsh_preset
 
 
 def _host_array(value: Any, dtype: Any | None = None) -> np.ndarray:
-    return np.asarray(jax.device_get(value), dtype=dtype)
+    return np.asarray(value if isinstance(value, np.ndarray) else jax.device_get(value), dtype=dtype)
 
 
-def _reject_screened_reference(config):
+def _validate_reference_grid_options(config, *, cart, compute_local_hfx_features):
     if config.grid_screen_tol > 0 and xc_type(local_xc_spec(config.xc_spec)) != "HF":
         raise NotImplementedError(
             "Response export for screened XC is not implemented; use grid_screen_tol=0.")
+    if compute_local_hfx_features and not cart:
+        raise NotImplementedError("Local HFX reference features require Cartesian AOs.")
 
 
 def _restricted_reference_array_packaging(
@@ -45,64 +47,121 @@ def _restricted_reference_array_packaging(
     overlap: Any,
     df_factors: Any | None,
     dtype: Any,
+    device_arrays: bool = False,
 ) -> dict[str, Any]:
-    host_dtype = np.dtype(dtype)
-    mo_coeff_arr = _host_array(mo_coeff, host_dtype)
-    mo_occ_arr = _host_array(mo_occ, host_dtype)
-    mo_energy_arr = _host_array(mo_energy, host_dtype)
-    half_dm_arr = _host_array(half_dm, host_dtype)
+    convert = jnp.asarray if device_arrays else _host_array
+    stack = jnp.stack if device_arrays else np.stack
+    mo_coeff_arr = convert(mo_coeff, dtype)
+    mo_occ_arr = convert(mo_occ, dtype)
+    mo_energy_arr = convert(mo_energy, dtype)
+    half_dm_arr = convert(half_dm, dtype)
     return {
-        "mo_coeff": np.stack([mo_coeff_arr, mo_coeff_arr], axis=0),
-        "mo_occ": np.stack([mo_occ_arr, mo_occ_arr], axis=0),
-        "mo_energy": np.stack([mo_energy_arr, mo_energy_arr], axis=0),
-        "rdm1": np.stack([half_dm_arr, half_dm_arr], axis=0),
-        "h1e": _host_array(h1e, host_dtype),
-        "atom_coords": _host_array(atom_coords, host_dtype),
-        "atom_charges": _host_array(atom_charges, host_dtype),
-        "overlap_matrix": _host_array(overlap, host_dtype),
-        "df_factors": (
-            _host_array(df_factors, host_dtype) if df_factors is not None else None
-        ),
+        "mo_coeff": stack([mo_coeff_arr, mo_coeff_arr], axis=0),
+        "mo_occ": stack([mo_occ_arr, mo_occ_arr], axis=0),
+        "mo_energy": stack([mo_energy_arr, mo_energy_arr], axis=0),
+        "rdm1": stack([half_dm_arr, half_dm_arr], axis=0),
+        "h1e": convert(h1e, dtype),
+        "atom_coords": convert(atom_coords, dtype),
+        "atom_charges": convert(atom_charges, dtype),
+        "overlap_matrix": convert(overlap, dtype),
+        "df_factors": None if df_factors is None else convert(df_factors, dtype),
     }
 
 
-def _empty_rep_tensor_like(overlap: Any) -> np.ndarray:
-    return np.zeros((0, 0, 0, 0), dtype=np.asarray(overlap).dtype)
+def _empty_rep_tensor_like(overlap: Any, *, device_arrays: bool = False):
+    zeros = jnp.zeros if device_arrays else np.zeros
+    return zeros((0, 0, 0, 0), dtype=overlap.dtype)
+
+
+def _response_needs_laplacian(config, requested):
+    return (xc_type(local_xc_spec(config.xc_spec)) == "MGGA"
+            if requested is None else requested)
+
+
+def _missing_response_grid(inputs, needs_ao_laplacian):
+    return inputs.grid_ao is None and (
+        inputs.grid_weights.size == 0
+        or (needs_ao_laplacian and inputs.ao_laplacian is None)
+    )
 
 
 def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
-        require_grid=False, config=None, grids_level=0, max_l=3):
+        require_grid=False, config=None, grids_level=0, max_l=3, needs_ao_laplacian=None):
     """Lazily complete reference data without replacing spatial SCF inputs.
 
     Ordinary HF energies need no quadrature. Reference/feature consumers can
     request the existing dense/streamed grid representation after SCF, retaining
     S/H/ERI, RI factors, direct providers and the solved orbital state.
     """
-    if require_grid and inputs.grid_weights.shape[0] == 0 and inputs.grid_ao is None:
+    from ..integrals import prepare_basis, make_plan
+    from ..integrals.backends.native.jk import NativeDirectBasis
+    from ..integrals.grids.blocks import AOGrid
+
+    cfg = RKSConfig(xc_spec="hf") if config is None else config
+    laplacian = require_grid and _response_needs_laplacian(cfg, needs_ao_laplacian)
+    direct = inputs.direct_basis
+    topology = parameters = None
+    replan_streamed = laplacian and type(inputs.grid_ao) is AOGrid
+    if require_grid and (_missing_response_grid(inputs, laplacian) or replan_streamed):
         from .inputs import assembly
         from .._memory import tree_storage_bytes
 
-        cfg = RKSConfig(xc_spec="hf") if config is None else config
+        ao_transform = inputs.ao_transform
+        if not cart and ao_transform is None and inputs.overlap.shape[0] != inputs.basis.nao:
+            from ..integrals.basis import cartesian_to_spherical
+
+            if type(direct) is NativeDirectBasis:
+                topology = direct.plan.topology
+            else:
+                topology, parameters = prepare_basis(spec, basis, cart=False)
+            ao_transform = cartesian_to_spherical(topology)
         names = ("overlap", "hcore", "eri", "eri_pair_matrix", "df_factors",
                  "direct_basis", "dipole_integrals", "init_density",
                  "init_density_alpha", "init_density_beta", "init_mo_coeff",
                  "init_mo_coeff_alpha", "init_mo_coeff_beta")
         resident = tree_storage_bytes(*(getattr(inputs, name, None) for name in names))
-        laplacian = xc_type(local_xc_spec(cfg.xc_spec)) == "MGGA"
-        context = assembly._prepare_basis_grid_context(
-            spec=spec, basis=basis, max_l=max_l, grids_level=grids_level,
-            needs_ao_laplacian=laplacian, needs_grid=True,
+        grid_options = dict(needs_ao_laplacian=laplacian,
             grid_block_size=cfg.grid_block_size, grid_max_memory=cfg.grid_max_memory,
             max_memory=cfg.max_memory, scf_max_cycle=cfg.max_cycle,
             scf_history_matrices=6 if hasattr(inputs, "nalpha") else 2,
             fixed_workspace_bytes=resident)
-        ao, derivative, lap = assembly._grid_ao_payload(context, needs_ao_laplacian=laplacian)
-        inputs = replace(inputs, coords=context.coords, grid_weights=context.grid_weights,
-            ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao)
+        if inputs.grid_weights.size == 0:
+            context = assembly._prepare_basis_grid_context(
+                spec=spec, basis=basis, max_l=max_l, grids_level=grids_level,
+                needs_grid=True, ao_transform=ao_transform, **grid_options)
+            ao, derivative, lap = assembly._grid_ao_payload(context, needs_ao_laplacian=laplacian)
+            inputs = replace(inputs, coords=context.coords, grid_weights=context.grid_weights,
+                ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao,
+                ao_transform=ao_transform)
+        else:
+            from .inputs.grid import _streamed_grid
+
+            previous = inputs.grid_ao if replan_streamed else None
+            provider = _streamed_grid(inputs.basis, inputs.coords, inputs.grid_weights,
+                _keep_streamed=replan_streamed, _existing_provider=previous,
+                _resident_arrays=(inputs.ao, inputs.ao_deriv1), ao_transform=ao_transform,
+                **grid_options)
+            if replan_streamed:
+                if provider is not None and provider is not previous:
+                    inputs = replace(inputs, grid_ao=provider)
+            elif provider is None:
+                _, derivatives = assembly.evaluate_cartesian_ao_with_derivatives(
+                    inputs.basis, inputs.coords, deriv=2)
+                laplacian_ao = derivatives[4]
+                if ao_transform is not None:
+                    laplacian_ao = laplacian_ao @ ao_transform
+                inputs = replace(inputs, ao_laplacian=laplacian_ao)
+            else:
+                nao = inputs.overlap.shape[0]
+                inputs = replace(inputs, grid_ao=provider,
+                    ao=jnp.zeros((0, nao), dtype=inputs.ao.dtype),
+                    ao_deriv1=jnp.zeros((4, 0, nao), dtype=inputs.ao_deriv1.dtype))
     if inputs.dipole_integrals is not None:
         return inputs
-    from ..integrals import prepare_basis, make_plan
-    topology, parameters = prepare_basis(spec,basis,cart=cart)
+    if type(direct) is NativeDirectBasis:
+        return replace(inputs, dipole_integrals=direct.plan.evaluate("dipole", direct.parameters))
+    if topology is None:
+        topology, parameters = prepare_basis(spec, basis, cart=cart)
     dipole = make_plan(topology).evaluate('dipole',parameters)
     return replace(inputs,dipole_integrals=dipole)
 
@@ -136,6 +195,8 @@ def _build_restricted_reference(
     verbose: int = 0,
     scf_inputs: Any | None = None,
     scf_result: Any | None = None,
+    needs_ao_laplacian: bool | None = None,
+    device_arrays: bool = False,
     **mol_kwargs: Any,
 ) -> RestrictedMolecule:
     """Build a restricted strict-JAX RKS reference directly from molecule specs."""
@@ -148,7 +209,8 @@ def _build_restricted_reference(
     cfg = RKSConfig(xc_spec=xc_spec_resolved) if rks_config is None else rks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
-    _reject_screened_reference(cfg)
+    _validate_reference_grid_options(cfg, cart=cart,
+        compute_local_hfx_features=compute_local_hfx_features)
 
     rsh = rsh_preset(xc_spec_resolved)
     exact_exchange_fraction = (rsh.default_sr_hf_fraction if rsh is not None
@@ -176,9 +238,11 @@ def _build_restricted_reference(
             verbose=verbose,
             **mol_kwargs,
         )
-    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
-    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
-        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
+    laplacian = _response_needs_laplacian(cfg, needs_ao_laplacian)
+    if scf_inputs.dipole_integrals is None or _missing_response_grid(scf_inputs, laplacian):
+        spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+        scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+            require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l,needs_ao_laplacian=laplacian)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "
@@ -214,11 +278,12 @@ def _build_restricted_reference(
                 "Pure JAX RKS from molecule specs did not converge to a finite solution."
             )
 
-    dm_total = _host_array(rks.density_matrix)
+    convert = jnp.asarray if device_arrays else _host_array
+    dm_total = convert(rks.density_matrix)
     half_dm = dm_total * 0.5
-    mo_coeff = _host_array(rks.mo_coeff)
-    mo_occ = _host_array(rks.mo_occ) * 0.5
-    mo_energy = _host_array(rks.mo_energy)
+    mo_coeff = convert(rks.mo_coeff)
+    mo_occ = convert(rks.mo_occ) * 0.5
+    mo_energy = convert(rks.mo_energy)
     hfx_local = None
     hfx_nu = None
     hfx_fxx = None
@@ -246,16 +311,17 @@ def _build_restricted_reference(
         if energy_target is None
         else _host_float_unless_traced(energy_target)
     )
-    nocc = int(np.count_nonzero(np.asarray(rks.mo_occ) > 1e-8))
+    count_nonzero = jnp.count_nonzero if device_arrays else np.count_nonzero
+    nocc = int(count_nonzero(mo_occ > 0.5e-8))
     if cfg.jk_backend == "df":
         if df_factors is None:
             raise RuntimeError("DF backend requested but df_factors were not constructed.")
-        rep_tensor = _empty_rep_tensor_like(s)
+        rep_tensor = _empty_rep_tensor_like(s, device_arrays=device_arrays)
     elif cfg.jk_backend == "direct" and not compute_local_pt2_features and callable(
         getattr(scf_inputs.direct_basis, "get_jk", None)
     ):
         reference_direct_basis = scf_inputs.direct_basis
-        rep_tensor = _empty_rep_tensor_like(s)
+        rep_tensor = _empty_rep_tensor_like(s, device_arrays=device_arrays)
     else:
         if eri is None and eri_pair_matrix is None:
             if cfg.jk_backend == "direct":
@@ -263,8 +329,8 @@ def _build_restricted_reference(
             else:
                 raise RuntimeError("Full ERI backend requested but exact ERI data is missing.")
         if eri_pair_matrix is not None:
-            reference_eri_pair_matrix = _host_array(eri_pair_matrix, np.asarray(s).dtype)
-            rep_tensor = _empty_rep_tensor_like(s)
+            reference_eri_pair_matrix = convert(eri_pair_matrix, s.dtype)
+            rep_tensor = _empty_rep_tensor_like(s, device_arrays=device_arrays)
         else:
             rep_tensor = jnp.asarray(eri)
 
@@ -293,7 +359,8 @@ def _build_restricted_reference(
         atom_charges=basis_cart.atom_charges,
         overlap=s,
         df_factors=df_factors,
-        dtype=jnp.asarray(s).dtype,
+        dtype=s.dtype,
+        device_arrays=device_arrays,
     )
     return RestrictedMolecule(
         ao=ao,
@@ -363,6 +430,8 @@ def build_restricted_reference_from_facade(
     reference_builder: Any,
     scf_inputs: Any | None = None,
     scf_result: Any | None = None,
+    needs_ao_laplacian: bool | None = None,
+    device_arrays: bool = False,
 ) -> Any:
     if geometry_is_traced:
         raise NotImplementedError(
@@ -393,6 +462,8 @@ def build_restricted_reference_from_facade(
         hfx_chunk_size=hfx_chunk_size,
         include_dipole_integrals=include_dipole_integrals,
         verbose=mol.verbose,
+        needs_ao_laplacian=needs_ao_laplacian,
+        device_arrays=device_arrays,
         **({"scf_inputs": scf_inputs, "scf_result": scf_result} if scf_inputs is not None else {}),
     )
 
@@ -441,10 +512,24 @@ def build_restricted_scf_result_from_facade(
         init_guess_sap_basis=sap_basis,
         init_guess_chkfile_project=init_guess_chkfile_project,
         include_dipole_integrals=False,
+        include_ao_laplacian=False,
         verbose=mol.verbose,
     )
     result = run_rks_fn(**scf_inputs.as_rks_kwargs(), config=rks_config)
     return (result, scf_inputs) if return_inputs else result
+
+
+def _validate_unrestricted_reference_result(result):
+    traceable = _contains_jax_tracer(result.total_energy)
+    if not traceable and not result.converged:
+        orbitals = (result.mo_coeff_alpha, result.mo_coeff_beta,
+                    result.mo_energy_alpha, result.mo_energy_beta,
+                    result.density_matrix_alpha, result.density_matrix_beta)
+        if not all(jnp.all(jnp.isfinite(array)) for array in orbitals):
+            raise RuntimeError(
+                "Pure JAX UKS from molecule specs did not converge to a finite solution."
+            )
+    return traceable
 
 
 def _build_unrestricted_reference(
@@ -475,6 +560,8 @@ def _build_unrestricted_reference(
     verbose: int = 0,
     scf_inputs: Any | None = None,
     scf_result: Any | None = None,
+    needs_ao_laplacian: bool | None = None,
+    orbital_arrays: tuple[Any, Any, Any] | None = None,
     **mol_kwargs: Any,
 ) -> UnrestrictedMolecule:
     """Build an unrestricted strict-JAX UKS reference directly from molecule specs."""
@@ -487,7 +574,8 @@ def _build_unrestricted_reference(
     cfg = UKSConfig(xc_spec=xc_spec_resolved) if uks_config is None else uks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
-    _reject_screened_reference(cfg)
+    _validate_reference_grid_options(cfg, cart=cart,
+        compute_local_hfx_features=compute_local_hfx_features)
 
     if scf_inputs is None:
         scf_inputs = build_uks_integral_inputs(
@@ -511,9 +599,11 @@ def _build_unrestricted_reference(
             verbose=verbose,
             **mol_kwargs,
         )
-    spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
-    scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
-        require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l)
+    laplacian = _response_needs_laplacian(cfg, needs_ao_laplacian)
+    if scf_inputs.dipole_integrals is None or _missing_response_grid(scf_inputs, laplacian):
+        spec = atom if isinstance(atom,MoleculeSpec) else parse_molecule_spec(atom,unit=unit,charge=charge,spin=spin)
+        scf_inputs = complete_restricted_response_inputs(scf_inputs,spec,basis,cart=cart,
+            require_grid=True,config=cfg,grids_level=grids_level,max_l=max_l,needs_ao_laplacian=laplacian)
     if scf_inputs.grid_ao is not None and (compute_local_hfx_features or compute_local_pt2_features):
         raise NotImplementedError(
             "Legacy local HFX/PT2 feature caches require dense grid AO data; "
@@ -533,19 +623,13 @@ def _build_unrestricted_reference(
     uks = scf_result
     if uks is None:
         uks = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=cfg)
-    uks_is_traceable = _contains_jax_tracer(uks.total_energy)
-    if not uks_is_traceable and not uks.converged:
-        if not (
-            jnp.all(jnp.isfinite(uks.mo_coeff_alpha))
-            and jnp.all(jnp.isfinite(uks.mo_coeff_beta))
-            and jnp.all(jnp.isfinite(uks.mo_energy_alpha))
-            and jnp.all(jnp.isfinite(uks.mo_energy_beta))
-            and jnp.all(jnp.isfinite(uks.density_matrix_alpha))
-            and jnp.all(jnp.isfinite(uks.density_matrix_beta))
-        ):
-            raise RuntimeError(
-                "Pure JAX UKS from molecule specs did not converge to a finite solution."
-            )
+    uks_is_traceable = _validate_unrestricted_reference_result(uks)
+
+    if orbital_arrays is None:
+        orbital_arrays = tuple(jnp.stack([getattr(uks, name + "_alpha"),
+                                         getattr(uks, name + "_beta")])
+                               for name in ("mo_coeff", "mo_occ", "mo_energy"))
+    mo_coeff, mo_occ, mo_energy = orbital_arrays
 
     hfx_local = None
     hfx_nu = None
@@ -574,9 +658,9 @@ def _build_unrestricted_reference(
             eri = direct_basis.response_eri_pair_matrix()
         pt2_local, pt2_fock_response = _local_pt2_feature_from_unrestricted_orbitals(
             ao,
-            jnp.stack([uks.mo_coeff_alpha, uks.mo_coeff_beta], axis=0),
-            jnp.stack([uks.mo_occ_alpha, uks.mo_occ_beta], axis=0),
-            jnp.stack([uks.mo_energy_alpha, uks.mo_energy_beta], axis=0),
+            mo_coeff,
+            mo_occ,
+            mo_energy,
             rep_tensor=jnp.asarray(eri) if eri.ndim==4 else None,
             eri_pair_matrix=jnp.asarray(eri) if eri.ndim==2 else None,
             df_factors=scf_inputs.df_factors,
@@ -598,9 +682,9 @@ def _build_unrestricted_reference(
         grid=QuadratureGrid(weights=weights, coords=coords),
         dipole_integrals=dipole_integrals,
         rep_tensor=jnp.asarray(eri),
-        mo_coeff=jnp.stack([uks.mo_coeff_alpha, uks.mo_coeff_beta], axis=0),
-        mo_occ=jnp.stack([uks.mo_occ_alpha, uks.mo_occ_beta], axis=0),
-        mo_energy=jnp.stack([uks.mo_energy_alpha, uks.mo_energy_beta], axis=0),
+        mo_coeff=mo_coeff,
+        mo_occ=mo_occ,
+        mo_energy=mo_energy,
         rdm1=jnp.stack([uks.density_matrix_alpha, uks.density_matrix_beta], axis=0),
         fock_matrix=jnp.stack([uks.fock_matrix_alpha, uks.fock_matrix_beta], axis=0),
         h1e=jnp.asarray(h1e),
@@ -658,6 +742,8 @@ def build_unrestricted_reference_from_facade(
     reference_builder: Any | None = None,
     scf_inputs: Any | None = None,
     scf_result: Any | None = None,
+    needs_ao_laplacian: bool | None = None,
+    orbital_arrays: tuple[Any, Any, Any] | None = None,
 ) -> Any:
     if reference_builder is None:
         raise ValueError("reference_builder must be provided for unrestricted facade references.")
@@ -685,6 +771,8 @@ def build_unrestricted_reference_from_facade(
         init_guess_sap_basis=sap_basis,
         init_guess_chkfile_project=init_guess_chkfile_project,
         verbose=mol.verbose,
+        needs_ao_laplacian=needs_ao_laplacian,
+        orbital_arrays=orbital_arrays,
         **({"scf_inputs": scf_inputs, "scf_result": scf_result} if scf_inputs is not None else {}),
     )
 
@@ -713,7 +801,8 @@ def build_unrestricted_scf_result_from_facade(
         grids_level=grids_level, max_l=max_l, grid_ao_backend=grid_ao_backend,
         integral_backend=integral_backend, libcint_geometry_grad_policy=geometry_grad_policy,
         init_guess=init_guess, chkfile=chkfile, init_guess_sap_basis=sap_basis,
-        init_guess_chkfile_project=init_guess_chkfile_project, verbose=mol.verbose)
+        init_guess_chkfile_project=init_guess_chkfile_project, verbose=mol.verbose,
+        include_dipole_integrals=False, include_ao_laplacian=False)
     result = run_uks_from_integrals(**scf_inputs.as_uks_kwargs(), config=uks_config)
     return (result, scf_inputs) if return_inputs else result
 
