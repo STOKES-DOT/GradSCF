@@ -36,7 +36,7 @@ def _add_ao_submatrix(total, value, indices):
     return total + value if indices is None else total.at[..., indices[:, None], indices].add(value)
 
 
-def ao_point_bytes(basis_or_provider, *, deriv: int) -> int:
+def ao_point_bytes(basis_or_provider, *, deriv: int, ao_transform=None) -> int:
     """Estimate one grid point's AO/primitive workspace from static metadata."""
     if deriv not in (0, 1, 2):
         raise ValueError("AO workspace requires deriv in (0,1,2).")
@@ -47,11 +47,15 @@ def ao_point_bytes(basis_or_provider, *, deriv: int) -> int:
     components = (1, 4, 5)[deriv]
     # Coordinates can promote a float32 model basis to float64 AO values.
     itemsize = max(8, np.dtype(exponents.dtype).itemsize)
-    return max(1, basis_or_provider.nao * itemsize * (12 * nprimitive + 2 * components + 8))
+    cart_nao = exponents.shape[0]
+    if ao_transform is None:
+        ao_transform = getattr(basis_or_provider, "ao_transform", None)
+    projected = 0 if ao_transform is None else components * ao_transform.shape[1] * itemsize
+    return max(1, cart_nao * itemsize * (12 * nprimitive + 2 * components + 8) + projected)
 
 
 def ao_block_size(basis, *, deriv: int, max_memory: float, requested: int = 0,
-                  device=None) -> int:
+                  device=None, ao_transform=None) -> int:
     """Plan an AO block within its allocated workspace in decimal MB.
 
     The caller charges resident arrays against the total calculation budget
@@ -63,7 +67,7 @@ def ao_block_size(basis, *, deriv: int, max_memory: float, requested: int = 0,
         raise ValueError("grid_max_memory must be a finite positive number of MB.")
     if requested < 0:
         raise ValueError("An AO block size must be nonnegative.")
-    per_point = ao_point_bytes(basis, deriv=deriv)
+    per_point = ao_point_bytes(basis, deriv=deriv, ao_transform=ao_transform)
     available = int(max_memory * 1e6)
     if available < per_point:
         raise ValueError("grid_max_memory cannot hold one AO quadrature point's workspace.")
@@ -94,32 +98,38 @@ class AOGrid:
     angulars: tuple[tuple[int, int, int], ...]
     block_size: int
     adaptive: bool = False
+    ao_transform: Any | None = None
 
     def tree_flatten(self):
-        return ((self.coords, self.weights, self.centers, self.exponents, self.coefficients),
+        return ((self.coords, self.weights, self.centers, self.exponents, self.coefficients,
+                 self.ao_transform),
                 (self.nprims, self.angulars, self.block_size, self.adaptive))
 
     @classmethod
     def tree_unflatten(cls, metadata, children):
-        return cls(*children, *metadata)
+        return cls(*children[:-1], *metadata, ao_transform=children[-1])
 
     @classmethod
     def from_basis(cls, basis, coords, weights, *, block_size: int = 4096,
-                   adaptive: bool = False):
+                   adaptive: bool = False, ao_transform=None):
         if int(block_size) <= 0:
             raise ValueError("block_size must be positive.")
         coords, weights = _as_device_array(coords), _as_device_array(weights)
         if coords.ndim != 2 or coords.shape[1] != 3 or weights.shape != coords.shape[:1]:
             raise ValueError("AO grid requires coordinates (ngrids,3) and weights (ngrids,).")
+        if ao_transform is not None:
+            ao_transform = _as_device_array(ao_transform)
+            if ao_transform.ndim != 2 or ao_transform.shape[0] != basis.nao:
+                raise ValueError("AO transform must have one row per Cartesian AO.")
         return cls(coords, weights, _as_device_array(basis.ao_centers),
                    _as_device_array(basis.ao_exponents_padded),
                    _as_device_array(basis.ao_coefficients_padded),
                    tuple(basis.ao_nprims_tuple), tuple(basis.ao_angulars), int(block_size),
-                   bool(adaptive))
+                   bool(adaptive), ao_transform=ao_transform)
 
     @property
     def nao(self) -> int:
-        return int(self.centers.shape[0])
+        return self.centers.shape[0] if self.ao_transform is None else self.ao_transform.shape[1]
 
     @property
     def ngrids(self) -> int:
@@ -138,9 +148,11 @@ class AOGrid:
         values = _evaluate_cartesian_ao_kernel(
             coords, self.centers, self.exponents, self.coefficients,
             jnp.asarray(self.nprims, dtype=jnp.int32),
-            jnp.asarray(self.angulars, dtype=jnp.int32).reshape(self.nao, 3),
+            jnp.asarray(self.angulars, dtype=jnp.int32).reshape(self.centers.shape[0], 3),
             deriv=deriv,
         )
+        if self.ao_transform is not None:
+            values = values @ self.ao_transform
         if deriv == 0:
             return values, None, None, coords, weights
         return values[0], values[:4], values[4] if deriv == 2 else None, coords, weights

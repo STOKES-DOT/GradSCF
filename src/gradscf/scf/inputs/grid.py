@@ -44,6 +44,13 @@ class _BasisGridContext:
     geometry_is_traced: bool
     grid_ao_bundle: _GridAOInputBundle | None
     grid_ao: AOGrid | None = None
+    ao_transform: Array | None = None
+
+    @property
+    def nao(self):
+        if self.grid_ao_bundle is not None:
+            return self.grid_ao_bundle.ao.shape[-1]
+        return self.basis.nao if self.ao_transform is None else self.ao_transform.shape[1]
 
 
 def _grid_device(array):
@@ -77,12 +84,13 @@ def _grid_ao_input_cache_key(
     scf_history_matrices: int = 2,
     fixed_workspace_bytes: int = 0,
     force_streamed: bool = False,
+    ao_transform: Array | None = None,
 ) -> tuple[Any, ...]:
     coords_bohr = np.asarray(jax.device_get(spec.coords_bohr), dtype=np.float64)
     physical = (
         tuple(spec.symbols), _cache_signature(getattr(spec, "charges", None)),
         _cache_signature(basis), int(max_l), int(grids_level),
-        bool(needs_ao_laplacian), bool(jax.config.x64_enabled),
+        bool(needs_ao_laplacian), bool(jax.config.x64_enabled), ao_transform is not None,
         coords_bohr.shape, coords_bohr.dtype.str, coords_bohr.tobytes(), _active_device_cache_key(),
     )
     execution = (
@@ -106,6 +114,7 @@ def _grid_resident_bytes(basis, coords, weights, *arrays, scf_max_cycle,
         bundle.ao_deriv1, bundle.ao_laplacian,
         bundle.basis.ao_centers, bundle.basis.ao_exponents_padded,
         bundle.basis.ao_coefficients_padded,
+        getattr(bundle.grid_ao, "ao_transform", None),
     ))
     return matrices + fixed_workspace_bytes + array_storage_bytes(
         coords, weights, basis.ao_centers,
@@ -118,7 +127,8 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
                    grid_block_size, grid_max_memory,
                    max_memory=DEFAULT_MAX_MEMORY_MB, scf_max_cycle=80,
                    scf_history_matrices=2, fixed_workspace_bytes=0,
-                   _keep_streamed=False, _resident_arrays=(), _existing_provider=None):
+                   _keep_streamed=False, _resident_arrays=(), _existing_provider=None,
+                   ao_transform=None):
     if grid_block_size < -1:
         raise ValueError("grid_block_size must be -1 (dense), 0 (auto), or positive.")
     validate_memory_mb(max_memory)
@@ -129,10 +139,10 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
     deriv = 2 if needs_ao_laplacian else 1
     device = _grid_device(coords)
     available = workspace_bytes(max_memory, device=device, resident_bytes=
-        _grid_resident_bytes(basis, coords, weights, *_resident_arrays, scf_max_cycle=scf_max_cycle,
+        _grid_resident_bytes(basis, coords, weights, ao_transform, *_resident_arrays, scf_max_cycle=scf_max_cycle,
             scf_history_matrices=scf_history_matrices,
             fixed_workspace_bytes=fixed_workspace_bytes))
-    full_workspace = coords.shape[0] * ao_point_bytes(basis, deriv=deriv)
+    full_workspace = coords.shape[0] * ao_point_bytes(basis, deriv=deriv, ao_transform=ao_transform)
     if grid_block_size == -1:
         if full_workspace > available:
             raise ValueError("Dense AO quadrature exceeds max_memory; use grid_block_size=0.")
@@ -142,12 +152,13 @@ def _streamed_grid(basis, coords, weights, *, needs_ao_laplacian,
     if grid_block_size == 0 and full_workspace <= available and not _keep_streamed:
         return None
     block = ao_block_size(basis, deriv=deriv, max_memory=available / 1e6,
-                          requested=max(0, grid_block_size), device=device)
+                          requested=max(0, grid_block_size), device=device, ao_transform=ao_transform)
     if grid_block_size == 0:
         block = min(block, int(coords.shape[0]))
     adaptive = grid_block_size == 0 and grid_max_memory is None
     if _existing_provider is None:
-        return AOGrid.from_basis(basis, coords, weights, block_size=block, adaptive=adaptive)
+        return AOGrid.from_basis(basis, coords, weights, block_size=block, adaptive=adaptive,
+                                 ao_transform=ao_transform)
     # The caller supplies a provider for this same physical quadrature.
     if _existing_provider.block_size == block and _existing_provider.adaptive == adaptive:
         return _existing_provider
@@ -269,8 +280,11 @@ def _empty_ao_payload(nao, dtype):
     return jnp.zeros((0, nao), dtype=dtype), jnp.zeros((4, 0, nao), dtype=dtype), None
 
 
-def _dense_ao_payload(basis, coords, *, needs_ao_laplacian, evaluate):
+def _dense_ao_payload(basis, coords, *, needs_ao_laplacian, evaluate, ao_transform=None):
     ao, derivatives = evaluate(basis, coords, deriv=2 if needs_ao_laplacian else 1)
+    if ao_transform is not None:
+        derivatives = derivatives @ ao_transform
+        ao = derivatives[0]
     if needs_ao_laplacian:
         return ao, derivatives[:4], derivatives[4]
     return ao, derivatives, None
@@ -293,6 +307,7 @@ def _build_grid_ao_input_bundle(
     scf_history_matrices: int = 2,
     fixed_workspace_bytes: int = 0,
     force_streamed: bool = False,
+    ao_transform: Array | None = None,
 ) -> _GridAOInputBundle:
     basis_cart = basis_from_molecule_spec(spec, basis=basis, max_l=max_l)
     coords, weights = build_molecular_grid_from_spec(spec, level=grids_level)
@@ -300,13 +315,14 @@ def _build_grid_ao_input_bundle(
         needs_ao_laplacian=needs_ao_laplacian, grid_block_size=grid_block_size,
         grid_max_memory=grid_max_memory, max_memory=max_memory,
         scf_max_cycle=scf_max_cycle, scf_history_matrices=scf_history_matrices,
-        fixed_workspace_bytes=fixed_workspace_bytes, _keep_streamed=force_streamed)
+        fixed_workspace_bytes=fixed_workspace_bytes, _keep_streamed=force_streamed,
+        ao_transform=ao_transform)
     if provider is not None:
         return _GridAOInputBundle(basis_cart, coords, weights,
-            *_empty_ao_payload(basis_cart.nao, coords.dtype), provider)
+            *_empty_ao_payload(provider.nao, coords.dtype), provider)
     return _GridAOInputBundle(basis_cart, coords, weights,
         *_dense_ao_payload(basis_cart, coords, needs_ao_laplacian=needs_ao_laplacian,
-                           evaluate=evaluate_cartesian_ao_with_derivatives))
+                           evaluate=evaluate_cartesian_ao_with_derivatives, ao_transform=ao_transform))
 
 
 def _cached_grid_ao_input_bundle(
@@ -326,11 +342,12 @@ def _cached_grid_ao_input_bundle(
     scf_history_matrices: int = 2,
     fixed_workspace_bytes: int = 0,
     force_streamed: bool = False,
+    ao_transform: Array | None = None,
 ) -> _GridAOInputBundle:
     grid_options = dict(needs_ao_laplacian=needs_ao_laplacian, grid_block_size=grid_block_size,
                         grid_max_memory=grid_max_memory, max_memory=max_memory,
                         scf_max_cycle=scf_max_cycle, scf_history_matrices=scf_history_matrices,
-                        fixed_workspace_bytes=fixed_workspace_bytes)
+                        fixed_workspace_bytes=fixed_workspace_bytes, ao_transform=ao_transform)
     key, execution_key = _grid_ao_input_cache_key(spec=spec, basis=basis, max_l=max_l,
         grids_level=grids_level, force_streamed=force_streamed, **grid_options)
     cached = _GRID_AO_INPUT_CACHE.get(key)
@@ -353,10 +370,11 @@ def _cached_grid_ao_input_bundle(
             if old_provider is None:
                 return cached
             ao, derivative, laplacian = _dense_ao_payload(cached.basis, cached.coords,
-                needs_ao_laplacian=needs_ao_laplacian, evaluate=evaluate_cartesian_ao_with_derivatives)
+                needs_ao_laplacian=needs_ao_laplacian, evaluate=evaluate_cartesian_ao_with_derivatives,
+                ao_transform=ao_transform)
             bundle = replace(cached, ao=ao, ao_deriv1=derivative, ao_laplacian=laplacian, grid_ao=None)
         elif old_provider is None:
-            ao, derivative, laplacian = _empty_ao_payload(cached.basis.nao, cached.coords.dtype)
+            ao, derivative, laplacian = _empty_ao_payload(provider.nao, cached.coords.dtype)
             bundle = replace(cached, ao=ao, ao_deriv1=derivative, ao_laplacian=laplacian, grid_ao=provider)
         else:
             if provider is old_provider and same_execution:
@@ -385,6 +403,8 @@ def _prepare_basis_grid_context(
     scf_history_matrices: int = 2,
     fixed_workspace_bytes: int = 0,
     force_streamed: bool = False,
+    ao_transform: Array | None = None,
+    nao: int | None = None,
 ) -> _BasisGridContext:
     geometry_is_traced = any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree_util.tree_leaves(spec.coords_bohr))
     if not needs_grid:
@@ -396,7 +416,7 @@ def _prepare_basis_grid_context(
         dtype = jnp.asarray(spec.coords_bohr).dtype
         bundle = _GridAOInputBundle(
             basis_cart, jnp.zeros((0, 3), dtype=dtype), jnp.zeros((0,), dtype=dtype),
-            *_empty_ao_payload(basis_cart.nao, dtype),
+            *_empty_ao_payload(basis_cart.nao if nao is None else nao, dtype),
         )
         return _BasisGridContext(
             basis=basis_cart, coords=bundle.coords,
@@ -417,11 +437,13 @@ def _prepare_basis_grid_context(
             grid_weights=weights,
             geometry_is_traced=True,
             grid_ao_bundle=None,
+            ao_transform=ao_transform,
             grid_ao=_streamed_grid(basis_cart, coords, weights,
                 needs_ao_laplacian=needs_ao_laplacian, grid_block_size=grid_block_size,
                 grid_max_memory=grid_max_memory, max_memory=max_memory,
                 scf_max_cycle=scf_max_cycle, scf_history_matrices=scf_history_matrices,
-                fixed_workspace_bytes=fixed_workspace_bytes, _keep_streamed=force_streamed),
+                fixed_workspace_bytes=fixed_workspace_bytes, _keep_streamed=force_streamed,
+                ao_transform=ao_transform),
         )
     # Fixed coordinates may still be closed over by a JIT of a field or model
     # parameter. Build/cache their constant grid eagerly: device inspection
@@ -440,6 +462,7 @@ def _prepare_basis_grid_context(
             max_memory=max_memory, scf_max_cycle=scf_max_cycle,
             scf_history_matrices=scf_history_matrices,
             fixed_workspace_bytes=fixed_workspace_bytes, force_streamed=force_streamed,
+            ao_transform=ao_transform,
         )
     return _BasisGridContext(
         basis=grid_ao_bundle.basis,
@@ -448,6 +471,7 @@ def _prepare_basis_grid_context(
         geometry_is_traced=False,
         grid_ao_bundle=grid_ao_bundle,
         grid_ao=grid_ao_bundle.grid_ao,
+        ao_transform=ao_transform,
     )
 
 
@@ -461,10 +485,11 @@ def _grid_ao_payload(
     if bundle is not None:
         return bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian
     if context.grid_ao is not None:
-        return _empty_ao_payload(context.basis.nao, context.coords.dtype)
+        return _empty_ao_payload(context.nao, context.coords.dtype)
     if context.geometry_is_traced:
         return _dense_ao_payload(context.basis, context.coords,
-            needs_ao_laplacian=needs_ao_laplacian, evaluate=evaluate_cartesian_ao_with_derivatives)
+            needs_ao_laplacian=needs_ao_laplacian, evaluate=evaluate_cartesian_ao_with_derivatives,
+            ao_transform=context.ao_transform)
     raise ValueError("Non-traced basis/grid context is missing cached AO data.")
 
 
@@ -478,6 +503,7 @@ def _cache_bounded(
         return sum(array.nbytes for array in (
             bundle.coords, bundle.grid_weights, bundle.ao,
             bundle.ao_deriv1, bundle.ao_laplacian,
+            getattr(bundle.grid_ao, "ao_transform", None),
         ) if array is not None)
 
     size = nbytes(value)

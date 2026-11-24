@@ -22,8 +22,11 @@ from gradscf._memory import (tree_storage_bytes, validate_memory_mb,
 class MolecularEnergy:
     """Relaxed real HF/LDA/GGA/hybrid E(R,F) in atomic units.
 
-    Construct from converged RHF/RKS or UHF/UKS with Cartesian AOs and integer
+    Construct from converged RHF/RKS or UHF/UKS with real AOs and integer
     occupations. Restricted open-shell and noncollinear references are excluded.
+    Spherical references with d or higher shells retain the native spherical
+    derivative-order limits. Spherical s/p-only references use the equivalent
+    Cartesian kernels and their existing higher-order products.
     Coordinates are in bohr, F in atomic electric-field units, E in Hartree.
     E(F) = E(0) - mu.F - F.alpha.F/2 + ... includes the nuclear field energy.
     The initial orbitals seed each forward solve; they are not a frozen density.
@@ -88,8 +91,8 @@ class MolecularEnergy:
                 raise ValueError("Restricted orbitals require integer 0/2 occupations.")
             self.occupations = np.stack([occupations / 2] * 2)
         seed_backends = ("full", "direct") if jk_backend == "direct" else ("full",)
-        if not mf.mol.cart or getattr(mf, "jk_backend", "full") not in seed_backends:
-            raise NotImplementedError("Use Cartesian AOs and full J/K, or explicitly opt into direct J/K.")
+        if getattr(mf, "jk_backend", "full") not in seed_backends:
+            raise NotImplementedError("Use full J/K, or explicitly opt into direct J/K.")
         self.jk_backend = jk_backend
         self.direct_scf_workers = getattr(mf, "direct_scf_workers", 1)
         self.direct_scf_tol = getattr(mf, "direct_scf_tol", 0.)
@@ -128,7 +131,11 @@ class MolecularEnergy:
                                       direct_scf_tol=self.direct_scf_tol)
             if self.max_memory is not None:
                 self.scf_config = replace(self.scf_config, max_memory=self.max_memory)
-        topology, self.parameters = integrals.prepare_basis(self.spec, self.basis, cart=True)
+        topology, self.parameters = integrals.prepare_basis(
+            self.spec, self.basis, cart=mf.mol.cart)
+        # The normalized-sp convention gives identical AO ordering and values.
+        if not topology.cart and max(topology.angular_momenta) <= 1:
+            topology = replace(topology, cart=True)
         self.plan = integrals.make_plan(topology)
         distances = np.linalg.norm(np.asarray(self.parameters.centers)[:, None]
                                    - np.asarray(self.coordinates)[None], axis=-1)
@@ -206,7 +213,7 @@ class MolecularEnergy:
                 atom=replace(self.spec, coords_bohr=coordinates), basis=self.basis,
                 config=self.scf_config, xc_spec=self.xc,
                 grids_level=self.grids_level, max_l=self.max_l,
-                cart=True, **options)
+                cart=self.plan.topology.cart, **options)
             overlap, hcore = data.overlap, data.hcore
             eri = data.eri if data.eri is not None else getattr(data, "eri_pair_matrix", None)
             enuc = data.nuclear_repulsion

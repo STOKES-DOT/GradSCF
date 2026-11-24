@@ -103,7 +103,7 @@ class _BaseKS:
     def _scf_signature(self, *, spec=None, config=None):
         spec = self._spec() if spec is None else spec
         config = self._config() if config is None else config
-        return _cache_signature((spec, self.mol.basis, config, self.xc, self.params, self.grids_level,
+        return _cache_signature((spec, self.mol.basis, self.mol.cart, config, self.xc, self.params, self.grids_level,
             self.max_l, self.integral_backend, self.geometry_grad_policy, self.grid_ao_backend,
             self.init_guess, self.chkfile, self.sap_basis, self.init_guess_chkfile_project))
 

@@ -22,7 +22,7 @@ def _numerical_work(*args, **kwargs):
 
 
 def _molecule():
-    return gto.M(atom="H 0 0 0; H 0 0 1.4", unit="Bohr", basis="sto-3g")
+    return gto.M(atom="H 0 0 0; H 0 0 1.4", unit="Bohr", basis="sto-3g", cart=True)
 
 
 def _uks_result():

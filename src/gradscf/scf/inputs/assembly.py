@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gradscf._memory import DEFAULT_MAX_MEMORY_MB, tree_storage_bytes, workspace_bytes
-from gradscf.integrals.basis import basis_from_molecule_spec, prepare_basis
+from gradscf.integrals.basis import basis_from_molecule_spec, cartesian_to_spherical, prepare_basis
 from gradscf.integrals.plan import make_plan
 from gradscf.integrals.grids import build_molecular_grid_from_spec
 from gradscf.integrals.grids.ao import evaluate_cartesian_ao, evaluate_cartesian_ao_with_derivatives
@@ -65,7 +65,7 @@ def _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices):
     bundle = context.grid_ao_bundle
     arrays = () if bundle is None else (bundle.ao, bundle.ao_deriv1, bundle.ao_laplacian)
     resident = _grid._grid_resident_bytes(context.basis, context.coords,
-        context.grid_weights, *arrays, scf_max_cycle=cfg.max_cycle,
+        context.grid_weights, context.ao_transform, *arrays, scf_max_cycle=cfg.max_cycle,
         scf_history_matrices=scf_history_matrices)
     provider = context.grid_ao
     ao_workspace = (0 if provider is None else provider.block_size *
@@ -79,7 +79,7 @@ def _check_eri_memory(context, cfg, *, mode, rsh, needs_ao_laplacian,
     if required_bytes is None:
         if cfg.jk_backend == "direct":
             return
-        required_bytes = _eri_workspace_bytes(context.basis.nao, cfg, mode=mode, rsh=rsh,
+        required_bytes = _eri_workspace_bytes(context.nao, cfg, mode=mode, rsh=rsh,
             geometry_is_traced=context.geometry_is_traced,
             itemsize=max(8, np.dtype(context.coords.dtype).itemsize))
     resident, ao_workspace = _grid_work_bytes(context, cfg, needs_ao_laplacian, scf_history_matrices)
@@ -110,8 +110,6 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
                   geometry_grad_policy, include_dipole, chkfile, sap_basis,
                   chkfile_project, mol_kwargs, init_guess, make_initial_guess,
                   scf_history_matrices=2, include_ao_laplacian=None):
-    if not cart:
-        raise NotImplementedError("SCF/grid assembly currently requires Cartesian AOs; integral plans also support spherical AOs")
     mode = str(integral_backend).lower()
     if mode != "libcint":
         raise ValueError("Only the libcint integral interface is supported; remove the old integral_backend option.")
@@ -143,15 +141,20 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
     fixed_workspace = 0
     auxiliary = getattr(cfg, "auxbasis", None)
     # Forecast native/RI storage before committing the remaining budget to grids.
-    top, params = prepare_basis(spec, basis, cart=True)
+    top, params = prepare_basis(spec, basis, cart=cart)
     plan = make_plan(top)
+    # Cartesian and real spherical s/p columns coincide in libcint order.
+    ao_transform = (cartesian_to_spherical(top)
+                    if needs_grid and not cart and max(top.angular_momenta) > 1 else None)
+    if ao_transform is not None and getattr(cfg, "grid_screen_tol", 0.) > 0:
+        raise NotImplementedError("Local AO screening requires Cartesian AOs; use grid_screen_tol=0.")
     geometry_is_traced = any(isinstance(value, jax.core.Tracer)
         for value in jax.tree_util.tree_leaves(spec.coords_bohr))
     auxiliary_nao = None
     if cfg.jk_backend == "df" and auxiliary is not None:
         if geometry_is_traced:
             raise NotImplementedError('Native auxiliary-integral geometry AD is not implemented.')
-        aux_top, aux_params = prepare_basis(spec, auxiliary, cart=True)
+        aux_top, aux_params = prepare_basis(spec, auxiliary, cart=cart)
         auxiliary_nao = aux_top.nao
     if cfg.jk_backend == "df":
         fixed_workspace = _eri_workspace_bytes(top.nao, cfg, mode=mode, rsh=rsh,
@@ -176,7 +179,8 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         max_memory=getattr(cfg, "max_memory", DEFAULT_MAX_MEMORY_MB),
         scf_max_cycle=cfg.max_cycle, scf_history_matrices=scf_history_matrices,
         fixed_workspace_bytes=fixed_workspace,
-        force_streamed=getattr(cfg, 'grid_screen_tol', 0.) > 0)
+        force_streamed=getattr(cfg, 'grid_screen_tol', 0.) > 0,
+        ao_transform=ao_transform, nao=top.nao)
     if context.geometry_is_traced and geometry_grad_policy == "error":
         raise NotImplementedError("Geometry gradients are disabled by geometry_grad_policy='error'")
     _check_eri_memory(context, cfg, mode=mode, rsh=rsh,
@@ -218,7 +222,8 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
             ao_laplacian, eri_lr, dispersion_energy, params, direct_inputs,
         )
     initial = make_initial_guess(init_guess=init_guess, dtype=h.dtype, spec=spec,
-                               basis=basis, max_memory=cfg.max_memory, resident_bytes=guess_resident)
+                               basis=basis, max_memory=cfg.max_memory, resident_bytes=guess_resident,
+                               cart=cart)
     direct = None
     if needs_direct:
         direct = _budgeted_direct_basis(
@@ -232,7 +237,7 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
         coords=context.coords, grid_weights=context.grid_weights,
         ao=ao, ao_deriv1=ao_deriv1, ao_laplacian=ao_laplacian, dipole_integrals=dipole,
         molecule_charge=charge, geometry_is_traced=context.geometry_is_traced,
-        integral_backend=mode, grid_ao_backend="jax", grid_ao=context.grid_ao,
+        integral_backend=mode, grid_ao_backend="jax", grid_ao=context.grid_ao, ao_transform=ao_transform,
         eri_lr=eri_lr, dispersion_energy=dispersion_energy)
     return common, int(np.asarray(spec.charges).sum()) - charge, int(spec.spin), full_eri, pair, initial
 

@@ -63,6 +63,7 @@ class RKSIntegralInputs:
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None
     grid_ao: Any | None = None
+    ao_transform: Array | None = None
 
     def as_rks_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments accepted by run_rks_from_integrals."""
@@ -115,6 +116,7 @@ class UKSIntegralInputs:
     eri_lr: Array | None = None
     dispersion_energy: Array | None = None
     grid_ao: Any | None = None
+    ao_transform: Array | None = None
 
     def as_uks_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments accepted by run_uks_from_integrals."""

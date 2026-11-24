@@ -2,7 +2,7 @@
 
 The atom guess initially supports H--Ar with STO-3G, 3-21G, 6-31G*, cc-pVDZ,
 def2-SVP and def2-TZVP named all-electron bases (including the 6-31Gs alias).
-It is an unspherical UHF superposition, not PySCF's spherically averaged SAD.
+The isolated UHF densities are summed without spherical averaging.
 """
 from dataclasses import dataclass
 from functools import lru_cache
@@ -35,8 +35,8 @@ def _native_fingerprint():
 
 
 @lru_cache(maxsize=128)
-def _atomic_density(symbol, shells, native_fingerprint):
-    """Cache only immutable atom constants, keyed by raw basis and native SHA256."""
+def _atomic_density(symbol, shells, native_fingerprint, *, cart=True):
+    """Cache immutable densities by raw basis, AO representation and native SHA256."""
     from gradscf.data.molecule import parse_molecule_spec
     from gradscf.integrals.basis import prepare_basis
     from gradscf.integrals.plan import make_plan
@@ -48,7 +48,7 @@ def _atomic_density(symbol, shells, native_fingerprint):
     evaluate_eagerly = getattr(jax.core, "eval_context", jax.ensure_compile_time_eval)
     with evaluate_eagerly(), jax.default_device(jax.devices("cpu")[0]):
         spec = parse_molecule_spec([(symbol, (0., 0., 0.))], unit="Bohr", spin=_ATOMIC_SPINS[symbol])
-        top, parameters = prepare_basis(spec, shells, cart=True)
+        top, parameters = prepare_basis(spec, shells, cart=cart)
         plan = make_plan(top)
         s, kinetic, nuclear, _ = plan.evaluate_scf_one_electron(parameters, include_dipole=False)
         h = kinetic + nuclear
@@ -73,7 +73,7 @@ def _atomic_density(symbol, shells, native_fingerprint):
         return dm
 
 
-def _atomic_superposition(spec, basis, dtype, max_memory, resident_bytes):
+def _atomic_superposition(spec, basis, dtype, max_memory, resident_bytes, *, cart):
     from gradscf.data.molecule import atomic_number
     from gradscf.integrals.basis.data import load_basis_from_snapshot
     from gradscf.scf.core import _unrestricted_spin_electron_counts
@@ -101,17 +101,23 @@ def _atomic_superposition(spec, basis, dtype, max_memory, resident_bytes):
         except (TypeError, ValueError) as exc:
             raise ValueError("The atom guess requires a named nonrelativistic Gaussian basis") from exc
         atom_shells.append(shells)
-    dimensions = [sum((l + 1) * (l + 2) // 2 * (len(rows[0]) - 1) for l, *rows in shells) for shells in atom_shells]
+    dimensions = [
+        sum(((l + 1) * (l + 2) // 2 if cart else 2 * l + 1) * (len(rows[0]) - 1)
+            for l, *rows in shells)
+        for shells in atom_shells
+    ]
     nao = sum(dimensions)
     available = workspace_bytes(max_memory, resident_bytes=resident_bytes + 4 * 8 * nao**2, device="cpu")
     blocks, fingerprint = [], _native_fingerprint()
+    # Preserve the three-argument cache key for the default representation.
+    representation = {} if cart else {"cart": False}
     for symbol, shells, n in zip(spec.symbols, atom_shells, dimensions):
         pair = n * (n + 1) // 2
         # Packed ERIs, conservative contraction tiles, DIIS and SCF matrices.
         required = 8 * (2 * pair**2 + 8 * n**3 + 128 * n**2)
         if required > available:
             raise ValueError(f"Native atomic SCF for {symbol} needs at least {required / 1e6:.1f} MB; increase max_memory")
-        blocks.append(_atomic_density(symbol, shells, fingerprint))
+        blocks.append(_atomic_density(symbol, shells, fingerprint, **representation))
     dm = np.zeros((nao, nao), dtype=np.float64)
     start = 0
     # prepare_basis appends each atom's shells in this same static AO order.
@@ -139,20 +145,21 @@ def _density(value, dtype):
     return .5*(dm+dm.T.conj())
 
 
-def restricted_initial_guess(*, init_guess: Any, dtype: Any, spec=None, basis=None,
+def restricted_initial_guess(*, init_guess: Any, dtype: Any, spec=None, basis=None, cart=True,
                              max_memory=DEFAULT_MAX_MEMORY_MB, resident_bytes=0):
     if isinstance(init_guess, str) and init_guess.lower() == "atom":
-        return RestrictedInitGuess(_atomic_superposition(spec, basis, dtype, max_memory, resident_bytes))
+        return RestrictedInitGuess(_atomic_superposition(
+            spec, basis, dtype, max_memory, resident_bytes, cart=cart))
     if _hcore_requested(init_guess):
         return RestrictedInitGuess()
     return RestrictedInitGuess(_density(init_guess, dtype))
 
 
-def unrestricted_initial_guess(*, init_guess: Any, dtype: Any, spec=None, basis=None,
+def unrestricted_initial_guess(*, init_guess: Any, dtype: Any, spec=None, basis=None, cart=True,
                                max_memory=DEFAULT_MAX_MEMORY_MB, resident_bytes=0):
     if isinstance(init_guess, str) and init_guess.lower() == "atom":
         from gradscf.scf.core import _unrestricted_spin_electron_counts
-        density = _atomic_superposition(spec, basis, dtype, max_memory, resident_bytes)
+        density = _atomic_superposition(spec, basis, dtype, max_memory, resident_bytes, cart=cart)
         total = int(np.asarray(spec.charges).sum()) - int(spec.charge)
         alpha, beta = _unrestricted_spin_electron_counts(total, int(spec.spin))
         return UnrestrictedInitGuess(density * (alpha / total), density * (beta / total))

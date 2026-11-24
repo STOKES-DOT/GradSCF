@@ -85,6 +85,58 @@ def test_hf_grid_completion_is_lazy_and_preserves_spatial_inputs(monkeypatch, un
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('block_size', [-1, 2], ids=['dense', 'streamed'])
+def test_spherical_hf_grid_completion_projects_values_and_laplacian(monkeypatch, block_size):
+    from dataclasses import replace
+    import jax.numpy as jnp
+    from gradscf.data.molecule import parse_molecule_spec
+    from gradscf.integrals.basis import (
+        basis_from_molecule_spec, cartesian_to_spherical, prepare_basis,
+    )
+    from gradscf.integrals.grids.ao import evaluate_cartesian_ao_with_derivatives
+
+    spec = parse_molecule_spec('He .13 .2 .3')
+    basis = [[0, [.94, 1.]], [2, [.81, 1.]]]
+    basis_cart = basis_from_molecule_spec(spec, basis=basis)
+    topology, _ = prepare_basis(spec, basis, cart=False)
+    nao = topology.nao
+    inputs = replace(_inputs(), basis=basis_cart, overlap=np.eye(nao),
+        ao=np.zeros((0, nao)), ao_deriv1=np.zeros((4, 0, nao)))
+    coords = jnp.asarray([[.3, .5, .8], [-.1, .4, -.7], [.2, -.1, .4]])
+    weights = jnp.asarray([.2, .3, .4])
+    monkeypatch.setattr(assembly, 'build_molecular_grid_from_spec', lambda spec, level: (coords, weights))
+    cfg = RKSConfig(xc_spec='hf', grid_block_size=block_size)
+
+    options = dict(cart=False, require_grid=True, config=cfg, grids_level=3)
+    completed = builders.complete_restricted_response_inputs(inputs, spec, basis, **options)
+    assert completed.ao.shape[-1] == nao
+    assert (completed.grid_ao is not None) == (block_size > 0)
+    completed = builders.complete_restricted_response_inputs(
+        completed, spec, basis, needs_ao_laplacian=True, **options)
+    assert completed.overlap is inputs.overlap
+    if completed.grid_ao is None:
+        ao, derivative, laplacian = completed.ao, completed.ao_deriv1, completed.ao_laplacian
+    else:
+        ao, derivative, laplacian, _, _ = completed.grid_ao.block(0, len(coords), deriv=2)
+    expected_ao, expected_derivative = evaluate_cartesian_ao_with_derivatives(basis_cart, coords, deriv=2)
+    transform = cartesian_to_spherical(topology)
+    np.testing.assert_allclose(ao, expected_ao @ transform, atol=1e-13, rtol=0.)
+    np.testing.assert_allclose(derivative, expected_derivative[:4] @ transform, atol=1e-13, rtol=0.)
+    np.testing.assert_allclose(laplacian, expected_derivative[4] @ transform, atol=1e-13, rtol=0.)
+
+
+@pytest.mark.parametrize('spin_type', ['restricted', 'unrestricted'])
+def test_spherical_reference_rejects_legacy_local_hfx_cache(monkeypatch, spin_type):
+    def forbidden(**kwargs):
+        pytest.fail('Unsupported feature requests should fail before assembling SCF inputs')
+
+    monkeypatch.setattr(builders, 'build_rks_integral_inputs', forbidden)
+    monkeypatch.setattr(builders, 'build_uks_integral_inputs', forbidden)
+    build = getattr(builders, f'_build_{spin_type}_reference')
+    with pytest.raises(NotImplementedError, match='Local HFX reference features require Cartesian AOs'):
+        build(atom='He 0 0 0', basis='def2-svp', cart=False, compute_local_hfx_features=True)
+
+
 def test_restricted_hf_cached_reference_completes_grid_before_hfx(monkeypatch):
     inputs = _inputs()
     _, ao, _, calls = _grid_fixture(monkeypatch, inputs)

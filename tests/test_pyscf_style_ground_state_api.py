@@ -133,7 +133,7 @@ def test_rks_lazy_reference_passes_hfx_feature_options(monkeypatch):
         fake_builder,
     )
 
-    mf = scf.RKS(gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g"))
+    mf = scf.RKS(gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", cart=True))
     mf.compute_local_hfx_features = True
     mf.compute_local_hfx_aux = True
     mf.hfx_omega_values = (0.0, 0.4)
@@ -178,18 +178,29 @@ def test_tdscf_builds_reference_lazily_after_ground_state_kernel(monkeypatch):
     assert mf.reference.mf_energy == -1.0
 
 
-def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
+def test_uks_kernel_forwards_spherical_default_without_building_reference(monkeypatch):
     captured = {}
     cache_calls = []
 
-    def fake_builder(**kwargs):
+    def fake_inputs(**kwargs):
         captured.update(kwargs)
+        return types.SimpleNamespace(as_uks_kwargs=lambda: {})
+
+    def fake_runner(**kwargs):
+        assert kwargs["config"].xc_spec == "pbe"
         return types.SimpleNamespace(
-            mf_energy=-39.0,
-            mo_energy="mo_energy",
-            mo_coeff="mo_coeff",
-            mo_occ="mo_occ",
+            total_energy=-39.0,
+            mo_energy_alpha=jnp.zeros(1),
+            mo_energy_beta=jnp.zeros(1),
+            mo_coeff_alpha=jnp.eye(1),
+            mo_coeff_beta=jnp.eye(1),
+            mo_occ_alpha=jnp.ones(1),
+            mo_occ_beta=jnp.zeros(1),
+            converged=True,
         )
+
+    def forbidden_reference_builder(**kwargs):
+        raise AssertionError("UKS.kernel() should not build a response reference")
 
     def fake_cache(**kwargs):
         cache_calls.append(kwargs)
@@ -197,8 +208,10 @@ def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
 
     monkeypatch.setattr(
         "gradscf.scf.facade._build_unrestricted_reference",
-        fake_builder,
+        forbidden_reference_builder,
     )
+    monkeypatch.setattr("gradscf.scf.builders.build_uks_integral_inputs", fake_inputs)
+    monkeypatch.setattr("gradscf.scf.builders.run_uks_from_integrals", fake_runner)
     monkeypatch.setattr("gradscf.scf.facade.configure_jax_persistent_cache", fake_cache)
 
     mol = gto.M(atom="O 0 0 0", basis="sto-3g", spin=2)
@@ -206,12 +219,14 @@ def test_uks_kernel_calls_existing_unrestricted_reference_builder(monkeypatch):
     energy = mf.kernel()
 
     assert energy == -39.0
+    assert vars(mf).get("reference") is None
     assert captured["atom"].symbols == ("O",)
     assert captured["basis"] == "sto-3g"
     assert captured["xc_spec"] == "pbe"
+    assert captured["cart"] is False
     assert captured.get("integral_backend", "libcint") == "libcint"
     assert captured["libcint_geometry_grad_policy"] == "analytic"
-    assert captured["uks_config"].max_cycle == mf.max_cycle
+    assert captured["config"].max_cycle == mf.max_cycle
     assert len(cache_calls) == 1
 
 

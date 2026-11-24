@@ -186,6 +186,23 @@ def test_conventional_ri_source_uses_actual_ao_parameters_not_named_basis():
     np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 
+def test_conventional_rebuilds_spherical_source_after_ri_scf():
+    from gradscf import gto, gw, scf
+
+    basis = {"He": [[0, [.8, 1.]], [2, [.5, 1.]]]}
+    mol = gto.M(atom="He 0 0 0", basis=basis, unit="Bohr", cart=False)
+    mf = scf.RHF(mol).density_fit(auxbasis="sto-3g").run()
+    assert mf.converged
+    assert mf._scf_inputs.direct_basis is None and mf._scf_inputs.eri_pair_matrix is None
+
+    provider = gw.GW(mf).conventional()._conventional_source()["direct_basis"]
+    assert provider.nao == mf.mo_coeff.shape[0] == 6
+    assert not provider.plan.topology.cart
+    np.testing.assert_allclose(
+        provider.plan.evaluate("overlap", provider.parameters),
+        mf.scf_result.overlap_matrix, atol=1e-12, rtol=0.)
+
+
 def test_native_direct_qp_complete_geometry_response():
     """H2/STO-3G: moving native basis + overlap/Pulay + relaxed HF + W/QP."""
     from gradscf import gto, scf

@@ -233,7 +233,7 @@ def test_streamed_reference_replans_laplacian_without_rebuilding_provider(monkey
 def test_full_eri_allocation_rejected_before_exceeding_the_total_budget(monkeypatch, xc_spec):
     from gradscf.scf.rks import RKSConfig
 
-    context = SimpleNamespace(geometry_is_traced=False, basis=_basis(nao=200),
+    context = grid._BasisGridContext(geometry_is_traced=False, basis=_basis(nao=200),
                               coords=np.zeros((0, 3)), grid_weights=np.zeros(0),
                               grid_ao_bundle=None, grid_ao=None)
     monkeypatch.setattr(assembly, "_prepare_basis_grid_context", lambda **kwargs: context)
@@ -260,7 +260,7 @@ def test_eri_preflight_includes_the_planned_ao_workspace():
     basis = _basis(nao=40)
     coords, weights = np.zeros((1000, 3)), np.ones(1000)
     provider = blocks.AOGrid.from_basis(basis, coords, weights, block_size=128)
-    context = SimpleNamespace(basis=basis, coords=coords, grid_weights=weights,
+    context = grid._BasisGridContext(basis=basis, coords=coords, grid_weights=weights,
                               grid_ao=provider, grid_ao_bundle=None,
                               geometry_is_traced=False)
     # The 5.4 MB pair matrix alone fits the 16 MB total budget after reserves;

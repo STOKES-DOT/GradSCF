@@ -98,6 +98,20 @@ def test_molecular_coordinate_and_overlap_response():
     np.testing.assert_allclose(derivative,fd,rtol=5e-5,atol=1e-6)
 
 
+def test_molecular_gaussian_inputs_use_spherical_d_shells_by_default():
+    pyscf = pytest.importorskip("pyscf")
+    from gradscf import gto, ofdft
+
+    atom, basis = "He 0 0 0", {"He": [[2, [.7, 1.]]]}
+    inputs = ofdft.gaussian_inputs(gto.M(atom=atom, basis=basis), grids_level=0)
+    reference = pyscf.gto.M(atom=atom, basis=basis, cart=False, verbose=0)
+    values = reference.eval_gto("GTOval_sph_deriv1", np.asarray(inputs.coordinates))
+    assert inputs.ao.shape[-1] == 5
+    np.testing.assert_allclose(inputs.ao, values[0], atol=1e-12)
+    np.testing.assert_allclose(inputs.ao_gradient, values[1:4].transpose(1, 2, 0), atol=1e-12)
+    np.testing.assert_allclose(inputs.overlap, reference.intor("int1e_ovlp"), atol=1e-12)
+
+
 def test_molecular_coordinate_response_retains_packed_eri():
     """The producer keeps s4 storage under geometry tracing, in float64/Bohr."""
     from gradscf import gto, ofdft

@@ -22,6 +22,12 @@ For a complete external-network example see
 [the four-layer density-matrix MLP](examples/training/density_matrix_mlp.py).
 `fixed_density`, `explicit`, and `implicit` retain their numerical definitions.
 
+Molecular `gto.M` defaults to real spherical AOs (`cart=False`). Set
+`cart=True` to use the Cartesian basis convention, including when supplying
+Cartesian AO tensors or using legacy local HFX grid features. Local AO
+screening on a basis with d or higher shells currently requires `cart=True`.
+The molecular spherical XC grid supports s, p, d and f shells.
+
 ## Ownership and naming
 
 The root exports domain namespaces. The previous 144 flat symbol exports

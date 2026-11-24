@@ -27,10 +27,12 @@ def _host_array(value: Any, dtype: Any | None = None) -> np.ndarray:
     return np.asarray(value if isinstance(value, np.ndarray) else jax.device_get(value), dtype=dtype)
 
 
-def _reject_screened_reference(config):
+def _validate_reference_grid_options(config, *, cart, compute_local_hfx_features):
     if config.grid_screen_tol > 0 and xc_type(local_xc_spec(config.xc_spec)) != "HF":
         raise NotImplementedError(
             "Response export for screened XC is not implemented; use grid_screen_tol=0.")
+    if compute_local_hfx_features and not cart:
+        raise NotImplementedError("Local HFX reference features require Cartesian AOs.")
 
 
 def _restricted_reference_array_packaging(
@@ -91,15 +93,28 @@ def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
     request the existing dense/streamed grid representation after SCF, retaining
     S/H/ERI, RI factors, direct providers and the solved orbital state.
     """
-    cfg = RKSConfig(xc_spec="hf") if config is None else config
-    laplacian = require_grid and _response_needs_laplacian(cfg, needs_ao_laplacian)
+    from ..integrals import prepare_basis, make_plan
+    from ..integrals.backends.native.jk import NativeDirectBasis
     from ..integrals.grids.blocks import AOGrid
 
+    cfg = RKSConfig(xc_spec="hf") if config is None else config
+    laplacian = require_grid and _response_needs_laplacian(cfg, needs_ao_laplacian)
+    direct = inputs.direct_basis
+    topology = parameters = None
     replan_streamed = laplacian and type(inputs.grid_ao) is AOGrid
     if require_grid and (_missing_response_grid(inputs, laplacian) or replan_streamed):
         from .inputs import assembly
         from .._memory import tree_storage_bytes
 
+        ao_transform = inputs.ao_transform
+        if not cart and ao_transform is None and inputs.overlap.shape[0] != inputs.basis.nao:
+            from ..integrals.basis import cartesian_to_spherical
+
+            if type(direct) is NativeDirectBasis:
+                topology = direct.plan.topology
+            else:
+                topology, parameters = prepare_basis(spec, basis, cart=False)
+            ao_transform = cartesian_to_spherical(topology)
         names = ("overlap", "hcore", "eri", "eri_pair_matrix", "df_factors",
                  "direct_basis", "dipole_integrals", "init_density",
                  "init_density_alpha", "init_density_beta", "init_mo_coeff",
@@ -113,38 +128,40 @@ def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
         if inputs.grid_weights.size == 0:
             context = assembly._prepare_basis_grid_context(
                 spec=spec, basis=basis, max_l=max_l, grids_level=grids_level,
-                needs_grid=True, **grid_options)
+                needs_grid=True, ao_transform=ao_transform, **grid_options)
             ao, derivative, lap = assembly._grid_ao_payload(context, needs_ao_laplacian=laplacian)
             inputs = replace(inputs, coords=context.coords, grid_weights=context.grid_weights,
-                ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao)
+                ao=ao, ao_deriv1=derivative, ao_laplacian=lap, grid_ao=context.grid_ao,
+                ao_transform=ao_transform)
         else:
             from .inputs.grid import _streamed_grid
 
             previous = inputs.grid_ao if replan_streamed else None
             provider = _streamed_grid(inputs.basis, inputs.coords, inputs.grid_weights,
                 _keep_streamed=replan_streamed, _existing_provider=previous,
-                _resident_arrays=(inputs.ao, inputs.ao_deriv1), **grid_options)
+                _resident_arrays=(inputs.ao, inputs.ao_deriv1), ao_transform=ao_transform,
+                **grid_options)
             if replan_streamed:
                 if provider is not None and provider is not previous:
                     inputs = replace(inputs, grid_ao=provider)
             elif provider is None:
                 _, derivatives = assembly.evaluate_cartesian_ao_with_derivatives(
                     inputs.basis, inputs.coords, deriv=2)
-                inputs = replace(inputs, ao_laplacian=derivatives[4])
+                laplacian_ao = derivatives[4]
+                if ao_transform is not None:
+                    laplacian_ao = laplacian_ao @ ao_transform
+                inputs = replace(inputs, ao_laplacian=laplacian_ao)
             else:
-                nao = inputs.basis.nao
+                nao = inputs.overlap.shape[0]
                 inputs = replace(inputs, grid_ao=provider,
                     ao=jnp.zeros((0, nao), dtype=inputs.ao.dtype),
                     ao_deriv1=jnp.zeros((4, 0, nao), dtype=inputs.ao_deriv1.dtype))
     if inputs.dipole_integrals is not None:
         return inputs
-    from ..integrals.backends.native.jk import NativeDirectBasis
-
-    direct = inputs.direct_basis
     if type(direct) is NativeDirectBasis:
         return replace(inputs, dipole_integrals=direct.plan.evaluate("dipole", direct.parameters))
-    from ..integrals import prepare_basis, make_plan
-    topology, parameters = prepare_basis(spec,basis,cart=cart)
+    if topology is None:
+        topology, parameters = prepare_basis(spec, basis, cart=cart)
     dipole = make_plan(topology).evaluate('dipole',parameters)
     return replace(inputs,dipole_integrals=dipole)
 
@@ -192,7 +209,8 @@ def _build_restricted_reference(
     cfg = RKSConfig(xc_spec=xc_spec_resolved) if rks_config is None else rks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
-    _reject_screened_reference(cfg)
+    _validate_reference_grid_options(cfg, cart=cart,
+        compute_local_hfx_features=compute_local_hfx_features)
 
     rsh = rsh_preset(xc_spec_resolved)
     exact_exchange_fraction = (rsh.default_sr_hf_fraction if rsh is not None
@@ -556,7 +574,8 @@ def _build_unrestricted_reference(
     cfg = UKSConfig(xc_spec=xc_spec_resolved) if uks_config is None else uks_config
     if cfg.xc_spec != xc_spec_resolved:
         cfg = replace(cfg, xc_spec=xc_spec_resolved)
-    _reject_screened_reference(cfg)
+    _validate_reference_grid_options(cfg, cart=cart,
+        compute_local_hfx_features=compute_local_hfx_features)
 
     if scf_inputs is None:
         scf_inputs = build_uks_integral_inputs(
