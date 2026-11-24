@@ -108,6 +108,11 @@ class UKSResult:
     range_separated_coefficients: tuple[float, float, float] | None = None
     dispersion_energy: Array | float | None = None
 
+    @property
+    def fock_matrix(self) -> Array:
+        """Spin-stacked Fock for consumers of the raw or reference state."""
+        return jnp.stack([self.fock_matrix_alpha, self.fock_matrix_beta])
+
 def _default_spin_mo_occ(nao: int, nelec: int, dtype) -> Array:
     return jnp.zeros((nao,), dtype=dtype).at[:nelec].set(1.0)
 

@@ -810,6 +810,7 @@ class DifferentiableSCFInfo:
     selected_rms_density: Array
     best_cycle: Array
     best_rms_density: Array
+    coulomb_matrix: Array | None = None
 
 
 @dataclass(frozen=True)
@@ -846,8 +847,9 @@ class _RestrictedSCFProblem:
 class DifferentiableSCF:
     """Differentiable SCF wrapper with fixed-density and self-consistent modes."""
 
-    def __init__(self, config: DifferentiableSCFConfig | None = None):
+    def __init__(self, config: DifferentiableSCFConfig | None = None, *, _retain_coulomb=False):
         self.config = DifferentiableSCFConfig() if config is None else config
+        self._retain_coulomb = _retain_coulomb
 
     def _with_neural_xc_grid_payload(self, molecule: Any, xc_functional: Any) -> Any:
         if not _supports_neural_xc_grid_payload(molecule):
@@ -1391,7 +1393,7 @@ class DifferentiableSCF:
         weights: Array,
         with_exchange: bool,
         jk_from_orbitals: bool,
-    ) -> tuple[Array, Any, Array, Array, Array, Array, Array]:
+    ) -> tuple[Array, Any, Array, Array, XCContribution]:
         molecule_iter = _replace_molecule(
             molecule,
             rdm1=density_spin,
@@ -1401,7 +1403,7 @@ class DifferentiableSCF:
         )
         coeff_for_jk = mo_coeff_spin if jk_from_orbitals else None
         occ_for_jk = mo_occ_spin if jk_from_orbitals else None
-        density_total, j_mat, k_alpha, k_beta = _spin_jk_matrices(
+        _, j_mat, k_alpha, k_beta = _spin_jk_matrices(
             rep_tensor,
             density_spin[0],
             density_spin[1],
@@ -1469,9 +1471,10 @@ class DifferentiableSCF:
             alpha = _clip_hybrid_alpha(alpha)
             xc=XCContribution(0.,jnp.stack([vxc_matrix_a,vxc_matrix_b]),alpha,
                               jnp.stack([extra_fock_a,extra_fock_b]))
-        fock_spin=jax.vmap(_safe_symmetric_matrix)(
-            unrestricted_fock(h1e,j_mat,jnp.stack([k_alpha,k_beta]),xc))
-        return fock_spin, molecule_iter, density_total, j_mat, k_alpha, k_beta, alpha
+        exchange_spin = jnp.stack([k_alpha, k_beta])
+        fock_spin = jax.vmap(_safe_symmetric_matrix)(
+            unrestricted_fock(h1e, j_mat, exchange_spin, xc))
+        return fock_spin, molecule_iter, j_mat, exchange_spin, xc
 
     def _full_scf_unrestricted(
         self,
@@ -1479,6 +1482,8 @@ class DifferentiableSCF:
         xc_functional: Any,
         xc_params: PyTree,
     ) -> tuple[Any, DifferentiableSCFInfo]:
+        from ..dft.functional import Functional
+
         h1e, rep_tensor, _ao, weights, overlap = _scf_problem_arrays(molecule)
         df_factors = _df_factors_from_molecule(molecule)
         with_exchange = _functional_needs_unrestricted_exchange(xc_functional)
@@ -1511,11 +1516,9 @@ class DifferentiableSCF:
             (
                 fock_spin,
                 molecule_iter,
-                density_total,
                 j_mat,
-                k_alpha,
-                k_beta,
-                alpha,
+                exchange_spin,
+                xc,
             ) = self._unrestricted_fock_from_density(
                 molecule=molecule,
                 xc_functional=xc_functional,
@@ -1531,14 +1534,14 @@ class DifferentiableSCF:
                 with_exchange=with_exchange,
                 jk_from_orbitals=True,
             )
-            energy_from_molecule = getattr(xc_functional, "energy_from_molecule", None)
-            xc_energy = (
-                energy_from_molecule(xc_params, molecule_iter)
-                if callable(energy_from_molecule)
-                else jnp.asarray(0.0, dtype=h1e.dtype)
-            )
-            xc=XCContribution(jnp.asarray(xc_energy,dtype=h1e.dtype),0.,alpha)
-            total_energy=unrestricted_energy(density_spin,h1e,j_mat,jnp.stack([k_alpha,k_beta]),xc,
+            if type(xc_functional) is Functional:
+                xc_energy = xc.energy  # Computed together with the potential above.
+            else:
+                energy_from_molecule = getattr(xc_functional, "energy_from_molecule", None)
+                xc_energy = (energy_from_molecule(xc_params, molecule_iter)
+                             if callable(energy_from_molecule) else 0.)
+            xc = xc._replace(energy=jnp.asarray(xc_energy, dtype=h1e.dtype))
+            total_energy=unrestricted_energy(density_spin,h1e,j_mat,exchange_spin,xc,
                 nuclear_repulsion=jnp.asarray(getattr(molecule,"nuclear_repulsion",0.),dtype=h1e.dtype))
             return fock_spin, fock_spin, total_energy
 
@@ -1668,7 +1671,7 @@ class DifferentiableSCF:
             density_spin: Array,
             params_local: PyTree,
             args: tuple[Any, ...] | None = fixed_point_args,
-        ) -> Array:
+        ) -> tuple[Array, Array]:
             (
                 molecule_base,
                 h1e_local,
@@ -1681,7 +1684,7 @@ class DifferentiableSCF:
                 mo_energy_ref_local,
             ) = _unrestricted_args(args)
             density_spin = jnp.nan_to_num(density_spin, nan=0.0, posinf=0.0, neginf=0.0)
-            fock_spin, *_ = self._unrestricted_fock_from_density(
+            fock_spin, _, coulomb, _, _ = self._unrestricted_fock_from_density(
                 molecule=molecule_base,
                 xc_functional=xc_functional,
                 params=params_local,
@@ -1696,7 +1699,7 @@ class DifferentiableSCF:
                 with_exchange=with_exchange,
                 jk_from_orbitals=False,
             )
-            return fock_spin
+            return fock_spin, coulomb
 
         def _density_from_fock(
             fock_spin: Array,
@@ -1723,7 +1726,8 @@ class DifferentiableSCF:
             params_local: PyTree,
             args: tuple[Any, ...] | None = None,
         ) -> Array:
-            return _density_from_fock(_fock_from_density(density_spin, params_local, args), args)
+            fock, _ = _fock_from_density(density_spin, params_local, args)
+            return _density_from_fock(fock, args)
 
         density_spin_implicit = attach_scf_backward(
             xc_params,
@@ -1733,7 +1737,7 @@ class DifferentiableSCF:
             config=differentiation,
             converged=forward_info.converged,
         )
-        fock_spin_implicit = _fock_from_density(density_spin_implicit, xc_params)
+        fock_spin_implicit, coulomb = _fock_from_density(density_spin_implicit, xc_params)
         mo_energy_spin_implicit, mo_coeff_spin_implicit = jax.vmap(
             lambda fock: _diagonalize_fock(
                 _safe_symmetric_matrix(fock),
@@ -1748,7 +1752,8 @@ class DifferentiableSCF:
             mo_occ=mo_occ_spin_fixed,
             mo_energy=mo_energy_spin_implicit,
         )
-        return molecule_final, replace(forward_info, mode="self_consistent_implicit")
+        return molecule_final, replace(forward_info, mode="self_consistent_implicit",
+                                      coulomb_matrix=coulomb if self._retain_coulomb else None)
 
     def _full_scf_implicit_fixed_point(
         self,
@@ -1863,7 +1868,7 @@ class DifferentiableSCF:
             converged=converged,
         )
 
-        fock_implicit, _alpha, _j_mat, _k_mat = _full_fock_from_density(
+        fock_implicit, _alpha, coulomb, _k_mat = _full_fock_from_density(
             density_implicit,
             xc_params,
         )
@@ -1881,9 +1886,12 @@ class DifferentiableSCF:
             preserve_pt2_local=ctx.preserve_pt2_local,
         )
         molecule_final = self._with_neural_xc_grid_payload(molecule_final, xc_functional)
-        return molecule_final, self._rks_loop_info(
+        info = self._rks_loop_info(
             "self_consistent_implicit",
             converged=converged,
             cycles=cycles,
             rms_history=rms_history,
         )
+        if self._retain_coulomb:
+            info = replace(info, coulomb_matrix=coulomb)
+        return molecule_final, info

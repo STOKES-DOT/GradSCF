@@ -20,6 +20,7 @@ from gradscf.scf import (
 from gradscf.integrals import build_j_from_eri_pair_matrix, build_jk_from_eri_pair_matrix
 from gradscf.integrals.backends.native.jk import _selected_jk
 from gradscf.integrals.molecular.jk import build_j_from_df, build_jk_from_df
+from gradscf.scf.molecules import UnrestrictedMolecule, _evaluate_grid_density
 from gradscf.scf.rks import _vxc_matrix_from_grid_potential
 from gradscf.tools.spectra import HARTREE_TO_EV, lorentzian_spectrum, oscillator_strengths
 from gradscf.tddft.response_options import (
@@ -393,6 +394,16 @@ def density_on_grid(molecule: Any) -> Array:
 def density_on_grid_spin_resolved(molecule: Any) -> Array:
     """Return spin-resolved density sampled on the integration grid."""
 
+    # The built-in unrestricted hook sums spin. Custom overrides still
+    # control the legacy density protocol below.
+    if (
+        isinstance(molecule, UnrestrictedMolecule)
+        and type(molecule).density is UnrestrictedMolecule.density
+    ):
+        return _evaluate_grid_density(
+            molecule.rdm1, molecule.ao, molecule.grid_ao, spin_resolved=True,
+        )
+
     if hasattr(molecule, "density"):
         density = molecule.density()
         density = jnp.asarray(density)
@@ -412,7 +423,7 @@ def density_on_grid_spin_resolved(molecule: Any) -> Array:
         density = jnp.einsum("pq,rp,rq->r", density_matrix, ao, ao)
         return density[:, None]
     if density_matrix.ndim == 3:
-        return jnp.einsum("spq,rp,rq->rs", density_matrix, ao, ao)
+        return _evaluate_grid_density(density_matrix, ao, None, spin_resolved=True)
     raise ValueError("Expected rdm1 to have shape (nao, nao) or (spin, nao, nao).")
 
 

@@ -53,6 +53,37 @@ class IntegralPlan:
         _, _, env, coefficients, exponents = self.coefficient_data(fixed, separate_exponents=True)
         return env, coefficients, exponents
 
+    def _dipole_origin(self, parameters):
+        total = sum(self.topology.nuclear_charges)
+        if not total:
+            return jnp.zeros(3)
+        charges = jnp.asarray(self.topology.nuclear_charges)
+        return jnp.einsum("a,ar->r", charges, parameters.nuclear_coords) / total
+
+    def _evaluate_one_electron(self, operator, operands, coords, origin):
+        from .backends.native.autodiff.evaluation import evaluate_differentiable
+
+        env, coefficients, exponents = operands
+        return evaluate_differentiable(
+            operator, self.atm, self.bas, env, coefficients, coords, origin,
+            self.topology.nao, cart=self.topology.cart, exponents=exponents,
+        )
+
+    def evaluate_scf_one_electron(self, parameters, *, include_dipole, _inputs=None):
+        """Evaluate S, T, nuclear attraction and optional dipole with one binding."""
+        operands = self._direct_inputs(parameters) if _inputs is None else _inputs
+        coords = jnp.concatenate((parameters.nuclear_coords, parameters.centers), axis=0)
+        origin = jnp.zeros(3, dtype=jnp.float64)
+        overlap, kinetic, nuclear = (
+            self._evaluate_one_electron(operator, operands, coords, origin)
+            for operator in ("overlap", "kinetic", "nuclear")
+        )
+        dipole = (
+            self._evaluate_one_electron("dipole", operands, coords, self._dipole_origin(parameters))
+            if include_dipole else None
+        )
+        return overlap, kinetic, nuclear, dipole
+
     def get_jk(self, parameters, density, *, screening_threshold=0., workers=1,
                with_j=True, with_k=True, omega=0., private_output_bytes=None, screen_density=None,
                _inputs=None):
@@ -142,27 +173,22 @@ class IntegralPlan:
             if origin.shape != (3,):
                 raise ValueError("Integral origin must have shape (3,).")
         if operator == "dipole" and origin is None:
-            charges = jnp.asarray(self.topology.nuclear_charges)
-            total = sum(self.topology.nuclear_charges)
-            origin = (jnp.einsum("a,ar->r", charges, parameters.nuclear_coords) / total
-                      if total else jnp.zeros(3))
+            origin = self._dipole_origin(parameters)
         if operator=='rinv' and origin is None:
             raise ValueError('rinv requires an explicit origin.')
-        fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
-                        nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
         coords = jnp.concatenate([parameters.nuclear_coords, parameters.centers], axis=0)
         origin = jnp.zeros(3, dtype=jnp.float64) if origin is None else origin
         if operator != "eri":
-            from .backends.native.autodiff.evaluation import evaluate_differentiable
-            atm, bas, env, coefficients, exponents = self.coefficient_data(fixed,separate_exponents=True)
+            operands = self._direct_inputs(parameters)
             if operator=='rinv':
                 from .libcint import static_zeta
                 width,zero=static_zeta(zeta)
                 if zero:return jnp.zeros((self.topology.nao,)*2,dtype=jnp.float64)
-                env=env.at[7].set(width)
-            return evaluate_differentiable(operator, atm, bas, env, coefficients,
-                                         coords, origin, self.topology.nao,
-                                         cart=self.topology.cart,exponents=exponents)
+                env, coefficients, exponents = operands
+                operands = env.at[7].set(width), coefficients, exponents
+            return self._evaluate_one_electron(operator, operands, coords, origin)
+        fixed = replace(parameters, centers=jnp.zeros_like(parameters.centers),
+                        nuclear_coords=jnp.zeros_like(parameters.nuclear_coords))
         if omega:
             # Range-separated basis-parameter products are outside the current
             # contract. Keep ENV live so unsupported tangents fail explicitly;
