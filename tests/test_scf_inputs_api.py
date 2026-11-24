@@ -55,10 +55,15 @@ def test_native_spectral_df_preserves_full_jk():
     np.testing.assert_allclose(k,jnp.einsum("prqs,rs->pq",eri,dm),atol=1e-10)
 
 
-@pytest.mark.parametrize("name", ["minao", "sap", "atom", "chkfile"])
+@pytest.mark.parametrize("name", ["minao", "sap", "chkfile"])
 def test_external_initial_guesses_fail_explicitly(name):
     with pytest.raises(ValueError,match="Unsupported initial guess"):
         restricted_initial_guess(init_guess=name,dtype=jnp.float64)
+
+
+def test_atomic_initial_guess_requires_a_molecule_and_basis():
+    with pytest.raises(ValueError, match="requires a molecule specification and a fixed named Gaussian basis"):
+        restricted_initial_guess(init_guess="atom", dtype=jnp.float64)
 
 
 def test_initial_density_inputs_are_validated_and_symmetrized():

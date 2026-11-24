@@ -42,14 +42,17 @@ def _atomic_density(symbol, shells, native_fingerprint):
     from gradscf.integrals.plan import make_plan
     from gradscf.scf.uhf import UHFConfig, run_uhf_from_integrals
 
-    # These fixed atom coefficients are translation independent. Evaluate them
-    # concretely even on a cold cache inside an outer molecular geometry trace.
-    with jax.ensure_compile_time_eval(), jax.default_device(jax.devices("cpu")[0]):
+    # The isolated atom has no live molecular inputs. Native integral calls
+    # need an eager trace here because constant folding can still stage them
+    # inside the caller's geometry jit.
+    evaluate_eagerly = getattr(jax.core, "eval_context", jax.ensure_compile_time_eval)
+    with evaluate_eagerly(), jax.default_device(jax.devices("cpu")[0]):
         spec = parse_molecule_spec([(symbol, (0., 0., 0.))], unit="Bohr", spin=_ATOMIC_SPINS[symbol])
         top, parameters = prepare_basis(spec, shells, cart=True)
         plan = make_plan(top)
-        s = plan.evaluate("overlap", parameters)
-        h = plan.evaluate("kinetic", parameters) + plan.evaluate("nuclear", parameters)
+        s, kinetic, nuclear, _ = plan.evaluate_scf_one_electron(parameters, include_dipole=False)
+        h = kinetic + nuclear
+        del kinetic, nuclear
         z, spin = top.nuclear_charges[0], _ATOMIC_SPINS[symbol]
         result = run_uhf_from_integrals(overlap=s, hcore=h, eri=plan.evaluate("eri", parameters, aosym="s4"),
             nalpha=(z + spin) // 2, nbeta=(z - spin) // 2, nuclear_repulsion=0.,
