@@ -168,8 +168,9 @@ def run_roks_from_integrals(
                               (init_density_beta, "init_density_beta"))
         ])
         _, _, initial_spin_fock, initial_fock = evaluate(initial)
-    energy0, coeff0 = _diagonalize_fock(initial_fock, x)
-    if init_mo_coeff is not None:
+    if init_mo_coeff is None:
+        energy0, coeff0 = _diagonalize_fock(initial_fock, x)
+    else:
         coeff0 = jnp.asarray(init_mo_coeff)
         if coeff0.shape != (nao, nao):
             raise ValueError("init_mo_coeff must have shape (nao, nao).")

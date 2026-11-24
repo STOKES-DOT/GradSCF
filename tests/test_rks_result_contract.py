@@ -5,6 +5,7 @@ from dataclasses import fields, replace
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from gradscf.scf.rks import (
     RKSConfig,
@@ -84,6 +85,35 @@ def test_eager_result_is_also_a_valid_pytree_input():
     result = run_rks_from_integrals(**_inputs())
     energy = jax.jit(lambda value: value.electronic_energy + value.nuclear_repulsion)(result)
     np.testing.assert_allclose(energy, result.total_energy, atol=1e-13)
+
+
+def test_rks_uses_explicit_density_without_building_an_orbital_guess(monkeypatch):
+    from gradscf.scf import rks
+
+    original = rks._build_density_from_occ
+    builds = 0
+
+    def count_build(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(rks, "_build_density_from_occ", count_build)
+    with jax.disable_jit():
+        result = run_rks_from_integrals_traceable(
+            **_inputs(), init_density=jnp.asarray([[1.5]]),
+        )
+
+    assert bool(result.converged)
+    assert builds == 0
+
+
+def test_rks_rejects_vector_orbital_coefficients_with_explicit_density():
+    with jax.disable_jit(), pytest.raises(ValueError, match="init_mo_coeff"):
+        run_rks_from_integrals_traceable(
+            **_inputs(), init_density=jnp.asarray([[2.0]]),
+            init_mo_coeff=jnp.asarray([1.0]), init_mo_energy=jnp.asarray([-1.0]),
+        )
 
 
 def test_rsh_convergence_checks_the_complete_energy():

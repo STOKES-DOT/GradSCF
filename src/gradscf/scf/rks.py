@@ -714,6 +714,8 @@ def _run_rks_from_integrals_shared(
         mo_coeff = jnp.asarray(init_mo_coeff)
         if mo_coeff.ndim == 3:
             mo_coeff = mo_coeff[0]
+        if mo_coeff.ndim != 2:
+            raise ValueError("init_mo_coeff must resolve to a two-dimensional matrix for RKS.")
         if init_mo_energy is None:
             mo_energy, _ = _diagonalize_fock(h, x)
         else:
@@ -738,19 +740,16 @@ def _run_rks_from_integrals_shared(
         if int(mo_occ_fixed.shape[0]) != nao:
             raise ValueError("init_mo_occ must match the AO/MO dimension for RKS.")
         nocc = int(jnp.count_nonzero(mo_occ_fixed > jnp.asarray(1e-12, dtype=h.dtype)))
-    density = _build_density_from_occ(mo_coeff, mo_occ_fixed)
-
-    init_density_matrix = _validate_density_matrix(
+    density = _validate_density_matrix(
         init_density,
         nao=nao,
         dtype=h.dtype,
         label="init_density",
         method="RKS",
     )
-    if init_density_matrix is not None:
-        density = init_density_matrix
-
-    skip_first_fock_damping = (init_mo_coeff is not None) or (init_density_matrix is not None)
+    skip_first_fock_damping = (init_mo_coeff is not None) or (density is not None)
+    if density is None:
+        density = _build_density_from_occ(mo_coeff, mo_occ_fixed)
     alpha_scalar = 1.0 if rsh is not None else float(hybrid_coeff(cfg.xc_spec))
     alpha = jnp.asarray(alpha_scalar, dtype=h.dtype)
     if cfg.jk_backend == "df" and df_factors is None and eri_arr is not None:
