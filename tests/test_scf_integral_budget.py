@@ -110,7 +110,8 @@ def test_small_auxiliary_metadata_is_prepared_once_and_tolerance_preserved(monke
     monkeypatch.setattr(grid, "_GRID_AO_INPUT_CACHE", {})
     monkeypatch.setattr(assembly, "prepare_basis", prepare)
     monkeypatch.setattr(assembly, "make_plan", lambda top, **kwargs:
-        SimpleNamespace(topology=top, backend="native", evaluate=lambda *args, **kw: np.eye(2)))
+        SimpleNamespace(topology=top, backend="native", evaluate=lambda *args, **kw: np.eye(2),
+                        evaluate_scf_one_electron=lambda *args, **kw: (np.eye(2), np.eye(2), np.eye(2), None)))
     monkeypatch.setattr(density_fitting, "make_auxiliary_plan", lambda *args:
         SimpleNamespace(factors=factors))
     cfg = RKSConfig(xc_spec="pbe", jk_backend="df", auxbasis="small-test-aux",
