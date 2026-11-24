@@ -157,7 +157,7 @@ def energy_function(molecule, functional, *, layout='uks', nuclear_repulsion=Non
     """
     from gradscf.dft.functional import Functional, custom_xc
     from gradscf.dft.xc import TraditionalXCFunctional, hybrid_coeff, xc_type
-    from gradscf.scf.differentiable import _replace_molecule
+    from gradscf.scf.autodiff import _replace_molecule
     from gradscf.scf.uks import UKSConfig, _spin_jk_matrices, _raw_fock_and_energy_for_state
     from gradscf.scf.energy import XCContribution, unrestricted_energy
     from .types import _check
@@ -244,7 +244,7 @@ def hybrid_xc_energy_function(molecule, functional, *, layout='rks',
     not implemented.
     """
     from gradscf.dft.functional import Functional
-    from gradscf.scf.differentiable import _replace_molecule
+    from gradscf.scf.autodiff import _replace_molecule
     from gradscf.scf.uks import _spin_jk_matrices
 
     if not isinstance(functional, Functional):

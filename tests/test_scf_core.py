@@ -1,6 +1,6 @@
 from gradscf import integrals
 from gradscf.tools import features
-from gradscf.scf import builders, differentiable, facade, molecules, rhf, rks, uks
+from gradscf.scf import autodiff, builders, facade, molecules, rhf, rks, uks
 from gradscf.scf import core
 import jax
 import jax.numpy as jnp
@@ -8,13 +8,13 @@ import jax.numpy as jnp
 
 def test_scf_modules_share_core_helper_implementations():
     assert rks._orthogonalizer is core._orthogonalizer
-    assert differentiable._orthogonalizer is core._orthogonalizer
+    assert autodiff._orthogonalizer is core._orthogonalizer
 
     assert rks._diagonalize_fock is core._diagonalize_fock
 
     assert rks._build_density_from_occ is core._build_density_from_occ
     assert uks._build_density_from_occ is core._build_density_from_occ
-    assert differentiable._build_jk is rks._build_jk
+    assert autodiff._build_jk is rks._build_jk
 
     assert facade._contains_jax_tracer is core._contains_jax_tracer
     assert builders._contains_jax_tracer is core._contains_jax_tracer

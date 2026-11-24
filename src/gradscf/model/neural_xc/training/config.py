@@ -246,7 +246,7 @@ def Sample(molecule, *, energy=None, density=None, s1_energy=None,
     if inverse is not None:
         from gradscf.dft.iks import OrbitalReference
         from gradscf.dft.iks.types import _check
-        from gradscf.scf.differentiable import _replace_molecule
+        from gradscf.scf.autodiff import _replace_molecule
         if not isinstance(inverse, OrbitalReference):
             raise TypeError('inverse requires a declared OrbitalReference, not an auxiliary matrix fit')
         overlap = jnp.asarray(molecule.overlap_matrix)

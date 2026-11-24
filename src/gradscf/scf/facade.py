@@ -134,7 +134,7 @@ class _BaseKS:
         Training and parameter AD keep using Functional and DifferentiableSCF;
         this facade supplies molecular inputs, status, and the same TD binding.
         """
-        from .differentiable import DifferentiableSCF, DifferentiableSCFConfig
+        from .autodiff import DifferentiableSCF, DifferentiableSCFConfig
         from .energy import XCContribution, unrestricted_energy
         from .uks import _spin_jk_matrices
         from ..integrals.backends.native.jk import _selected_jk

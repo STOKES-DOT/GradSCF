@@ -1,14 +1,18 @@
 """Pure-JAX SCF solvers."""
 
+import sys as _sys
+
 from .reference import as_reference
+from . import autodiff as differentiable
 from .autodiff import (
     SCFDifferentiationConfig,
-)
-from .differentiable import (
     DifferentiableSCF,
     DifferentiableSCFConfig,
     DifferentiableSCFInfo,
 )
+
+# Preserve the former module path for imports and serialized objects.
+_sys.modules[f"{__name__}.differentiable"] = differentiable
 
 from .rhf import (
     RHFConfig,

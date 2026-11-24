@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from ..dft.functional import Functional
 from ..dft.derivatives import xc_energy_and_potential_from_density
 from ..scf.reference import as_reference
-from ..scf.differentiable import (
+from ..scf.autodiff import (
     _coulomb_matrix, _df_factors_from_molecule, _unrestricted_channel,
     _spin_resolved_density_matrix, _repulsion_integrals_from_molecule, _scf_problem_arrays,
 )

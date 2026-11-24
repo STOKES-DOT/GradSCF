@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 import jax.numpy as jnp
 import pytest
-from gradscf.scf import differentiable as scf
+from gradscf.scf import autodiff as scf
 
 
 def test_scf_binding_requires_scf_specific_entry():

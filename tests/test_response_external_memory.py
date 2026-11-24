@@ -276,7 +276,7 @@ def test_external_network_scf_facade_does_not_force_direct_reference_to_pair(mon
 @pytest.mark.parametrize("consumer", ["scf_j", "scf_functional_default", "training_j", "training_k"])
 def test_external_consumers_select_required_jk_operators(
         external_reference, monkeypatch, provider_kind, consumer):
-    from gradscf.scf.differentiable import DifferentiableSCF
+    from gradscf.scf.autodiff import DifferentiableSCF
     from gradscf.model.neural_xc.training import targets
 
     reference, _ = external_reference

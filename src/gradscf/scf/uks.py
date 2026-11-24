@@ -507,7 +507,7 @@ def _raw_fock_and_energy_for_state(
         # This legacy callback has no kinetic-density potential channels.
         if xc_kind in {"MGGA", "MGGA_LAPL"}:
             raise ValueError("MGGA AO potentials require both spin kinetic-density potentials.")
-        from .differentiable import _build_vxc_matrix_from_components
+        from .autodiff import _build_vxc_matrix_from_components
 
         potential = jnp.stack([
             _build_vxc_matrix_from_components(
