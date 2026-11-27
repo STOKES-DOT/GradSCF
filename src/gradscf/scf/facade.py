@@ -9,6 +9,7 @@ import jax.numpy as jnp
 
 from .._memory import DEFAULT_MAX_MEMORY_MB, validate_memory_mb
 from ..data.molecule import MoleculeSpec
+from ..integrals.basis.cartesian import DEFAULT_GRID_MAX_L
 from ..tools.jax_runtime import configure_jax_persistent_cache
 from .builders import (
     build_restricted_reference_from_facade,
@@ -55,7 +56,7 @@ class _BaseKS:
     damp: float = 0.0
     level_shift: float = 0.0
     grids_level: int = 0
-    max_l: int = 3
+    max_l: int = DEFAULT_GRID_MAX_L
     geometry_grad_policy: Literal["analytic", "error"] = "analytic"
     grid_ao_backend: Literal["jax"] = "jax"
     grid_block_size: int = 0

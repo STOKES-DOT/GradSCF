@@ -10,6 +10,7 @@ import numpy as np
 from gradscf.scf.inputs.types import GeometryGradPolicy
 from ..data.molecule import MoleculeSpec, parse_molecule_spec
 from ..dft.xc import hybrid_coeff, parse_xc, xc_type
+from ..integrals.basis.cartesian import DEFAULT_GRID_MAX_L
 from gradscf.dft.hfx import _local_hfx_features_from_basis_dm
 from gradscf.dft.pt2 import (
     _local_pt2_feature_and_fock_response_from_restricted_orbitals,
@@ -86,7 +87,7 @@ def _missing_response_grid(inputs, needs_ao_laplacian):
 
 
 def complete_restricted_response_inputs(inputs, spec, basis, *, cart=True,
-        require_grid=False, config=None, grids_level=0, max_l=3, needs_ao_laplacian=None):
+        require_grid=False, config=None, grids_level=0, max_l=DEFAULT_GRID_MAX_L, needs_ao_laplacian=None):
     """Lazily complete reference data without replacing spatial SCF inputs.
 
     Ordinary HF energies need no quadrature. Reference/feature consumers can
@@ -176,7 +177,7 @@ def _build_restricted_reference(
     spin: int = 0,
     cart: bool = True,
     grids_level: int = 0,
-    max_l: int = 3,
+    max_l: int = DEFAULT_GRID_MAX_L,
     rks_config: RKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
     integral_backend: str = "libcint",
@@ -542,7 +543,7 @@ def _build_unrestricted_reference(
     spin: int = 1,
     cart: bool = True,
     grids_level: int = 0,
-    max_l: int = 3,
+    max_l: int = DEFAULT_GRID_MAX_L,
     uks_config: UKSConfig | None = None,
     grid_ao_backend: Literal["jax"] = "jax",
     integral_backend: str = "libcint",

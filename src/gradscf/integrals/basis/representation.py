@@ -5,16 +5,15 @@ import jax.numpy as jnp
 
 
 def cartesian_to_spherical(topology):
-    """Return T such that chi_spherical = chi_cartesian @ T, for s/p/d/f shells.
+    """Return T such that chi_spherical = chi_cartesian @ T, for s through g shells.
 
     Shells and contractions retain topology order. s/p Cartesian functions are
-    normalized; d/f functions have radial normalization. Cartesian d order is
-    xx,xy,xz,yy,yz,zz; real spherical order is xy,yz,z2,xz,x2-y2. For an AO
-    density the exact embedding is D_cart=T@D_sph@T.T. This does not add a
-    spherical SCF path or identify an arbitrary external AO ordering.
+    normalized and higher shells have radial normalization. Cartesian d order is
+    xx, xy, xz, yy, yz, zz and real spherical d order is xy, yz, z2, xz, x2-y2.
+    The AO density embeds as D_cart = T @ D_sph @ T.T.
     """
-    if any(l > 3 for l in topology.angular_momenta):
-        raise NotImplementedError('The current angular transform supports s/p/d/f (l<=3)')
+    if any(l > 4 for l in topology.angular_momenta):
+        raise NotImplementedError('The angular transform supports s through g shells (l<=4)')
     ncart = sum((l+1)*(l+2)//2*c for l,c in zip(topology.angular_momenta, topology.contraction_counts))
     nsph = sum((2*l+1)*c for l,c in zip(topology.angular_momenta, topology.contraction_counts))
     result = jnp.zeros((ncart, nsph))
@@ -38,9 +37,25 @@ def cartesian_to_spherical(topology):
                    [0.,0.,0.,-3*z,0.,-e,0.],
                    [0.,0.,4*c,0.,0.,0.,0.],
                    [0.,0.,0.,2*z,0.,0.,0.]])
+    # Real g harmonics in libcint order m=-4,...,+4. Each row below is one
+    # harmonic over Cartesian monomials in descending x and then y powers.
+    g0 = 3 / (16 * sqrt(pi))
+    g1, g2 = sqrt(45 / (32 * pi)), sqrt(45 / (64 * pi))
+    g3, g4 = sqrt(315 / (32 * pi)), sqrt(315 / (256 * pi))
+    g = jnp.array([
+        [0., 4*g4, 0., 0., 0., 0., -4*g4, 0., 0., 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., 3*g3, 0., 0., 0., 0., 0., 0., -g3, 0., 0., 0.],
+        [0., -2*g2, 0., 0., 0., 0., -2*g2, 0., 12*g2, 0., 0., 0., 0., 0., 0.],
+        [0., 0., 0., 0., -3*g1, 0., 0., 0., 0., 0., 0., -3*g1, 0., 4*g1, 0.],
+        [3*g0, 0., 0., 6*g0, 0., -24*g0, 0., 0., 0., 0., 3*g0, 0., -24*g0, 0., 8*g0],
+        [0., 0., -3*g1, 0., 0., 0., 0., -3*g1, 0., 4*g1, 0., 0., 0., 0., 0.],
+        [-g2, 0., 0., 0., 0., 6*g2, 0., 0., 0., 0., g2, 0., -6*g2, 0., 0.],
+        [0., 0., g3, 0., 0., 0., 0., -3*g3, 0., 0., 0., 0., 0., 0., 0.],
+        [g4, 0., 0., -6*g4, 0., 0., 0., 0., 0., 0., g4, 0., 0., 0., 0.],
+    ]).T
     row = column = 0
     for l,count in zip(topology.angular_momenta, topology.contraction_counts):
-        block = jnp.eye(2*l+1) if l < 2 else (d if l == 2 else f)
+        block = jnp.eye(2*l+1) if l < 2 else (d, f, g)[l-2]
         for _ in range(count):
             result = result.at[row:row+block.shape[0], column:column+block.shape[1]].set(block)
             row += block.shape[0]

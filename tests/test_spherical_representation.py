@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gradscf.integrals.basis import BasisTopology
+from gradscf.integrals.basis import BasisTopology, cartesian_angular_tuples
 
 
 def transform(topology):
@@ -41,23 +41,26 @@ def test_transform_preserves_shell_contraction_order_and_low_l_normalization():
 
 def test_high_angular_momentum_requires_an_explicit_supported_transform():
     with pytest.raises(NotImplementedError, match='angular|s.*p.*d|l='):
-        transform(BasisTopology((4,), (1,), (1,), (6,)))
+        transform(BasisTopology((5,), (1,), (1,), (6,)))
 
 
-def test_f_shell_transform_is_orthonormal_in_exact_sphere_metric():
-    powers = [(3,0,0),(2,1,0),(2,0,1),(1,2,0),(1,1,1),
-              (1,0,2),(0,3,0),(0,2,1),(0,1,2),(0,0,3)]
+@pytest.mark.parametrize('angular_momentum', [3, 4], ids=['f', 'g'])
+def test_high_angular_shell_transform_is_orthonormal_in_exact_sphere_metric(angular_momentum):
+    powers = cartesian_angular_tuples(angular_momentum)
     def moment(a):
         if any(k%2 for k in a): return 0.
         return 2*math.prod(math.gamma((k+1)/2) for k in a)/math.gamma((sum(a)+3)/2)
     metric = np.array([[moment(tuple(x+y for x,y in zip(a,b))) for b in powers] for a in powers])
-    t = transform(BasisTopology((3,), (1,), (1,), (6,)))
-    assert t.shape == (10,7)
-    np.testing.assert_allclose(t.T@metric@t, np.eye(7), rtol=0., atol=4e-15)
-    np.testing.assert_allclose(t[-1], [0.,0.,0.,math.sqrt(7/(4*math.pi)),0.,0.,0.], rtol=0., atol=1e-15)
+    t = transform(BasisTopology((angular_momentum,), (1,), (1,), (6,)))
+    n_spherical = 2 * angular_momentum + 1
+    assert t.shape == (len(powers), n_spherical)
+    np.testing.assert_allclose(t.T @ metric @ t, np.eye(n_spherical), rtol=0., atol=4e-15)
+    at_z = np.zeros(n_spherical)
+    at_z[angular_momentum] = math.sqrt(n_spherical / (4 * math.pi))
+    np.testing.assert_allclose(t[-1], at_z, rtol=0., atol=1e-15)
 
 
-@pytest.mark.parametrize('angular_momentum', [0, 1, 2, 3])
+@pytest.mark.parametrize('angular_momentum', [0, 1, 2, 3, 4])
 def test_transform_matches_libcint_coefficients(angular_momentum):
     cart2sph = pytest.importorskip('pyscf.gto').cart2sph
     t = transform(BasisTopology((angular_momentum,), (1,), (1,), (6,)))
@@ -78,15 +81,17 @@ def test_mixed_f_shells_preserve_contraction_blocks():
     np.testing.assert_array_equal(t, expected)
 
 
-def test_f_density_embedding_preserves_potential_contraction_and_ad():
+@pytest.mark.parametrize('angular_momentum', [3, 4], ids=['f', 'g'])
+def test_high_angular_density_embedding_preserves_potential_contraction_and_ad(angular_momentum):
     from gradscf.integrals.basis import cartesian_to_spherical
-    t = cartesian_to_spherical(BasisTopology((3,), (1,), (1,), (6,)))
+    t = cartesian_to_spherical(BasisTopology((angular_momentum,), (1,), (1,), (6,)))
+    n_cartesian, n_spherical = t.shape
     rng = np.random.default_rng(0)
-    factor = jnp.asarray(rng.normal(size=(7,3)))
+    factor = jnp.asarray(rng.normal(size=(n_spherical, 3)))
     density = factor@factor.T
-    raw = jnp.asarray(rng.normal(size=(10,10)))
+    raw = jnp.asarray(rng.normal(size=(n_cartesian, n_cartesian)))
     potential = (raw+raw.T)/2
-    direction = jnp.asarray(rng.normal(size=(7,7)))
+    direction = jnp.asarray(rng.normal(size=(n_spherical, n_spherical)))
     direction = (direction+direction.T)/2
     embed = jax.jit(lambda d: t@d@t.T)
     energy = jax.jit(lambda d: jnp.einsum('ij,ji->', potential, embed(d)))

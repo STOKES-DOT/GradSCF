@@ -11,7 +11,7 @@ from jaxtyping import Array
 from gradscf.integrals.basis import CartesianBasis
 
 
-_DOUBLE_FACTORIAL_LOOKUP = (1.0, 1.0, 3.0, 15.0)
+_DOUBLE_FACTORIAL_LOOKUP = (1.0, 1.0, 3.0, 15.0, 105.0)
 
 
 @jax.custom_jvp
@@ -34,8 +34,8 @@ def _coordinate_power(base: Array, power: Array) -> Array:
                jnp.where(power == 2, square,
                jnp.where(power == 3, square * x, square * square))))
 
-    # s/p/d/f values and their spatial derivatives need powers at most four.
-    # Angular powers are discrete: this branch introduces no coordinate cutoff.
+    # Use explicit products for small powers and the integer-power path for
+    # higher powers, including those in derivatives of g functions.
     return jax.lax.cond(jnp.all((power >= 0) & (power <= 4)),
                         low_order, lambda x: x**power, base)
 

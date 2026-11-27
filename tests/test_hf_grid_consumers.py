@@ -29,7 +29,7 @@ def _inputs(unrestricted=False):
         init_mo_energy=np.array([-1., 1.]))
 
 
-def _grid_fixture(monkeypatch, inputs, streamed=False):
+def _grid_fixture(monkeypatch, inputs, streamed=False, *, max_l=4):
     weights = np.array([.2, .3, .4])
     provider = object() if streamed else None
     context = SimpleNamespace(basis=inputs.basis, coords=np.ones((3, 3)),
@@ -40,7 +40,7 @@ def _grid_fixture(monkeypatch, inputs, streamed=False):
 
     def prepare(**kwargs):
         assert kwargs['needs_grid'] is True
-        assert kwargs['grids_level'] == 3 and kwargs['max_l'] == 3
+        assert kwargs['grids_level'] == 3 and kwargs['max_l'] == max_l
         calls.append(kwargs)
         return context
 
@@ -57,7 +57,7 @@ def _grid_fixture(monkeypatch, inputs, streamed=False):
 @pytest.mark.parametrize('streamed', [False, True])
 def test_hf_grid_completion_is_lazy_and_preserves_spatial_inputs(monkeypatch, unrestricted, streamed):
     inputs = _inputs(unrestricted)
-    context, ao, derivative, calls = _grid_fixture(monkeypatch, inputs, streamed)
+    context, ao, derivative, calls = _grid_fixture(monkeypatch, inputs, streamed, max_l=3)
     cfg = (UKSConfig if unrestricted else RKSConfig)(xc_spec='hf', grid_block_size=2 if streamed else -1)
 
     def forbidden(*args, **kwargs):
@@ -86,7 +86,8 @@ def test_hf_grid_completion_is_lazy_and_preserves_spatial_inputs(monkeypatch, un
 
 
 @pytest.mark.parametrize('block_size', [-1, 2], ids=['dense', 'streamed'])
-def test_spherical_hf_grid_completion_projects_values_and_laplacian(monkeypatch, block_size):
+@pytest.mark.parametrize('angular_momentum', [2, 4], ids=['d', 'g'])
+def test_spherical_hf_grid_completion_projects_values_and_laplacian(monkeypatch, block_size, angular_momentum):
     from dataclasses import replace
     import jax.numpy as jnp
     from gradscf.data.molecule import parse_molecule_spec
@@ -96,7 +97,7 @@ def test_spherical_hf_grid_completion_projects_values_and_laplacian(monkeypatch,
     from gradscf.integrals.grids.ao import evaluate_cartesian_ao_with_derivatives
 
     spec = parse_molecule_spec('He .13 .2 .3')
-    basis = [[0, [.94, 1.]], [2, [.81, 1.]]]
+    basis = [[0, [.94, 1.]], [angular_momentum, [.81, 1.]]]
     basis_cart = basis_from_molecule_spec(spec, basis=basis)
     topology, _ = prepare_basis(spec, basis, cart=False)
     nao = topology.nao
