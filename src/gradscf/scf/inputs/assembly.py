@@ -9,6 +9,7 @@ import numpy as np
 
 from gradscf._memory import DEFAULT_MAX_MEMORY_MB, tree_storage_bytes, workspace_bytes
 from gradscf.integrals.basis import basis_from_molecule_spec, cartesian_to_spherical, prepare_basis
+from gradscf.integrals.basis.cartesian import DEFAULT_GRID_MAX_L
 from gradscf.integrals.plan import make_plan
 from gradscf.integrals.grids import build_molecular_grid_from_spec
 from gradscf.integrals.grids.ao import evaluate_cartesian_ao, evaluate_cartesian_ao_with_derivatives
@@ -243,7 +244,7 @@ def _build_common(*, atom, basis, cfg, xc_spec, unit, charge, spin, cart,
 
 
 def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
-    unit="Angstrom", charge=0, spin=0, cart=True, grids_level=0, max_l=3,
+    unit="Angstrom", charge=0, spin=0, cart=True, grids_level=0, max_l=DEFAULT_GRID_MAX_L,
     grid_ao_backend="jax", integral_backend="libcint", libcint_geometry_grad_policy="analytic",
     include_dipole_integrals=True, include_ao_laplacian=None, init_guess="hcore", chkfile=None,
     init_guess_sap_basis=None, init_guess_chkfile_project=None, verbose=0, **mol_kwargs):
@@ -267,7 +268,7 @@ def build_rks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
 
 
 def build_uks_integral_inputs(*, atom, basis, config=None, xc_spec=None,
-    unit="Angstrom", charge=0, spin=1, cart=True, grids_level=0, max_l=3,
+    unit="Angstrom", charge=0, spin=1, cart=True, grids_level=0, max_l=DEFAULT_GRID_MAX_L,
     grid_ao_backend="jax", integral_backend="libcint", libcint_geometry_grad_policy="analytic",
     include_dipole_integrals=True, include_ao_laplacian=None,
     init_guess="hcore", chkfile=None, init_guess_sap_basis=None,

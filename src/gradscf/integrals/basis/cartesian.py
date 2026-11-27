@@ -16,6 +16,9 @@ from gradscf.integrals.basis.data import load_basis_from_snapshot
 from gradscf.integrals.basis.normalization import _normalize_raw_shell_coefficients
 
 
+DEFAULT_GRID_MAX_L = 4
+
+
 def cartesian_angular_tuples(l: int) -> list[tuple[int, int, int]]:
     """Return Cartesian (lx, ly, lz) tuples in PySCF cart ordering."""
 
@@ -316,7 +319,7 @@ def basis_from_pyscf_spec(
     spin: int = 0,
     cart: bool = True,
     verbose: int = 0,
-    max_l: int = 3,
+    max_l: int = DEFAULT_GRID_MAX_L,
     **mol_kwargs: Any,
 ) -> CartesianBasis:
     """Build a cartesian basis from molecule/basis inputs without runtime PySCF."""
@@ -339,7 +342,7 @@ def basis_from_spec(
     unit: str = "Angstrom",
     charge: int = 0,
     spin: int = 0,
-    max_l: int = 3,
+    max_l: int = DEFAULT_GRID_MAX_L,
 ) -> CartesianBasis:
     """Build a cartesian basis from bundled basis data without PySCF.
 
@@ -357,7 +360,7 @@ def basis_from_molecule_spec(
     spec: MoleculeSpec,
     *,
     basis: Any,
-    max_l: int = 3,
+    max_l: int = DEFAULT_GRID_MAX_L,
 ) -> CartesianBasis:
     """Build Cartesian AOs from named or static raw shells and traced coordinates.
 

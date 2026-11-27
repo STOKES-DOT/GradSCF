@@ -58,6 +58,27 @@ def test_evaluate_cartesian_ao_matches_pyscf_values_and_first_derivatives():
     assert np.allclose(ao1_jax, ao1_ref, atol=3e-6, rtol=2e-5)
 
 
+def test_def2_qzvp_spherical_g_shell_grid_matches_pyscf():
+    from gradscf.data.molecule import parse_molecule_spec
+    from gradscf.integrals.basis import (
+        basis_from_molecule_spec, cartesian_to_spherical, prepare_basis,
+    )
+    from gradscf.integrals.grids.ao import evaluate_cartesian_ao_with_derivatives
+
+    pyscf_gto = pytest.importorskip("pyscf.gto")
+    spec = parse_molecule_spec("C 0 0 0", unit="Bohr", spin=2)
+    basis = basis_from_molecule_spec(spec, basis="def2-qzvp")
+    topology, _ = prepare_basis(spec, "def2-qzvp", cart=False)
+    assert 4 in topology.angular_momenta
+    coordinates = np.array([[0., 0., 0.], [0., .2, -.3], [.4, 0., .6], [.2, -.1, .5]])
+    _, derivatives = evaluate_cartesian_ao_with_derivatives(basis, coordinates, deriv=2)
+    projected = derivatives @ cartesian_to_spherical(topology)
+    mol = pyscf_gto.M(atom="C 0 0 0", unit="Bohr", basis="def2-qzvp", spin=2, verbose=0)
+    reference = mol.eval_gto("GTOval_sph_deriv2", coordinates)
+    np.testing.assert_allclose(projected[:4], reference[:4], atol=2e-10, rtol=2e-10)
+    np.testing.assert_allclose(projected[4], reference[[4, 7, 9]].sum(axis=0), atol=2e-10, rtol=2e-10)
+
+
 @pytest.mark.parametrize("basis_name", ["sto-3g", "6-31g*"])
 def test_ao_gradient_second_directional_derivative_on_coordinate_planes(basis_name):
     """GGA Hessians need third spatial AO derivatives, including at x/y/z=0."""
