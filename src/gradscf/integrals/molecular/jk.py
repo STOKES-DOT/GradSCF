@@ -37,12 +37,15 @@ def build_direct_jk_incremental(basis,density,*,density_last=None,j_last=None,k_
         screening_threshold=screening_threshold,workers=workers)
     return DirectJKResult(result.j+j_last,result.k+k_last)
 
-@jax.jit
-def build_jk_from_df(df_factors: Array, density: Array) -> tuple[Array, Array]:
+@partial(jax.jit, static_argnames=("symmetrize",))
+def build_jk_from_df(
+    df_factors: Array, density: Array, *, symmetrize=True,
+) -> tuple[Array, Array]:
     """Build Coulomb and exchange matrices from DF factors.
 
     Uses a vmapped contraction over auxiliary channels so the J/K path stays in
-    pure JAX and remains jit-friendly on CPU/GPU.
+    pure JAX and remains jit-friendly on CPU/GPU. For nonsymmetric transition
+    densities pass ``symmetrize=False`` to retain the exchange orientation.
     """
 
     factors = jnp.asarray(df_factors)
@@ -65,7 +68,9 @@ def build_jk_from_df(df_factors: Array, density: Array) -> tuple[Array, Array]:
         factors,
         precision=Precision.HIGHEST,
     )
-    return 0.5 * (j_mat + j_mat.T), 0.5 * (k_mat + k_mat.T)
+    if symmetrize:
+        return 0.5 * (j_mat + j_mat.T), 0.5 * (k_mat + k_mat.T)
+    return j_mat, k_mat
 
 @partial(jax.jit, static_argnames=("nocc",))
 def build_jk_from_df_orbitals(

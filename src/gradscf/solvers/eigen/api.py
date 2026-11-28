@@ -19,7 +19,7 @@ from gradscf._memory import array_storage_bytes, tree_storage_bytes, validate_re
 def solve_hermitian(
     matrix_or_operator, *, config=None, response=None, probes=None, initial_vectors=None,
     max_memory=None, reserved_bytes=0, _batch_size=None,
-    workload_callback=None,
+    workload_callback=None, _return_residual_inf=False,
 ):
     """Solve once; differentiate isolated eigenpairs or an isolated subspace.
 
@@ -95,6 +95,7 @@ def solve_hermitian(
         op, cfg, initial_vectors=initial_vectors, structure_valid=structure,
         batch_size=_batch_size,
         workload_callback=workload_callback,
+        return_residual_inf=_return_residual_inf,
     )
     x = roots.vectors[:, :k]
     if k < n:
@@ -183,7 +184,7 @@ def solve_hermitian(
         converged = roots.converged[:k]
         response_valid = jnp.broadcast_to(valid, (k,))
     status = jnp.where(~converged, 1, jnp.where(response_valid, 0, 2))
-    return EigenResult(
+    result = EigenResult(
         values,
         vectors,
         roots.residual_norms[:k],
@@ -200,3 +201,6 @@ def solve_hermitian(
         projection,
         trace,
     )
+    if _return_residual_inf:
+        return result, roots.residual_inf_norms
+    return result

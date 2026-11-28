@@ -20,6 +20,7 @@ _NAMESPACE_EXPORTS = {
     "solvers",
     "ci",
     "fci",
+    "mc",
     "integrals",
     "gto",
     "scf",

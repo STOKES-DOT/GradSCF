@@ -68,9 +68,12 @@ def transform_eri_block(
             precision="highest", optimize="optimal",
         )
     if representation == "packed":
-        rows, cols, _, _ = _metadata_arrays(nao, c.dtype)
+        rows, cols, pair_index, _ = _metadata_arrays(nao, c.dtype)
+        wide_side = _packed_half_side(source, coefficients, shape)
+        if wide_side is not None:
+            return _transform_packed_half(source, coefficients, rows, cols, pair_index, wide_side)
         products = _mo_pair_products(c, d, rows, cols)
-        other = _mo_pair_products(e, f, rows, cols)
+        other = products if c is e and d is f else _mo_pair_products(e, f, rows, cols)
         return jnp.einsum(
             "pqP,PQ,rsQ->pqrs", products, source, other, precision="highest"
         )
@@ -155,6 +158,45 @@ def _array_source(nao, eri, eri_pair_matrix, df_factors):
     return "df", source
 
 
+def _packed_half_side(source, coefficients, shape):
+    """Select the larger MO pair when unpacking the smaller result fits better."""
+    # Reordering can change intermediate promotion for mixed dtypes.
+    dtype = source.dtype
+    if dtype not in (jnp.float32, jnp.float64) or any(c.dtype != dtype for c in coefficients):
+        return None
+    nao = coefficients[0].shape[0]
+    left, right = prod(shape[:2]), prod(shape[2:])
+    if left == right:
+        return None
+    pairs = nao * (nao + 1) // 2
+    side = int(left < right)
+    width = min(shape[2 * side:2 * side + 2])
+    # Compare the removed large pair products with the half-transform,
+    # symmetric AO matrices and ensuing one-index intermediate.
+    half = min(left, right) * (pairs + nao**2 + nao * width)
+    return side if half < pairs * max(left, right) else None
+
+
+def _transform_packed_half(source, coefficients, rows, cols, pair_index, wide_side):
+    """Contract the small MO pair before expanding the remaining AO pair."""
+    if wide_side:
+        c, d, e, f = (*coefficients[2:], *coefficients[:2])
+        equation = "QP,rsQ->Prs"
+    else:
+        c, d, e, f = coefficients
+        equation = "PQ,rsQ->Prs"
+    products = _mo_pair_products(e, f, rows, cols)
+    half = jnp.einsum(equation, source, products, precision="highest")
+    ao = half[pair_index]
+    if c.shape[1] <= d.shape[1]:
+        partial = jnp.einsum("ijrs,ip->pjrs", ao, c, precision="highest")
+        block = jnp.einsum("pjrs,jq->pqrs", partial, d, precision="highest")
+    else:
+        partial = jnp.einsum("ijrs,jq->iqrs", ao, d, precision="highest")
+        block = jnp.einsum("iqrs,ip->pqrs", partial, c, precision="highest")
+    return block.transpose(2, 3, 0, 1) if wide_side else block
+
+
 def _eri_block_size(source, coefficients, representation, max_memory, *, reserved_bytes=0):
     """Check static forward-array storage and choose the DF auxiliary tile."""
     arrays = (source, *coefficients)
@@ -193,13 +235,20 @@ def _eri_block_size(source, coefficients, representation, max_memory, *, reserve
     if representation == "packed":
         npair = source.shape[0]
         left_size, right_size = shape[0] * shape[1], shape[2] * shape[3]
-        # Pair metadata, gathered coefficients, pair-product construction and
-        # the larger pair-contraction intermediate remain explicit scratch.
-        metadata = 8 * npair + 4 * nao ** 2 + itemsize * npair
-        scratch = metadata + itemsize * npair * (
-            2 * sum(shape) + 4 * (left_size + right_size)
-            + max(left_size, right_size) + 1
-        )
+        metadata = 8 * npair + 4 * nao**2 + itemsize * npair
+        side = _packed_half_side(source, coefficients, shape)
+        if side is None:
+            elements = npair * (2 * sum(shape) + 4 * (left_size + right_size)
+                                + max(left_size, right_size) + 1)
+        else:
+            small = shape[:2] if side else shape[2:]
+            wide = shape[2:] if side else shape[:2]
+            pair_size = prod(small)
+            # Small-pair gathers and products, half-transform, AO expansion
+            # and the one-index intermediate are all planned before execution.
+            elements = (npair * (2 * sum(small) + 5 * pair_size + 1)
+                        + pair_size * (nao**2 + nao * min(wide)))
+        scratch = metadata + itemsize * elements
         if source.dtype != dtype:
             scratch += source.size * itemsize
         if available < scratch:

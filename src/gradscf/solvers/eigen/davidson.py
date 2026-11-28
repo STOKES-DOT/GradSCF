@@ -64,6 +64,20 @@ def _matmul(lhs: Array, rhs: Array) -> Array:
     return jnp.matmul(lhs, rhs, precision=_MATMUL_PRECISION)
 
 
+def _restart_qr_is_stable(r: Array) -> Array:
+    # A retained orthonormal Ritz frame has R close to a signed identity.
+    # The off-diagonal Frobenius norm bounds its spectral norm, so subtracting
+    # it from the smallest diagonal magnitude bounds the smallest singular value.
+    diagonal = jnp.diag(r)
+    magnitudes = jnp.abs(diagonal)
+    off_diagonal = jnp.linalg.norm(r - jnp.diag(diagonal))
+    lower = jnp.min(magnitudes) - off_diagonal
+    upper = jnp.max(magnitudes) + off_diagonal
+    scale = jnp.maximum(1., jnp.linalg.norm(r))
+    floor = jnp.sqrt(jnp.finfo(r.dtype).eps) * scale
+    return lower > jnp.maximum(floor, upper / 4.)
+
+
 def _safe_preconditioner_denominator(values: Array, floor: float, level_shift: float) -> Array:
     values = jnp.asarray(values)
     values = values - jnp.asarray(level_shift, dtype=values.dtype)
@@ -136,8 +150,9 @@ def _davidson_lowest_symmetric(
 
     ``workload_callback`` opts into runtime action and iteration records.
     Its host callback timings include diagnostic overhead; leave it unset for
-    clean timing. Records contain only scalar
-    metadata and the requested roots' residual norms, never physical vectors.
+    clean timing. A restart that reuses cached operator images records a
+    ``reuse`` event with zero applied columns. Records contain scalar metadata
+    and the requested roots' residual norms, never physical vectors.
     """
 
     index_dtype = jnp.asarray(0).dtype
@@ -369,6 +384,7 @@ def _davidson_lowest_symmetric(
 
     def _restart_subspace(
         basis_in: Array,
+        abasis_in: Array,
         eigvecs_in: Array,
         basis_dim_in: Array,
         iteration: Array,
@@ -376,12 +392,30 @@ def _davidson_lowest_symmetric(
     ) -> tuple[Array, Array, Array, Array, Array]:
         restart_coeff = eigvecs_in[:, :collapse_subspace]
         restarted_basis = _matmul(basis_in, restart_coeff)
-        restarted_basis, _ = jnp.linalg.qr(restarted_basis, mode="reduced")
-        restarted_abasis = _apply_columns(
-            restarted_basis, iteration=iteration, purpose="restart",
-            effective_columns=collapse_subspace, subspace_dim=basis_dim_in,
-            residual_norms=residual_norms,
-        )
+        restarted_basis, r = jnp.linalg.qr(restarted_basis, mode="reduced")
+
+        def reuse():
+            # VZ = QR and H is fixed throughout this solve. Apply the same
+            # right-hand transformation to the cached images HV.
+            images = jax.lax.linalg.triangular_solve(
+                r, _matmul(abasis_in, restart_coeff), left_side=False,
+            )
+            if workload is not None:
+                workload.record(
+                    "reuse", "restart", iteration=iteration, columns=0,
+                    effective_columns=0, subspace_dim=basis_dim_in,
+                    residual_norms=residual_norms,
+                )
+            return images
+
+        def refresh():
+            return _apply_columns(
+                restarted_basis, iteration=iteration, purpose="restart",
+                effective_columns=collapse_subspace, subspace_dim=basis_dim_in,
+                residual_norms=residual_norms,
+            )
+
+        restarted_abasis = jax.lax.cond(_restart_qr_is_stable(r), reuse, refresh)
 
         basis_out = jnp.zeros((dim, max_subspace), dtype=dtype)
         abasis_out = jnp.zeros((dim, max_subspace), dtype=dtype)
@@ -590,7 +624,7 @@ def _davidson_lowest_symmetric(
                     overflow,
                     lambda __: _append_new_columns(
                         *_restart_subspace(
-                            basis_it, sub_eigvecs, basis_dim_it, iteration,
+                            basis_it, abasis_it, sub_eigvecs, basis_dim_it, iteration,
                             selected_residual_norms,
                         ),
                         expand_cols,
