@@ -18,10 +18,11 @@ class RitzResult(NamedTuple):
     complete: object
     lower_gap: object
     lower_residual: object
+    residual_inf_norms: object | None
 
 
 def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
-               batch_size=None, workload_callback=None):
+               batch_size=None, workload_callback=None, return_residual_inf=False):
     n, k = operator.shape[0], config.nroots
     count = min(k + 1, n)
     if k > n:
@@ -140,7 +141,10 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
             residual_norms=jnp.full((count,), jnp.inf), action_norm=_tree_norm(x))
     ax = apply(x)
     values = jnp.sum(x * ax, axis=0)
-    residual = jnp.linalg.norm(ax - x * values[None, :], axis=0)
+    residual_vectors = ax - x * values[None, :]
+    residual = jnp.linalg.norm(residual_vectors, axis=0)
+    residual_inf_norms = (jnp.max(jnp.abs(residual_vectors), axis=0)
+                          if return_residual_inf else None)
     if workload is not None:
         workload.record('apply_end', 'final_ritz_verify', iteration=None,
             columns=x.shape[1], effective_columns=jnp.sum(present), subspace_dim=None,
@@ -156,6 +160,7 @@ def solve_ritz(operator, config, *, initial_vectors=None, structure_valid=True,
     return jax.tree.map(
         jax.lax.stop_gradient,
         RitzResult(
-            values, x, residual, valid, present, complete, lower_gap, lower_residual
+            values, x, residual, valid, present, complete, lower_gap, lower_residual,
+            residual_inf_norms,
         ),
     )

@@ -34,6 +34,17 @@ def validate_integrals(h1, eri, nmo=None):
     return h1, eri
 
 
+def physical_integrals_valid(h, g):
+    """Check real molecular one- and two-electron permutation symmetries."""
+    scale = jnp.maximum(1., jnp.maximum(jnp.max(jnp.abs(h), initial=0.), jnp.max(jnp.abs(g), initial=0.)))
+    tol = jnp.maximum(1e-10, 64*jnp.finfo(jnp.result_type(h,g)).eps*max(1,h.shape[0])) * scale
+    return (jnp.all(jnp.isfinite(h)) & jnp.all(jnp.isfinite(g))
+            & (jnp.max(jnp.abs(h-h.T), initial=0.) <= tol)
+            & (jnp.max(jnp.abs(g-g.transpose(1,0,2,3)), initial=0.) <= tol)
+            & (jnp.max(jnp.abs(g-g.transpose(0,1,3,2)), initial=0.) <= tol)
+            & (jnp.max(jnp.abs(g-g.transpose(2,3,0,1)), initial=0.) <= tol))
+
+
 def transform_integrals(
     hcore, mo_coeff, *, eri=None, eri_pair_matrix=None, df_factors=None, direct_basis=None,
     max_memory=DEFAULT_MAX_MEMORY_MB, reserved_bytes=0,

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from gradscf._memory import (DEFAULT_MAX_MEMORY_MB, array_storage_bytes,
                              resolve_memory_mb, validate_reserved_bytes)
 from gradscf.ao2mo import validate_integrals
+from gradscf.ao2mo.reference import physical_integrals_valid
 from ..solvers import EigenSolverConfig, EigenResponseConfig, LinearOperator, solve_hermitian
 from ..solvers.diagnostics import require_converged_derivative
 from ..solvers.eigen.davidson import _solver_dtype
@@ -36,16 +37,6 @@ class FCIResult(NamedTuple):
     @property
     def electronic_energies(self):
         return None if self.total_energies is None else self.total_energies-self.ecore
-
-
-def _physical_integrals_valid(h, g):
-    scale = jnp.maximum(1., jnp.maximum(jnp.max(jnp.abs(h), initial=0.), jnp.max(jnp.abs(g), initial=0.)))
-    tol = jnp.maximum(1e-10, 64*jnp.finfo(jnp.result_type(h,g)).eps*max(1,h.shape[0])) * scale
-    return (jnp.all(jnp.isfinite(h)) & jnp.all(jnp.isfinite(g))
-            & (jnp.max(jnp.abs(h-h.T), initial=0.) <= tol)
-            & (jnp.max(jnp.abs(g-g.transpose(1,0,2,3)), initial=0.) <= tol)
-            & (jnp.max(jnp.abs(g-g.transpose(0,1,3,2)), initial=0.) <= tol)
-            & (jnp.max(jnp.abs(g-g.transpose(2,3,0,1)), initial=0.) <= tol))
 
 
 def _plan_fci_memory(space, dtype, config, max_memory, *, arrays=(), ci0=None,
@@ -111,7 +102,7 @@ def solve_fci(h1, eri, space, *, ecore=0., config=None, response=None,
     _action_tiles(space,dtype,1,max_workspace_elements,max_memory,
         arrays=(h,g,core,ci0,probes),
         extra_bytes=reserved_bytes+solver_bytes+(3*g.size+2*space.size)*jnp.dtype(dtype).itemsize)
-    physical = _physical_integrals_valid(h,g) & jnp.isfinite(core)
+    physical = physical_integrals_valid(h,g) & jnp.isfinite(core)
     original = build_hamiltonian(h,g,space,max_workspace_elements=max_workspace_elements,
         max_memory=max_memory,reserved_bytes=reserved_bytes+solver_bytes+array_storage_bytes(core,ci0,probes))
     # closure_convert hoists inexact leaves, not a captured boolean tracer.
